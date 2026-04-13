@@ -1,16 +1,21 @@
 import json
 import pytest
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 from market_discovery import parse_market
 
 
 def make_raw(question, prices=None, tokens=None, end_date=None):
     """Helper: build a minimal raw market dict."""
+    if end_date is None:
+        end_date = (datetime.now(timezone.utc) + timedelta(hours=48)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
     return {
         "question": question,
         "outcomePrices": json.dumps(prices or ["0.28", "0.72"]),
         "tokens": tokens or [{"tokenId": "0xabc123"}],
-        "endDate": end_date or "2026-04-15T12:00:00Z",
+        "endDate": end_date,
     }
 
 
@@ -111,9 +116,12 @@ def test_missing_outcome_prices_logs_and_returns_none():
 # --- Date and resolution ---
 
 def test_extracts_date_from_end_date():
+    # Use a date within 72h window (48h from now for safety)
+    future_date = (datetime.now(timezone.utc) + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expected_date = future_date[:10]  # Extract YYYY-MM-DD portion
     with patch("market_discovery._log_unmatched"):
-        result = parse_market(make_raw("Will New York hit 80°F?", end_date="2026-04-15T18:00:00Z"))
-    assert result["date"] == "2026-04-15"
+        result = parse_market(make_raw("Will New York hit 80°F?", end_date=future_date))
+    assert result["date"] == expected_date
 
 
 def test_market_outside_72h_returns_none():

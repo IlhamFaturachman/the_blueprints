@@ -43,8 +43,8 @@ TARGET_CITIES = {
 
 # Regex patterns for matching city names (handles abbreviations/variants)
 CITY_PATTERNS = {
-    "new york":  r"\bnew york(?:\s+city)?\b|\bnyc\b|\bny\b",
-    "chicago":   r"\bchicago\b|\bchi\b",
+    "new york":  r"\bnew york(?:\s+city)?\b|\bnyc\b",
+    "chicago":   r"\bchicago\b|\bchi\b",  # \bchi\b is broad but safe within weather tag filter
     "london":    r"\blondon\b",
     "tokyo":     r"\btokyo\b",
     "hong kong": r"\bhong kong\b|\bhk\b|\bhkg\b",
@@ -192,8 +192,11 @@ def parse_market(raw):
 
     try:
         prices = json.loads(outcome_prices_raw) if isinstance(outcome_prices_raw, str) else outcome_prices_raw
+        if not isinstance(prices, list) or len(prices) == 0:
+            _log_unmatched(question, "outcomePrices is not a non-empty list")
+            return None
         yes_price = float(prices[0])
-    except (json.JSONDecodeError, IndexError, ValueError, TypeError):
+    except (json.JSONDecodeError, ValueError, TypeError):
         _log_unmatched(question, "could not parse outcomePrices")
         return None
 
