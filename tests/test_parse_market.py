@@ -90,6 +90,37 @@ def test_under_direction_detected():
     assert result["direction"] == "below"
 
 
+def test_exact_direction_detected():
+    with patch("market_discovery._log_unmatched"):
+        result = parse_market(make_raw("Will New York be exactly 70°F on April 15?"))
+    assert result["direction"] == "exact"
+
+
+def test_city_can_be_detected_from_structured_fields():
+    raw = make_raw("Will it hit 70°F on April 15?")
+    raw["description"] = "Weather contract for New York City"
+    with patch("market_discovery._log_unmatched"):
+        result = parse_market(raw)
+    assert result["city"] == "new york"
+
+
+def test_threshold_can_fallback_to_slug():
+    raw = make_raw("Will New York weather event resolve tomorrow?")
+    raw["slug"] = "new-york-above-75f-apr-15"
+    with patch("market_discovery._log_unmatched"):
+        result = parse_market(raw)
+    assert result["threshold"] == 75.0
+    assert result["unit"] == "F"
+
+
+def test_non_weather_city_market_skips_without_logging():
+    raw = make_raw("Will New York Knicks win tonight?")
+    with patch("market_discovery._log_unmatched") as mock_log:
+        result = parse_market(raw)
+    assert result is None
+    mock_log.assert_not_called()
+
+
 # --- Price and token extraction ---
 
 def test_extracts_yes_price():
