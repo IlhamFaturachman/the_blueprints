@@ -77,3 +77,45 @@ def fetch_with_retry(url, params=None, max_retries=3):
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)  # 1s, 2s, 4s
     raise last_error
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: Fetch Markets from Polymarket Gamma API
+# ---------------------------------------------------------------------------
+
+def fetch_markets(inspect=False):
+    """
+    Fetch active weather markets from the Polymarket Gamma API.
+
+    If inspect=True, prints the first 3 raw market dicts as formatted JSON
+    and exits. Use this once to understand the API response structure
+    before building the parser.
+
+    Returns a list of raw market dicts on success.
+    Exits with code 1 if the API is unreachable after 3 retries.
+    """
+    params = {
+        "tag": "weather",
+        "active": "true",
+        "limit": 100,
+    }
+
+    try:
+        data = fetch_with_retry(GAMMA_API, params=params)
+    except Exception as e:
+        print(f"\nERROR: Could not fetch markets from Gamma API: {e}")
+        print("Check your internet connection and try again.")
+        sys.exit(1)
+
+    # API returns either a list directly or {"markets": [...]}
+    markets = data if isinstance(data, list) else data.get("markets", [])
+
+    if inspect:
+        print("=== INSPECT MODE: First 3 raw market structures ===\n")
+        for i, market in enumerate(markets[:3], 1):
+            print(f"--- Market {i} ---")
+            print(json.dumps(market, indent=2, default=str))
+            print()
+        sys.exit(0)
+
+    return markets
