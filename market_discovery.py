@@ -119,3 +119,117 @@ def fetch_markets(inspect=False):
         sys.exit(0)
 
     return markets
+
+
+# ---------------------------------------------------------------------------
+# Logging Helper
+# ---------------------------------------------------------------------------
+
+def _log_unmatched(title, reason):
+    """
+    Append an unparseable market title to the log file for later review.
+    The log helps improve the regex patterns over time.
+    """
+    os.makedirs("logs", exist_ok=True)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"[{timestamp}] {reason}: {title}\n")
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: Parse Raw Market Dict into Structured Fields
+# ---------------------------------------------------------------------------
+
+def parse_market(raw):
+    """
+    Parse a raw Gamma API market dict into structured fields.
+
+    Strategy:
+    1. Match city against target list (regex, handles abbreviations)
+    2. Extract temperature threshold + unit from question text
+    3. Determine direction (above/below threshold)
+    4. Extract YES price from outcomePrices field
+    5. Extract token ID from tokens array
+    6. Parse resolution date from endDate field
+
+    Returns None if:
+    - City not in target list (silent skip)
+    - Cannot extract temperature (logged)
+    - Missing price/token data (logged)
+    - Resolves outside 3-day forecast window (silent skip)
+    """
+    question = raw.get("question") or raw.get("title") or ""
+    question_lower = question.lower()
+
+    # Step 1: Match city
+    city = None
+    for target_city, pattern in CITY_PATTERNS.items():
+        if re.search(pattern, question_lower, re.IGNORECASE):
+            city = target_city
+            break
+
+    if city is None:
+        return None  # Not a target city — skip silently
+
+    # Step 2: Extract temperature threshold and unit
+    match = re.search(THRESHOLD_PATTERN, question, re.IGNORECASE)
+    if not match:
+        _log_unmatched(question, "no temperature threshold found")
+        return None
+
+    threshold = float(match.group(1))
+    unit = match.group(2).upper()
+
+    # Step 3: Determine direction
+    below_keywords = r"\b(below|under|less than|cooler than|drop below|stay under)\b"
+    direction = "below" if re.search(below_keywords, question_lower) else "above"
+
+    # Step 4: Extract YES price from outcomePrices (JSON string or list)
+    outcome_prices_raw = raw.get("outcomePrices")
+    if not outcome_prices_raw:
+        _log_unmatched(question, "missing outcomePrices")
+        return None
+
+    try:
+        prices = json.loads(outcome_prices_raw) if isinstance(outcome_prices_raw, str) else outcome_prices_raw
+        yes_price = float(prices[0])
+    except (json.JSONDecodeError, IndexError, ValueError, TypeError):
+        _log_unmatched(question, "could not parse outcomePrices")
+        return None
+
+    # Step 5: Extract token ID (YES token is first in tokens array)
+    tokens = raw.get("tokens", [])
+    token_id = None
+    if tokens:
+        token_id = tokens[0].get("tokenId") or tokens[0].get("token_id")
+
+    if not token_id:
+        _log_unmatched(question, "missing token_id")
+        return None
+
+    # Step 6: Parse resolution date from endDate
+    end_date_raw = raw.get("endDate") or raw.get("end_date") or ""
+    try:
+        end_dt = datetime.fromisoformat(end_date_raw.replace("Z", "+00:00"))
+        date_str = end_dt.strftime("%Y-%m-%d")
+        now = datetime.now(timezone.utc)
+        hours_until_resolve = (end_dt - now).total_seconds() / 3600
+    except (ValueError, AttributeError):
+        _log_unmatched(question, f"could not parse endDate: {end_date_raw}")
+        return None
+
+    # Only include markets within 3-day forecast window
+    if hours_until_resolve <= 0 or hours_until_resolve > 72:
+        return None
+
+    return {
+        "city": city,
+        "date": date_str,
+        "market_question": question,
+        "threshold": threshold,
+        "unit": unit,
+        "direction": direction,
+        "yes_price": yes_price,
+        "token_id": token_id,
+        "hours_until_resolve": round(hours_until_resolve, 1),
+    }
