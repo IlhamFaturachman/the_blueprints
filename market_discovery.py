@@ -55,3 +55,25 @@ CITY_PATTERNS = {
 
 # Matches: "75°F", "80F", "25°C", "30 C", "75 degrees F"
 THRESHOLD_PATTERN = r"(\d+(?:\.\d+)?)\s*(?:degrees?\s*)?(?:°\s*)?([FC])\b"
+
+# ---------------------------------------------------------------------------
+# HTTP Utility
+# ---------------------------------------------------------------------------
+
+def fetch_with_retry(url, params=None, max_retries=3):
+    """
+    GET a URL and return parsed JSON. Retries up to max_retries times
+    with exponential backoff (1s, 2s, 4s) on any request error.
+    Raises the last exception if all retries are exhausted.
+    """
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError) as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s, 4s
+    raise last_error
