@@ -236,3 +236,46 @@ def parse_market(raw):
         "token_id": token_id,
         "hours_until_resolve": round(hours_until_resolve, 1),
     }
+
+
+# ---------------------------------------------------------------------------
+# Layer 3: Fetch Weather Forecast from Open-Meteo
+# ---------------------------------------------------------------------------
+
+def fetch_forecast(city, date):
+    """
+    Fetch the daily max temperature forecast for a city on a specific date.
+
+    Uses Open-Meteo free API — no authentication required.
+    Fetches 3-day forecast in one request, returns temp for requested date.
+
+    Returns temperature in °C (float), or None if:
+    - City not in TARGET_CITIES
+    - Requested date not in forecast window
+    - Network failure after 3 retries
+    """
+    coords = TARGET_CITIES.get(city)
+    if not coords:
+        return None
+
+    params = {
+        "latitude": coords["lat"],
+        "longitude": coords["lon"],
+        "daily": "temperature_2m_max",
+        "timezone": "auto",
+        "forecast_days": 3,
+    }
+
+    try:
+        data = fetch_with_retry(OPEN_METEO_API, params=params)
+    except Exception:
+        return None
+
+    daily = data.get("daily", {})
+    times = daily.get("time", [])
+    temps = daily.get("temperature_2m_max", [])
+
+    if date in times:
+        return temps[times.index(date)]
+
+    return None
