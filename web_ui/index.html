@@ -87,7 +87,7 @@
                     <th>Amount ($)</th>
                     <th>Current Price</th>
                     <th>Unrealized PnL</th>
-                    <th>Direction</th>
+                    <th>Target outcome</th>
                     <th>Action</th>
                 </tr>
             </thead>
@@ -182,6 +182,10 @@ async function fetchData() {
                 const pos = d_open[k];
                 const unPnl = ((pos.last_price || pos.entry_price || 0) * (pos.quantity || 0)) - (pos.cost_basis || 0);
                 const pnlCls = unPnl >= 0 ? "good" : "bad";
+                const pnlPct = pos.cost_basis ? ((unPnl / pos.cost_basis) * 100) : 0;
+                const targetText = pos.direction ? `${pos.direction.toUpperCase()} ${pos.threshold || ''}°${pos.unit || ''}` : 'LONG';
+                const bucketText = pos.entry_bucket ? pos.entry_bucket : '-';
+                
                 const marketUrl = pos.market_slug ? `https://polymarket.com/event/${pos.market_slug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
                 tPos.innerHTML += `
                     <tr>
@@ -189,8 +193,8 @@ async function fetchData() {
                         <td>$${(pos.entry_price || 0).toFixed(4)}</td>
                         <td>$${(pos.cost_basis || 0).toFixed(2)}</td>
                         <td>$${pos.last_price ? pos.last_price.toFixed(4) : (pos.entry_price||0).toFixed(4)}</td>
-                        <td class="${pnlCls}"><strong>$${unPnl.toFixed(4)}</strong></td>
-                        <td><span class="badge mode-auto">${pos.direction || 'LONG'}</span></td>
+                        <td class="${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
+                        <td><span class="badge mode-auto" style="margin-bottom:4px; display:inline-block;">${targetText}</span><br><small>${bucketText.replace(/_/g, ' ')}</small></td>
                         <td>
                             <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white; margin-right: 5px;">Buka Market</a>
                             <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679; border: none;">Close API</button>
