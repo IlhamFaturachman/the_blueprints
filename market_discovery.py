@@ -421,11 +421,13 @@ def parse_market(
         if hours_until_resolve < min_hours:
             return _with_reason(None, "daily_min_hours_not_met")
 
+    market_slug = raw.get("slug") or raw.get("event_slug") or ""
     return _with_reason({
         "city": city,
         "date": date_str,
         "end_date": end_dt.isoformat(),
         "market_question": question,
+        "market_slug": market_slug,
         "threshold": threshold,
         "unit": unit,
         "direction": direction,
@@ -985,6 +987,7 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "unit": opportunity["unit"],
         "date": opportunity["date"],
         "end_date": opportunity.get("end_date"),
+        "market_slug": opportunity.get("market_slug", ""),
         "entry_price": entry_price,
         "quantity": quantity,
         "cost_basis": cost_basis,

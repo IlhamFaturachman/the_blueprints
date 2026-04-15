@@ -178,6 +178,7 @@ async function fetchData() {
                 const pos = d_open[k];
                 const unPnl = ((pos.last_price || pos.entry_price || 0) * (pos.quantity || 0)) - (pos.cost_basis || 0);
                 const pnlCls = unPnl >= 0 ? "good" : "bad";
+                const marketUrl = pos.market_slug ? `https://polymarket.com/event/${pos.market_slug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
                 tPos.innerHTML += `
                     <tr>
                         <td><strong>${pos.city || 'Token ' + pos.token_id.substring(0,8)}</strong></td>
@@ -187,7 +188,7 @@ async function fetchData() {
                         <td class="${pnlCls}"><strong>$${unPnl.toFixed(4)}</strong></td>
                         <td><span class="badge mode-auto">${pos.direction || 'LONG'}</span></td>
                         <td>
-                            <a href="https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white; margin-right: 5px;">Buka Market</a>
+                            <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white; margin-right: 5px;">Buka Market</a>
                             <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679; border: none;">Close API</button>
                         </td>
                     </tr>
