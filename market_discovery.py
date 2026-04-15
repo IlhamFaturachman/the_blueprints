@@ -2392,6 +2392,12 @@ def _run_main_discovery_mode(inspect_mode, aggressive_mode, diagnose_mode):
 
 def main():
     """Run discovery mode or paper-trading mode based on CLI flags."""
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
     modes = _parse_cli_mode_flags(sys.argv)
 
     if modes["paper_report_mode"]:
