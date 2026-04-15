@@ -17,7 +17,7 @@ def _env_bool(name, default=False):
 
 
 GAMMA_API = "https://gamma-api.polymarket.com/markets"
-GAMMA_EVENTS_API = "https://gamma-api.polymarket.com/events"
+GAMMA_EVENTS_API = "https://gamma-api.polymarket.com/events/pagination"
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 LOG_FILE = "logs/unmatched_markets.log"
 
@@ -235,3 +235,11 @@ WS_PRICE_WATCHER_URL = os.getenv(
 )
 WS_RECONNECT_DELAY_SECONDS = max(1, int(os.getenv("WS_RECONNECT_DELAY_SECONDS", "5")))
 WS_PING_INTERVAL_SECONDS = max(5, int(os.getenv("WS_PING_INTERVAL_SECONDS", "10")))
+
+WS_BROADCAST_HOST = os.getenv("WS_BROADCAST_HOST", "127.0.0.1")
+WS_BROADCAST_PORT = max(1, int(os.getenv("WS_BROADCAST_PORT", "8081")))
+WS_BROADCAST_MAX_CLIENTS = max(1, int(os.getenv("WS_BROADCAST_MAX_CLIENTS", "10")))
+WS_BROADCAST_PING_INTERVAL_SECONDS = max(
+    5,
+    int(os.getenv("WS_BROADCAST_PING_INTERVAL_SECONDS", "20")),
+)

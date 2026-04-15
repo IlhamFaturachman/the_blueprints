@@ -196,7 +196,8 @@ class PriceWatcher:
         elif event_type == "price_change":
             for change in msg.get("price_changes", []):
                 token_id = change.get("asset_id", "")
-                raw_bid = change.get("best_bid") or change.get("price")
+                raw_best_bid = change.get("best_bid")
+                raw_bid = raw_best_bid if raw_best_bid is not None else change.get("price")
                 if token_id and raw_bid is not None:
                     try:
                         self._on_price_update(token_id, float(raw_bid))
@@ -235,7 +236,7 @@ class PriceWatcher:
             logger.warning("[WS] Failed to send unsubscribe: %s", exc)
 
 
-def make_ws_exit_callback(state_path: str, lock: "threading.Lock"):
+def make_ws_exit_callback(state_path: str, lock: "threading.Lock", broadcaster=None):
     """
     Build a thread-safe on_price_update callback that checks stop-loss and
     take-profit for the matching open position and closes it if triggered.
@@ -299,6 +300,18 @@ def make_ws_exit_callback(state_path: str, lock: "threading.Lock"):
                         f"{reason} | price={bid_price:.4f} | "
                         f"entry={pos.get('entry_price',0):.4f}"
                     )
+
+                    if broadcaster is not None:
+                        try:
+                            broadcaster.broadcast_closed(
+                                token_id=token_id,
+                                city=pos.get("city", ""),
+                                reason=reason,
+                                exit_price=bid_price,
+                            )
+                        except Exception:
+                            # WS push is best-effort; trading state must remain authoritative.
+                            pass
                     break
 
                 if changed:

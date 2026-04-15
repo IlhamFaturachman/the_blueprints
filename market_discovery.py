@@ -2276,6 +2276,7 @@ def _append_runtime_error_log(mode, error, consecutive_errors=None, retry_in_sec
 def _run_main_paper_loop_mode(aggressive_mode):
     """Handle paper loop mode in main(). Starts WS price watcher if enabled."""
     import threading
+    from market_discovery_internal.ws_broadcaster import WsBroadcaster
     from market_discovery_internal.ws_price_watcher import (
         PriceWatcher,
         make_ws_exit_callback,
@@ -2285,14 +2286,36 @@ def _run_main_paper_loop_mode(aggressive_mode):
     state_lock = threading.Lock()
 
     watcher = None
+    broadcaster = None
     if WS_PRICE_WATCHER_ENABLED:
+        broadcaster = WsBroadcaster(
+            host=WS_BROADCAST_HOST,
+            port=WS_BROADCAST_PORT,
+            max_clients=WS_BROADCAST_MAX_CLIENTS,
+            ping_interval_seconds=WS_BROADCAST_PING_INTERVAL_SECONDS,
+        )
+        if broadcaster.start():
+            print(f"[WS-BROADCAST] Browser feed enabled on ws://{WS_BROADCAST_HOST}:{WS_BROADCAST_PORT}")
+        else:
+            print("[WS-BROADCAST] Browser feed unavailable (continuing without browser push)")
+
         exit_callback = make_ws_exit_callback(
             state_path=PAPER_STATE_FILE,
             lock=state_lock,
+            broadcaster=broadcaster,
         )
+
+        def fanout_callback(token_id, bid_price):
+            exit_callback(token_id, bid_price)
+            if broadcaster is not None:
+                try:
+                    broadcaster.broadcast_price(token_id=token_id, bid_price=bid_price)
+                except Exception:
+                    pass
+
         watcher = PriceWatcher(
             url=WS_PRICE_WATCHER_URL,
-            on_price_update=exit_callback,
+            on_price_update=fanout_callback,
             reconnect_delay=WS_RECONNECT_DELAY_SECONDS,
             ping_interval=WS_PING_INTERVAL_SECONDS,
         )
@@ -2357,6 +2380,8 @@ def _run_main_paper_loop_mode(aggressive_mode):
         print("\nPaper loop stopped.")
         if watcher:
             watcher.stop()
+        if broadcaster:
+            broadcaster.stop()
 
 
 def _run_main_paper_single_mode(aggressive_mode):

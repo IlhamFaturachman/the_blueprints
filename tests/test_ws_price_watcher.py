@@ -166,6 +166,60 @@ def test_update_subscriptions_no_message_when_no_change():
     assert sent == []
 
 
+def test_price_change_uses_zero_best_bid_without_fallback():
+    """best_bid='0' is a valid value and should be preserved (not fallback)."""
+    received = []
+    msg = json.dumps({
+        "event_type": "price_change",
+        "price_changes": [{"asset_id": "tokZ", "price": "0.30", "best_bid": "0"}],
+    })
+    watcher = PriceWatcher(url="wss://fake", on_price_update=lambda tid, price: received.append((tid, price)))
+    watcher._handle_message(msg)
+    assert received == [("tokZ", 0.0)]
+
+
+def test_on_open_uses_initial_market_subscription_format():
+    """Initial connect must use type='market' payload, not operation='subscribe'."""
+    sent = []
+    ws_mock = MagicMock()
+    ws_mock.send = lambda msg: sent.append(json.loads(msg))
+
+    watcher = PriceWatcher(url="wss://fake", on_price_update=lambda tid, price: None)
+    watcher._desired = {"tok1", "tok2"}
+
+    watcher._on_open(ws_mock)
+
+    assert len(sent) == 1
+    payload = sent[0]
+    assert payload.get("type") == "market"
+    assert payload.get("operation") is None
+    assert payload.get("custom_feature_enabled") is True
+    assert set(payload.get("assets_ids", [])) == {"tok1", "tok2"}
+
+
+def test_on_close_clears_subscribed_state():
+    watcher = PriceWatcher(url="wss://fake", on_price_update=lambda tid, price: None)
+    watcher._subscribed = {"tok1"}
+    watcher._on_close(None, 1000, "normal")
+    assert watcher._subscribed == set()
+
+
+def test_update_subscriptions_before_connect_queue_then_on_open_resubscribes():
+    sent = []
+    ws_mock = MagicMock()
+    ws_mock.send = lambda msg: sent.append(json.loads(msg))
+
+    watcher = PriceWatcher(url="wss://fake", on_price_update=lambda tid, price: None)
+    watcher.update_subscriptions({"tokQueued"})
+    assert watcher._desired == {"tokQueued"}
+    assert sent == []
+
+    watcher._on_open(ws_mock)
+
+    assert len(sent) == 1
+    assert set(sent[0]["assets_ids"]) == {"tokQueued"}
+
+
 # ---------------------------------------------------------------------------
 # _ws_on_price_update callback (integration with state)
 # ---------------------------------------------------------------------------

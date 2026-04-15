@@ -40,6 +40,26 @@
         .pagination { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 16px 20px 20px; }
         .pagination button:disabled { opacity: 0.45; cursor: not-allowed; }
         .pagination-info { color: #aaa; font-size: 0.95rem; }
+        .ws-indicator { margin-right: 12px; font-size: 0.95rem; color: #ccc; display: inline-flex; align-items: center; gap: 6px; }
+        .ws-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .ws-live { background: #4caf50; }
+        .ws-reconnecting { background: #ffc107; }
+        .ws-disconnected { background: #cf6679; }
+        .flash-up { animation: flashUp 1s ease-out; }
+        .flash-down { animation: flashDown 1s ease-out; }
+        .flash-close { animation: flashClose 1.2s ease-out; }
+        @keyframes flashUp {
+            from { background-color: rgba(76, 175, 80, 0.45); }
+            to { background-color: transparent; }
+        }
+        @keyframes flashDown {
+            from { background-color: rgba(207, 102, 121, 0.45); }
+            to { background-color: transparent; }
+        }
+        @keyframes flashClose {
+            from { background-color: rgba(3, 218, 198, 0.35); }
+            to { background-color: transparent; }
+        }
         
         /* Loading skeleton effect */
         .skeleton { background: #333; height: 30px; border-radius: 4px; animation: pulse 1.5s infinite; }
@@ -54,7 +74,10 @@
             <h1>📊 Bot Local UI </h1>
             <p>Memantau aktivitas bot dari data JSON. Disiapkan untuk integrasi Live Trade.</p>
         </div>
-        <button class="refresh-btn" onclick="fetchData()">Refresh Data</button>
+        <div style="display:flex; align-items:center;">
+            <div id="wsStatus" class="ws-indicator"><span class="ws-dot ws-reconnecting"></span>Reconnecting...</div>
+            <button class="refresh-btn" onclick="fetchData()">Refresh Data</button>
+        </div>
     </header>
 
     <div class="grid" id="statsGrid">
@@ -168,6 +191,156 @@
 const CYCLE_PAGE_SIZE = 10;
 let cyclePage = 0;
 let cycleRowsCache = [];
+let latestPositions = [];
+let wsSocket = null;
+let wsReconnectAttempts = 0;
+let wsReconnectTimer = null;
+
+function getWsUrl() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname || 'localhost';
+    const port = window.location.port || '8080';
+    return `${protocol}//${host}:${port}/ws`;
+}
+
+function setWsStatus(state, text) {
+    const statusEl = document.getElementById('wsStatus');
+    if (!statusEl) {
+        return;
+    }
+    let cls = 'ws-disconnected';
+    if (state === 'live') cls = 'ws-live';
+    if (state === 'reconnecting') cls = 'ws-reconnecting';
+    statusEl.innerHTML = `<span class="ws-dot ${cls}"></span>${text}`;
+}
+
+function scheduleWsReconnect() {
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+    }
+
+    wsReconnectAttempts += 1;
+    const delayMs = Math.min(30000, 3000 * (2 ** Math.min(wsReconnectAttempts - 1, 4)));
+    setWsStatus('reconnecting', `Reconnecting... (${Math.round(delayMs / 1000)}s)`);
+
+    wsReconnectTimer = setTimeout(() => {
+        connectBrowserWs();
+    }, delayMs);
+}
+
+function updatePositionLiveByToken(tokenId, bidPrice) {
+    const row = document.querySelector(`#positionsTable tr[data-token-id="${tokenId}"]`);
+    if (!row) {
+        return;
+    }
+
+    const idxRaw = row.getAttribute('data-index');
+    const idx = Number.parseInt(idxRaw || '', 10);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= latestPositions.length) {
+        return;
+    }
+
+    const pos = latestPositions[idx];
+    const prevPrice = Number(pos.last_price || pos.entry_price || 0);
+    pos.last_price = Number(bidPrice);
+
+    const bidCell = row.querySelector('.js-bid-price');
+    const pnlCell = row.querySelector('.js-upnl');
+    if (!bidCell || !pnlCell) {
+        return;
+    }
+
+    bidCell.textContent = `$${Number(bidPrice).toFixed(4)}`;
+
+    const unPnl = (Number(pos.last_price || 0) * Number(pos.quantity || 0)) - Number(pos.cost_basis || 0);
+    const pnlPct = Number(pos.cost_basis || 0) ? ((unPnl / Number(pos.cost_basis || 0)) * 100) : 0;
+    pnlCell.className = `js-upnl ${unPnl >= 0 ? 'good' : 'bad'}`;
+    pnlCell.innerHTML = `<strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong>`;
+
+    const openPnlEl = document.getElementById('valOpenPnl');
+    if (openPnlEl) {
+        let openPnlTotal = 0;
+        latestPositions.forEach(p => {
+            const upnl = (Number(p.last_price || p.entry_price || 0) * Number(p.quantity || 0)) - Number(p.cost_basis || 0);
+            openPnlTotal += upnl;
+        });
+        openPnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
+        openPnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
+    }
+
+    const flashClass = Number(bidPrice) >= prevPrice ? 'flash-up' : 'flash-down';
+    bidCell.classList.remove('flash-up', 'flash-down');
+    void bidCell.offsetWidth;
+    bidCell.classList.add(flashClass);
+}
+
+function handlePositionClosed(msg) {
+    const tokenId = String(msg.token_id || '');
+    if (!tokenId) {
+        return;
+    }
+    const row = document.querySelector(`#positionsTable tr[data-token-id="${tokenId}"]`);
+    if (row) {
+        row.classList.add('flash-close');
+    }
+    setTimeout(() => {
+        fetchData();
+    }, 2000);
+}
+
+function handleWsMessage(raw) {
+    let msg;
+    try {
+        msg = JSON.parse(raw);
+    } catch (_e) {
+        return;
+    }
+
+    if (msg.type === 'price_update') {
+        updatePositionLiveByToken(String(msg.token_id || ''), Number(msg.bid_price || 0));
+        return;
+    }
+
+    if (msg.type === 'position_closed') {
+        handlePositionClosed(msg);
+        return;
+    }
+}
+
+function connectBrowserWs() {
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
+
+    const wsUrl = getWsUrl();
+
+    try {
+        wsSocket = new WebSocket(wsUrl);
+    } catch (_err) {
+        setWsStatus('reconnecting', 'Reconnecting...');
+        scheduleWsReconnect();
+        return;
+    }
+
+    wsSocket.onopen = () => {
+        wsReconnectAttempts = 0;
+        setWsStatus('live', 'Live');
+    };
+
+    wsSocket.onmessage = (event) => {
+        handleWsMessage(event.data);
+    };
+
+    wsSocket.onerror = () => {
+        setWsStatus('reconnecting', 'Reconnecting...');
+    };
+
+    wsSocket.onclose = () => {
+        setWsStatus('reconnecting', 'Reconnecting...');
+        scheduleWsReconnect();
+    };
+}
 
 function updateRealtimeClocks() {
     const now = new Date();
@@ -273,6 +446,7 @@ async function fetchData() {
         const d_closed = data.history || [];
         const d_cycle = data.cycle_journal || [];
         const last_cycle = d_cycle.length > 0 ? d_cycle[d_cycle.length - 1] : null;
+        latestPositions = d_open.map(p => ({ ...p }));
         
         const openKeys = Object.keys(d_open); // using as array indices
         const closedKeys = Object.keys(d_closed);
@@ -366,16 +540,17 @@ async function fetchData() {
                 let rawSlug = pos.market_slug || "";
                 let cleanSlug = rawSlug.replace(/-[0-9]+[cf]?(orhigher|orbelow)?$/i, '');
                 const marketUrl = cleanSlug ? `https://polymarket.com/event/${cleanSlug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
+                const tokenId = String(pos.token_id || '');
                 
                 tPos.innerHTML += `
-                    <tr>
+                    <tr data-token-id="${tokenId}" data-index="${k}">
                         <td>
                             <strong>${pos.city ? pos.city.toUpperCase() : 'Token ' + pos.token_id.substring(0,8)}</strong>
                         </td>
                         <td>$${(pos.entry_price || 0).toFixed(4)}</td>
                         <td>$${(pos.cost_basis || 0).toFixed(2)}</td>
-                        <td>$${pos.last_price ? pos.last_price.toFixed(4) : (pos.entry_price||0).toFixed(4)}</td>
-                        <td class="${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
+                        <td class="js-bid-price">$${pos.last_price ? pos.last_price.toFixed(4) : (pos.entry_price||0).toFixed(4)}</td>
+                        <td class="js-upnl ${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
                         <td><span class="badge mode-auto" style="margin-bottom:4px; display:inline-block;">${targetText}</span><br><small style="color: #bbb">${bucketText}</small></td>
                         <td>
                             <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white; margin-right: 5px;">Buka Market</a>
@@ -433,6 +608,7 @@ async function fetchData() {
     }
 }
 fetchData();
+connectBrowserWs();
 updateRealtimeClocks();
 setInterval(fetchData, 10000);
 setInterval(updateRealtimeClocks, 1000);
