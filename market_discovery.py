@@ -2329,6 +2329,24 @@ def _run_main_paper_loop_mode(aggressive_mode):
         with state_lock:
             return run_paper_trading_cycle(force_aggressive_scan=force_aggressive_scan)
 
+    def _sync_subscriptions_from_state():
+        """Load current state and seed watcher subscriptions immediately on startup."""
+        if watcher is None:
+            return
+        try:
+            with state_lock:
+                state = load_paper_state(path=PAPER_STATE_FILE)
+                open_positions = state.get("positions", [])
+            token_ids = {
+                pos.get("token_id")
+                for pos in open_positions
+                if pos.get("status") == "open" and pos.get("token_id")
+            }
+            watcher.update_subscriptions(token_ids)
+            print(f"[WS] Initial subscription sync: {len(token_ids)} token(s)")
+        except Exception as exc:
+            print(f"[WS] Initial subscription sync failed: {exc}")
+
     def _after_cycle(cycle):
         """Update WS subscriptions after cycle so new positions are watched."""
         if watcher is None:
@@ -2340,6 +2358,8 @@ def _run_main_paper_loop_mode(aggressive_mode):
             if pos.get("status") == "open" and pos.get("token_id")
         }
         watcher.update_subscriptions(token_ids)
+
+    _sync_subscriptions_from_state()
 
     print(f"Starting paper loop every {PAPER_LOOP_INTERVAL_SECONDS}s. Press Ctrl+C to stop.")
 
