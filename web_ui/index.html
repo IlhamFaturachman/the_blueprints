@@ -58,7 +58,7 @@
         <div class="card">
             <h3>💳 Live Wallet Balance</h3>
             <div class="value" id="valWallet"><div class="skeleton"></div></div>
-            <div class="small-value" id="valWalletMode">Mode: Paper / Demo ($100 Init)</div>
+            <div class="small-value" id="valWalletMode">Mode: Paper / Demo ($5 Init)</div>
         </div>
         <div class="card">
             <h3>📈 Total Open PnL</h3>
@@ -150,9 +150,13 @@ async function fetchData() {
         pnlEl.className = total_pnl >= 0 ? "value good" : "value bad";
 
         // Saldo Live Trade (Simulasi)
-        let initial_balance = 100.0; 
+        
+        let initial_balance = 5.0; 
         let current_balance = initial_balance + total_pnl + openPnlTotal; // Saldo bersih termasuk open pnl
+        let sim_stake = current_balance >= 10.0 ? Math.floor(current_balance / 5.0) : 1.0;
         document.getElementById('valWallet').innerHTML = `$${current_balance.toFixed(4)}`;
+        document.getElementById('valWalletMode').innerHTML = `Mode: Paper | Stake: $${sim_stake}/trade`;
+
 
         if(last_cycle) {
             document.getElementById('valLastRun').innerHTML = new Date(last_cycle.timestamp).toLocaleString();

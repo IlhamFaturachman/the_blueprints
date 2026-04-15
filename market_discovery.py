@@ -439,42 +439,58 @@ def parse_market(
 # Layer 3: Fetch Weather Forecast from Open-Meteo
 # ---------------------------------------------------------------------------
 
+
+class ForecastTemp(float):
+    def __new__(cls, value, source):
+        obj = super().__new__(cls, value)
+        obj.source = source
+        return obj
+
 def fetch_forecast(city, date):
-    """
-    Fetch the daily max temperature forecast for a city on a specific date.
-
-    Uses Open-Meteo free API — no authentication required.
-    Fetches 3-day forecast in one request, returns temp for requested date.
-
-    Returns temperature in °C (float), or None if:
-    - City not in TARGET_CITIES
-    - Requested date not in forecast window
-    - Network failure after 3 retries
-    """
+    """Fetch the daily max temperature forecast from Open-Meteo and wttr.in."""
     coords = TARGET_CITIES.get(city)
     if not coords:
         return None
 
-    params = {
-        "latitude": coords["lat"],
-        "longitude": coords["lon"],
-        "daily": "temperature_2m_max",
-        "timezone": "auto",
-        "forecast_days": 3,
-    }
-
-    try:
-        data = fetch_with_retry(OPEN_METEO_API, params=params)
-    except Exception:
+    def _fetch_open_meteo():
+        params = {"latitude": coords["lat"], "longitude": coords["lon"], "daily": "temperature_2m_max", "timezone": "auto", "forecast_days": 3}
+        try:
+            data = fetch_with_retry(OPEN_METEO_API, params=params)
+            daily = data.get("daily", {})
+            times = daily.get("time", [])
+            temps = daily.get("temperature_2m_max", [])
+            if date in times:
+                return temps[times.index(date)]
+        except Exception:
+            pass
         return None
 
-    daily = data.get("daily", {})
-    times = daily.get("time", [])
-    temps = daily.get("temperature_2m_max", [])
+    def _fetch_wttr():
+        try:
+            import urllib.parse
+            url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
+            data = fetch_with_retry(url)
+            for w in data.get("weather", []):
+                if w.get("date") == date:
+                    return float(w.get("maxtempC", 0))
+        except Exception:
+            pass
+        return None
 
-    if date in times:
-        return temps[times.index(date)]
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f_om = executor.submit(_fetch_open_meteo)
+        f_wt = executor.submit(_fetch_wttr)
+        t_om = f_om.result()
+        t_wt = f_wt.result()
 
+    if t_om is not None and t_wt is not None:
+        avg = round((t_om + t_wt) / 2.0, 1)
+        return ForecastTemp(avg, "dual-source")
+    elif t_om is not None:
+        return ForecastTemp(t_om, "open-meteo")
+    elif t_wt is not None:
+        return ForecastTemp(t_wt, "wttr.in")
     return None
 
 
@@ -493,6 +509,7 @@ def _hours_until_target_date(date_str, now_utc=None):
 
 
 def build_weather_evidence(city, date, forecast_temp_c, source="open-meteo", now_utc=None, fetched_at=None):
+    source = getattr(forecast_temp_c, 'source', source)
     """Build normalized weather evidence contract for entry/hold decisions."""
     now_dt = now_utc or datetime.now(timezone.utc)
     fetched_dt = fetched_at or now_dt
@@ -517,7 +534,12 @@ def build_weather_evidence(city, date, forecast_temp_c, source="open-meteo", now
     else:
         horizon_component = 0.5
 
-    source_component = 0.85 if source == "open-meteo" else 0.70
+    if source == "dual-source":
+        source_component = 0.95
+    elif source == "open-meteo":
+        source_component = 0.85
+    else:
+        source_component = 0.70
     data_component = 1.0 if forecast_temp_c is not None else 0.0
     quality_score = round((0.50 * data_component) + (0.30 * horizon_component) + (0.20 * source_component), 4)
 
@@ -1713,7 +1735,21 @@ def run_paper_trading_cycle(
     force_aggressive_scan=False,
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
+    try:
+        state = load_paper_state(state_path)
+        realized_pnl = float(state.get("realized_pnl", 0.0))
+        # Initial fund = max_positions (5) * initial_stake (1) = 5
+        # If the user started with different config, we assume 5.0 base.
+        import os
+        base_wallet = float(os.getenv("PAPER_MAX_OPEN_POSITIONS", 5)) * 1.0
+        current_wallet = base_wallet + realized_pnl
+        if current_wallet >= 10.0:
+            stake_usd = float(int(current_wallet / 5.0))
+    except Exception:
+        pass
+
     return _run_paper_trading_cycle_impl(
+
         min_price=min_price,
         max_price=max_price,
         stake_usd=stake_usd,
