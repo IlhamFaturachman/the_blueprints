@@ -171,7 +171,7 @@ let cycleRowsCache = [];
 
 function updateRealtimeClocks() {
     const now = new Date();
-    const utcFmt = new Intl.DateTimeFormat('en-GB', {
+    const utcFmt = new Intl.DateTimeFormat('en-US', {
         timeZone: 'UTC',
         year: 'numeric',
         month: '2-digit',
@@ -179,9 +179,9 @@ function updateRealtimeClocks() {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
-        hour12: false,
+        hour12: true,
     });
-    const etFmt = new Intl.DateTimeFormat('en-GB', {
+    const etFmt = new Intl.DateTimeFormat('en-US', {
         timeZone: 'America/New_York',
         year: 'numeric',
         month: '2-digit',
@@ -189,7 +189,7 @@ function updateRealtimeClocks() {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
-        hour12: false,
+        hour12: true,
     });
 
     const utcText = utcFmt.format(now).replace(',', '');
@@ -202,8 +202,8 @@ function updateRealtimeClocks() {
 
     const utcDateEl = document.getElementById('valUtcDate');
     const etDateEl = document.getElementById('valEtDate');
-    if (utcDateEl) utcDateEl.innerHTML = 'Timezone: UTC';
-    if (etDateEl) etDateEl.innerHTML = 'Timezone: America/New_York';
+    if (utcDateEl) utcDateEl.innerHTML = 'Timezone: UTC (GMT+00:00) | 12-hour clock';
+    if (etDateEl) etDateEl.innerHTML = 'Timezone: ET Washington (America/New_York, GMT-04:00 / DST) | 12-hour clock';
 }
 
 function renderCycleTable() {
