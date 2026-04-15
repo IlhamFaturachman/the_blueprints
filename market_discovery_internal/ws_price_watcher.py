@@ -11,8 +11,10 @@ hold-to-resolve logic stays in the polling loop.
 
 import json
 import logging
+import socket
 import threading
 import time
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -107,31 +109,50 @@ class PriceWatcher:
             logger.error("[WS] websocket-client not installed. Run: pip install websocket-client==1.8.0")
             return
 
-        while not self._stop_event.is_set():
-            try:
-                logger.info("[WS] Connecting to %s", self._url)
-                ws = websocket.WebSocketApp(
-                    self._url,
-                    on_open=self._on_open,
-                    on_message=self._on_message_raw,
-                    on_error=self._on_error,
-                    on_close=self._on_close,
-                )
-                self._ws = ws
-                ws.run_forever(
-                    ping_interval=self._ping_interval,
-                    ping_timeout=max(1, self._ping_interval // 2),
-                )
-            except Exception as exc:
-                logger.warning("[WS] Connection error: %s", exc)
+        # Some hosts/VPS networks resolve the Polymarket WS endpoint to IPv6 first,
+        # which can hang during the opening handshake. Prefer IPv4 for this host.
+        parsed_host = (urlparse(self._url).hostname or "").lower()
+        original_getaddrinfo = socket.getaddrinfo
 
-            if self._stop_event.is_set():
-                break
+        def _prefer_ipv4_for_target(host, port, family=0, type=0, proto=0, flags=0):
+            host_text = str(host).lower() if host is not None else ""
+            if parsed_host and host_text == parsed_host:
+                try:
+                    return original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+                except OSError:
+                    # Fall back to system resolver behavior when IPv4 lookup fails.
+                    pass
+            return original_getaddrinfo(host, port, family, type, proto, flags)
 
-            logger.info("[WS] Reconnecting in %ds...", self._reconnect_delay)
-            self._stop_event.wait(timeout=self._reconnect_delay)
+        socket.getaddrinfo = _prefer_ipv4_for_target
 
-        self._ws = None
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    logger.info("[WS] Connecting to %s", self._url)
+                    ws = websocket.WebSocketApp(
+                        self._url,
+                        on_open=self._on_open,
+                        on_message=self._on_message_raw,
+                        on_error=self._on_error,
+                        on_close=self._on_close,
+                    )
+                    self._ws = ws
+                    ws.run_forever(
+                        ping_interval=self._ping_interval,
+                        ping_timeout=max(1, self._ping_interval // 2),
+                    )
+                except Exception as exc:
+                    logger.warning("[WS] Connection error: %s", exc)
+
+                if self._stop_event.is_set():
+                    break
+
+                logger.info("[WS] Reconnecting in %ds...", self._reconnect_delay)
+                self._stop_event.wait(timeout=self._reconnect_delay)
+        finally:
+            socket.getaddrinfo = original_getaddrinfo
+            self._ws = None
 
     # ------------------------------------------------------------------
     # Internal — WS callbacks
