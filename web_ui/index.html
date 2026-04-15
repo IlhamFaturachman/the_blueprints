@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot Paper Trading Dashboard</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --surface: #1e1e1e;
+            --primary: #bb86fc;
+            --secondary: #03dac6;
+            --text: #ffffff;
+            --error: #cf6679;
+            --success: #4caf50;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+        h1, h2, h3 { color: var(--primary); }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+        .card { background: var(--surface); padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .value { font-size: 2rem; font-weight: bold; margin: 10px 0; }
+        .small-value { font-size: 1rem; color: #aaa; margin-top: 5px; }
+        .good { color: var(--success); }
+        .bad { color: var(--error); }
+        .neutral { color: var(--secondary); }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
+        th { background: #2c2c2c; color: #aaa; font-weight: 500; }
+        tr:hover { background: #2a2a2a; }
+        
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
+        .mode-auto { background: #bb86fc; color: #000; }
+        .mode-manual { background: #cf6679; color: #000; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 10px; margin-bottom: 20px;}
+        .refresh-btn { background: var(--primary); color: #000; border: none; padding: 10px 20px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: opacity 0.2s;}
+        .refresh-btn:hover { opacity: 0.8; }
+        
+        /* Loading skeleton effect */
+        .skeleton { background: #333; height: 30px; border-radius: 4px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div>
+            <h1>📊 Bot Local UI </h1>
+            <p>Memantau aktivitas bot dari data JSON. Disiapkan untuk integrasi Live Trade.</p>
+        </div>
+        <button class="refresh-btn" onclick="fetchData()">Refresh Data</button>
+    </header>
+
+    <div class="grid" id="statsGrid">
+        <div class="card">
+            <h3>💳 Live Wallet Balance</h3>
+            <div class="value" id="valWallet"><div class="skeleton"></div></div>
+            <div class="small-value" id="valWalletMode">Mode: Paper / Demo ($100 Init)</div>
+        </div>
+        <div class="card">
+            <h3>📈 Total Open PnL</h3>
+            <div class="value" id="valOpenPnl"><div class="skeleton"></div></div>
+            <div class="small-value" id="valOpenPositions">Active deals: -</div>
+        </div>
+        <div class="card">
+            <h3>💸 Total Realized PnL</h3>
+            <div class="value" id="valPnl"><div class="skeleton"></div></div>
+            <div class="small-value" id="valClosed">Closed deals: -</div>
+        </div>
+        <div class="card">
+            <h3>⏱️ Last Updated</h3>
+            <div class="value" id="valLastRun" style="font-size: 1.4rem; padding-top: 10px;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valCoverage">City coverage met: -</div>
+        </div>
+    </div>
+
+    <h2 style="margin-top: 40px;">🟢 Live Open Positions <span id="posCountBadge" class="badge mode-auto">0</span></h2>
+    <div class="card" style="padding: 0; overflow-x: auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Market</th>
+                    <th>Entry Price</th>
+                    <th>Amount ($)</th>
+                    <th>Current Price</th>
+                    <th>Unrealized PnL</th>
+                    <th>Direction</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody id="positionsTable">
+                <tr><td colspan="7" style="text-align:center;">Memuat data...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <h2 style="margin-top: 40px;">📓 Recent Discovery Cycles</h2>
+    <div class="card" style="padding: 0; overflow-x: auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp (Local)</th>
+                    <th>Bot Mode</th>
+                    <th>Opportunities Found</th>
+                    <th>Markets Opened</th>
+                    <th>Avg Discovery ms</th>
+                </tr>
+            </thead>
+            <tbody id="cycleTable">
+                <tr><td colspan="5" style="text-align:center;">Memuat data...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+async function fetchData() {
+    try {
+        const res = await fetch('../logs/paper_positions_5usd.json', { cache: "no-store" });
+        if (!res.ok) throw new Error("File JSON tidak ditemukan. Pastikan bot sudah run pertama.");
+        const data = await res.json();
+        
+        const d_open = data.open_positions || {};
+        const d_closed = data.closed_positions || {};
+        const d_cycle = data.cycle_journal || [];
+        const last_cycle = d_cycle.length > 0 ? d_cycle[d_cycle.length - 1] : null;
+        
+        const openKeys = Object.keys(d_open);
+        const closedKeys = Object.keys(d_closed);
+
+        document.getElementById('valOpenPositions').innerHTML = `Active deals: ${openKeys.length}`;
+        document.getElementById('valClosed').innerHTML = `Closed deals: ${closedKeys.length}`;
+        document.getElementById('posCountBadge').innerHTML = openKeys.length;
+        
+        let openPnlTotal = 0;
+        openKeys.forEach(k => { openPnlTotal += (d_open[k].unrealized_pnl_usd || 0.0); });
+        const elOpenPnl = document.getElementById('valOpenPnl');
+        elOpenPnl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
+        elOpenPnl.className = openPnlTotal >= 0 ? "value good" : "value bad";
+
+        let total_pnl = data.realized_pnl || 0.0;
+        if(last_cycle && typeof last_cycle.closed_realized_pnl_usd === 'number' && total_pnl === 0) {
+           total_pnl = last_cycle.closed_realized_pnl_usd;
+        }
+        const pnlEl = document.getElementById('valPnl');
+        pnlEl.innerHTML = `$${total_pnl.toFixed(4)}`;
+        pnlEl.className = total_pnl >= 0 ? "value good" : "value bad";
+
+        // Saldo Live Trade (Simulasi)
+        let initial_balance = 100.0; 
+        let current_balance = initial_balance + total_pnl + openPnlTotal; // Saldo bersih termasuk open pnl
+        document.getElementById('valWallet').innerHTML = `$${current_balance.toFixed(4)}`;
+
+        if(last_cycle) {
+            document.getElementById('valLastRun').innerHTML = new Date(last_cycle.timestamp).toLocaleString();
+            let cov = last_cycle.city_coverage || {};
+            document.getElementById('valCoverage').innerHTML = `Coverage met: ${cov.target_met ? 'Yes' : 'No'} (${cov.unique_opportunity_cities}/${cov.min_city_target})`;
+        } else {
+            document.getElementById('valLastRun').innerHTML = "Belum Berjalan";
+            document.getElementById('valCoverage').innerHTML = "-";
+        }
+
+        const tPos = document.getElementById('positionsTable');
+        tPos.innerHTML = "";
+        if(openKeys.length === 0) {
+            tPos.innerHTML = "<tr><td colspan='7' style='text-align:center;'>Tidak ada posisi terbuka.</td></tr>";
+        } else {
+            openKeys.forEach(k => {
+                const pos = d_open[k];
+                const unPnl = pos.unrealized_pnl_usd ? pos.unrealized_pnl_usd : 0.0;
+                const pnlCls = unPnl >= 0 ? "good" : "bad";
+                tPos.innerHTML += `
+                    <tr>
+                        <td><strong>${pos.market_id || k}</strong></td>
+                        <td>$${(pos.entry_price || 0).toFixed(4)}</td>
+                        <td>$${(pos.stake_usd || 0).toFixed(2)}</td>
+                        <td>$${pos.latest_price ? pos.latest_price.toFixed(4) : (pos.entry_price||0).toFixed(4)}</td>
+                        <td class="${pnlCls}"><strong>$${unPnl.toFixed(4)}</strong></td>
+                        <td><span class="badge mode-auto">${pos.direction || 'LONG'}</span></td>
+                        <td><button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679;">Close API</button></td>
+                    </tr>
+                `;
+            });
+        }
+
+        const tCyc = document.getElementById('cycleTable');
+        tCyc.innerHTML = "";
+        if(d_cycle.length === 0) {
+            tCyc.innerHTML = "<tr><td colspan='5' style='text-align:center;'>Log cycle kosong.</td></tr>";
+        } else {
+            let recentCycles = [...d_cycle].reverse().slice(0, 15);
+            recentCycles.forEach(c => {
+                let ms = c.performance?.total_ms ? c.performance.total_ms.toFixed(1) : 0;
+                let modeBg = c.aggressive_scan ? "mode-manual" : "mode-auto";
+                let modeText = c.aggressive_scan ? "Aggressive SCAN" : "Standard Loop";
+                tCyc.innerHTML += `
+                    <tr>
+                        <td>${new Date(c.timestamp).toLocaleString()}</td>
+                        <td><span class="badge ${modeBg}">${modeText}</span></td>
+                        <td><span class="good" style="font-weight:bold;">${c.counts?.opportunities || 0}</span> events</td>
+                        <td><span class="neutral" style="font-weight:bold;">${c.counts?.opened || 0}</span> trades</td>
+                        <td>${ms} ms</td>
+                    </tr>
+                `;
+            });
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+fetchData();
+setInterval(fetchData, 10000);
+</script>
+</body>
+</html>
