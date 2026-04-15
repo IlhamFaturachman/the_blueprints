@@ -1,233 +1,240 @@
-# Market Discovery Component — Design Spec
-**Date:** 2026-04-13
-**Status:** Implemented (V1)
-**Scope:** `market_discovery.py` only — no trading execution
+# Market Discovery and Hybrid Paper Trading - Design Spec
+**Date:** 2026-04-14
+**Status:** Implemented Baseline (Claude handoff)
+**Scope:** [market_discovery.py](market_discovery.py) with discovery, diagnostics, and paper hybrid loop
 
 ---
 
 ## Overview
 
-A Python script that finds mispriced weather markets on Polymarket by comparing
-market prices against real forecast data from Open-Meteo. Surfaces opportunities
-where the market underprices an event that the forecast considers likely.
+Current baseline combines two layers in one file:
+1. Discovery engine for temperature-weather markets (fetch -> parse -> forecast -> edge -> filter).
+2. Paper-trading engine with hybrid exits (+100% target, stop loss, confidence-gated hold).
 
-**Target edge:** YES price < 0.35 AND model probability >= 0.70 (produces edge >= 0.35)
-
-**Implementation status (2026-04-13):**
-- End-to-end CLI orchestrator implemented (`--inspect` + normal mode)
-- Parser supports structured fields first (`tags`, `slug`, `description`) with title fallback
-- Direction handling finalized as: `above` uses `>=`, `below` uses strict `<`
-- `exact` markets are parsed but skipped in V1 scoring pipeline
-- Automated validation: `pytest` passing (50 tests)
+Primary objective remains identifying underpriced YES contracts using forecast-based scoring.
 
 ---
 
-## Cities in Scope
+## Runtime Modes
 
-New York, Chicago, London, Tokyo, Hong Kong, Miami, Sydney, Toronto
+The CLI in [market_discovery.py](market_discovery.py) supports:
 
----
-
-## Architecture: Single File, Modular Per Layer
-
-One file (`market_discovery.py`) divided into clear layers. Each function has
-one responsibility and can be tested or debugged independently.
-
-```
-main()
-  │
-  ├─► [--inspect mode]
-  │     fetch_markets() → dump 3 raw JSON samples → exit
-  │
-  └─► [normal mode]
-        fetch_markets()              # Gamma API
-              ▼
-        parse_market(raw)            # extract structured fields from title
-              ▼
-        fetch_forecast(city, date)   # Open-Meteo daily max temp
-              ▼
-        calculate_edge(market, forecast)
-              ▼
-        filter_opportunities()       # yes_price < 0.35 AND model_prob >= 0.70
-              ▼
-        print_opportunities()
-        print_summary()
-```
-
-### AI-Ready Design
-`parse_market()` and `calculate_edge()` are the two functions designed to be
-swapped with an AI reasoning layer in V2. Their interfaces are kept clean and
-isolated for this reason. V1 uses rule-based implementations only.
+1. `--inspect`: print raw weather-event structure and exit.
+2. Default mode: run discovery and print opportunities plus run summary.
+3. `--diagnose`: print discovery drop-off diagnostics per stage.
+4. `--paper`: run one paper trading cycle.
+5. `--paper-loop`: run periodic paper trading loop.
+6. `--aggressive`: force aggressive discovery scan behavior for that run.
+7. Compatibility alias: `--aggresive` is accepted and treated as `--aggressive`.
+8. `--paper-report`: print persisted paper state, cycle journal, and rolling acceptance metrics.
+9. `--paper-report-json` (or `--paper-report --json`): print the same paper report payload in JSON for machine-readable monitoring.
 
 ---
 
-## Layer Specs
+## Discovery Architecture
 
-### 1. `fetch_markets(inspect=False) → list[dict]`
-- Endpoint: `https://gamma-api.polymarket.com/markets`
-- Params: `tag=weather`, `active=true`
-- Retry: 3x with exponential backoff (1s → 2s → 4s)
-- If all retries fail: exit with clear error message (no point continuing)
-- If `inspect=True`: print first 3 raw results as formatted JSON and exit
-- Returns: list of raw market dicts
+Pipeline executed by `run_discovery_cycle()`:
 
-### 2. `parse_market(raw: dict) → dict | None`
-- Input: raw market dict from Gamma API
-- First: check API-provided structured fields (tags, slug, description)
-- Fallback: regex parse from `question` / `title` field
-- Extract: `city`, `date`, `threshold`, `unit` (F or C), `direction` (above/below/exact)
-- Also extract: `yes_price` (from `outcomePrices`), `token_id`, `end_date`
-- If city not in target list: skip silently
-- If parse fails: log raw title to `logs/unmatched_markets.log`, return None
-- Returns: structured market dict or None
+1. `fetch_markets()`
+2. `parse_market()`
+3. optional forecast prefetch warm-up for larger city/date batches
+4. `fetch_forecast()`
+5. `calculate_edge()`
+6. `filter_opportunities()`
+7. `print_opportunities()` and `print_summary()`
 
-### 3. `fetch_forecast(city: str, date: str) → float | None`
-- API: Open-Meteo (`https://api.open-meteo.com/v1/forecast`)
-- Fetch: daily max temperature for next 3 days in one request
-- Return only the max temp for the specific `date` requested
-- Coordinates: hardcoded lat/lon per city (no geocoding dependency)
-- Retry: 3x per city with exponential backoff (1s → 2s → 4s)
-- If all retries fail: return None, log city to error summary
-- Returns: forecasted max temp as float (in °C by default)
+### 1) `fetch_markets(inspect=False, aggressive_scan=False)`
 
-### 4. `calculate_edge(market: dict, forecast_temp: float) → dict`
-- Convert units if needed (market in °F → convert forecast °C to °F)
-- V1 model:
-      - `above`: `model_prob = 1.0 if forecast >= threshold else 0.0`
-      - `below`: `model_prob = 1.0 if forecast < threshold else 0.0`
-      - `exact`: unsupported in V1 scorer (market is skipped by orchestrator)
-- Edge: `edge = model_prob - yes_price`
-- Returns: market dict enriched with `model_prob`, `edge`, `hours_until_resolve`,
-      `forecast_temp_c`, and `forecast_temp_converted`
+Current data source:
+- Endpoint: `https://gamma-api.polymarket.com/events/pagination`
+- Params include: `tag_slug=weather`, `active=true`, `closed=false`, `archived=false`
 
-### 5. `filter_opportunities(markets: list[dict]) → list[dict]`
-- Keep only: `yes_price < 0.35 AND model_prob >= 0.70`
-- (This naturally produces edge > 0.35, exceeding the 0.30 minimum)
-- Sort by edge descending (highest edge first)
+Behavior:
+1. Flattens event payloads into market list.
+2. Applies temperature candidate heuristic.
+3. Scans additional pages using offset when needed.
+4. Returns all scanned markets as fallback when no direct candidate passes.
 
-### 6. `print_opportunities(opportunities: list[dict])`
-- Clean readable output per opportunity:
-  ```
-  [1] New York — Will max temp exceed 80°F on Apr 15?
-      YES price : 0.28
-      Model prob: 0.85
-      Edge      : +0.57
-      Token ID  : 0xabc123...
-      Resolves  : 18h
-  ```
+### Daily Resolve Mode (UTC)
 
-### 7. `print_summary()`
-- Print at end of every run:
-  ```
-  === RUN SUMMARY ===
-  Cities fetched : 7/8  (Tokyo: timeout after 3 retries)
-      Markets parsed : 43/51 (8 skipped)
-      Exact skipped  : 2
-  Opportunities  : 3
-  ==================
-  ```
+When `DAILY_RESOLVE_ONLY=true`, discovery keeps only temperature markets that:
+1. Resolve on the same UTC calendar date as the current run time.
+2. Have not resolved yet (`hours_until_resolve > 0`).
 
----
+`DAILY_MIN_HOURS_TO_RESOLVE` is optional tightening control; default is `0` (no extra minimum-hours gate).
 
-## Error Handling
+Default behavior remains unchanged because daily mode is opt-in (default `false`).
 
-| Failure Point         | Behavior                                              |
-|-----------------------|-------------------------------------------------------|
-| Gamma API down        | Retry 3x → exit with error (can't proceed without markets) |
-| Open-Meteo per city   | Retry 3x → skip city, log to summary                |
-| Title parse failure   | Skip market, append raw title to `logs/unmatched_markets.log` |
-| Unknown city in title | Skip silently (not in target list)                   |
-| Direction `exact`     | Parse successfully, skip from V1 edge scoring        |
-| Unit conversion error | Skip market, log warning                             |
+### 2) `parse_market(raw)`
+
+Parses market dict into a structured contract:
+- `city`, `date`, `end_date`
+- `threshold`, `unit`, `direction`
+- `yes_price`, `token_id`, `hours_until_resolve`
+
+Notes:
+1. Uses combined text from question/title/slug/description/tags.
+2. Direction now supports `above`, `below`, and `exact` with dedicated keyword sets.
+3. Token extraction uses `clobTokenIds` first-entry as YES token.
+4. Markets outside forecast window are skipped.
+
+### 3) `fetch_forecast(city, date)`
+
+Uses Open-Meteo daily max temperature forecast for configured cities.
+
+For larger parsed batches, discovery now does guarded parallel prefetch to warm cache:
+1. Prefetch is only attempted when unique city/date keys pass configured minimum threshold.
+2. Prefetch stores successful lookups only.
+3. Failures remain uncached so retry behavior on later markets is preserved.
+
+### 4) `calculate_edge(market, forecast_temp)`
+
+Rule-based V1 scoring:
+1. Converts units when market is in F.
+2. `above`: pass when `forecast >= threshold`.
+3. `below`: pass when `forecast < threshold`.
+4. `exact`: intentionally skipped by discovery orchestrator.
+
+Output includes `model_prob`, `edge`, and forecast trace values.
+
+### 5) `filter_opportunities(markets, max_yes_price, min_model_prob, min_edge)`
+
+Runtime-tunable gate with defaults:
+1. `yes_price < 0.35`
+2. `model_prob >= 0.70`
+3. `edge >= 0.35`
 
 ---
 
-## File Structure
+## Hybrid Paper Trading Architecture
 
-```
-the_blueprints/
-├── market_discovery.py
-├── .env                        # API keys (future use)
-├── .env.example                # committed to git, no real values
-├── requirements.txt            # requests, python-dotenv
-└── logs/
-    └── unmatched_markets.log   # auto-created on first run
-```
+Main orchestration: `run_paper_trading_cycle()`
 
----
+Flow:
+1. Run discovery.
+2. Optionally prefetch open-position forecast keys when eligible batch size is large enough.
+3. Update existing open positions with latest market prices.
+3. Apply `evaluate_hybrid_exit()` decision.
+4. Open new positions within configured entry bounds.
+5. Persist state to JSON.
 
-## Configuration (via .env)
+### Entry Defaults
 
-```env
-# Reserved for future API keys (e.g. CLOB API for trading)
-# No keys required for market discovery
-POLYMARKET_API_KEY=
-```
+1. `PAPER_ENTRY_MIN_PRICE=0.20`
+2. `PAPER_ENTRY_MAX_PRICE=0.30`
+3. Position sizing via `PAPER_STAKE_USD`
 
----
+### City Diversification Entry Policy
 
-## City Coordinates (hardcoded)
+Entry selection now applies city-level concentration control before opening new positions:
 
-| City      | Lat     | Lon      |
-|-----------|---------|----------|
-| New York  | 40.7128 | -74.0060 |
-| Chicago   | 41.8781 | -87.6298 |
-| London    | 51.5074 |  -0.1278 |
-| Tokyo     | 35.6762 | 139.6503 |
-| Hong Kong | 22.3193 | 114.1694 |
-| Miami     | 25.7617 | -80.1918 |
-| Sydney    | -33.8688| 151.2093 |
-| Toronto   | 43.6532 | -79.3832 |
+1. Best-per-city candidate selection:
+   - If multiple entry-eligible opportunities exist for the same city in one cycle, only one is allowed.
+   - Ranking order is deterministic: entry confidence descending, edge descending, then cheaper YES price.
+2. Max one open position per city:
+   - New entries are blocked when a city already has an open position.
+   - Current policy is no-swap: existing open positions are not replaced mid-cycle by newer same-city setups.
+3. Token dedupe remains enforced independently (`token_id` uniqueness still required).
+4. Daily city coverage target is soft:
+   - `PAPER_MIN_CITY_DIVERSITY` (default `5`) is monitored as a warning target.
+   - Trading is not blocked when discovery has fewer than the target number of cities.
+   - Cycle and rolling city coverage metrics are persisted for review.
 
----
+### Exit Rules (`evaluate_hybrid_exit`)
 
-## Opportunity Output Schema
+Priority order:
+1. Stop loss when price <= stop loss threshold.
+2. Take profit when YES reaches configured multiplier target from entry (default 2.0x).
+3. Late-window decision:
+   - Sell if forecast invalid.
+   - Hold to resolve only if confidence >= configured minimum.
+4. Otherwise hold.
 
-```python
-{
-    "city": str,
-    "date": str,                 # YYYY-MM-DD
-      "end_date": str,             # ISO datetime
-    "market_question": str,
-    "yes_price": float,          # 0.0–1.0
-    "model_prob": float,         # 0.0–1.0
-    "edge": float,               # model_prob - yes_price
-      "forecast_temp_c": float,
-      "forecast_temp_converted": float,
-    "token_id": str,
-    "hours_until_resolve": float
-}
-```
+### Confidence Gate
 
----
+Confidence is computed by `_position_confidence_score()` from:
+1. Entry model probability.
+2. Current edge quality.
+3. Price location component.
 
-## CLI Usage
+Hold-to-resolve requires passing `HYBRID_MIN_CONFIDENCE_TO_HOLD`.
 
-```bash
-# Inspect raw API response (run once before first real use)
-python market_discovery.py --inspect
+### Paper State Journal and Acceptance Metrics
 
-# Normal discovery run
-python market_discovery.py
-```
+The paper state now tracks operational observability data:
 
----
-
-## Out of Scope (V1)
-
-- Trading execution
-- AI/LLM reasoning layer (designed for V2 swap)
-- Exact-market probability modeling (exact markets are currently skipped)
-- Historical backtesting
-- Scheduling / cron
-- Web UI or dashboard
-- Database persistence
+1. `cycle_journal` list in state file, appended each cycle with:
+   - timestamp,
+   - opened/closed/open-position counts,
+   - entry bucket counts,
+   - close reason counts,
+   - cycle acceptance rates and cycle closed PnL.
+2. Rolling acceptance metrics in state `meta.acceptance_metrics_rolling`:
+   - cumulative opportunities, candidates, opens, closes,
+   - cumulative bucket totals,
+   - rolling opportunity-to-open, candidate-to-open, and close-win rates,
+   - cumulative closed realized PnL.
+3. Cycle summary print includes both cycle-level and rolling rates.
+4. Paper report can now be emitted as JSON (`--paper-report-json`) for external log/monitoring ingestion.
+5. Paper report includes journal retention summary (recent shown, older hidden, capacity utilization, warning threshold flag).
+6. Paper report includes journal age-bucket breakdown (`<24h`, `24-72h`, `>72h`, `unknown`) and rotation summary (policy, capacity status, estimated rotated-out entries, coverage hours).
+7. Paper report includes anomaly counters for zero-opportunity and reject-dominant streaks with alert flags.
 
 ---
 
-## V2 Upgrade Path
+## Diagnostics
 
-When ready to add AI reasoning:
-1. Replace `parse_market()` with Claude API call for title extraction
-2. Replace `calculate_edge()` with Claude reasoning over forecast + market context
-3. No other files need to change
+`build_discovery_diagnostics()` and `print_discovery_diagnostics()` provide:
+1. Raw market counts.
+2. Candidate stage drop-off.
+3. Parsed/enriched/opportunity counts.
+4. Rejection reason samples.
+5. Daily-mode skip counters (`daily_date_mismatch`, `daily_min_hours_not_met`) when enabled.
+
+This is the primary tool for debugging `0 opportunity` outcomes.
+
+---
+
+## Configuration Surface
+
+Documented in [.env.example](.env.example):
+
+1. Discovery controls (`DISCOVERY_*`).
+2. Daily resolve controls (`DAILY_RESOLVE_ONLY`, `DAILY_MIN_HOURS_TO_RESOLVE`).
+3. Discovery forecast prefetch controls (`DISCOVERY_FORECAST_PREFETCH_MIN_KEYS`, `DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS`).
+4. Open-position forecast prefetch controls (`PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS`, `PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS`).
+5. Strategy thresholds (`STRATEGY_*`).
+6. Paper controls (`PAPER_*`).
+7. City diversification controls (`PAPER_MAX_OPEN_PER_CITY`, `PAPER_MIN_CITY_DIVERSITY`).
+8. Hybrid controls (`HYBRID_*`).
+9. Paper journal retention (`PAPER_JOURNAL_MAX_ENTRIES`).
+10. Paper report retention warning threshold (`PAPER_REPORT_RETENTION_WARN_THRESHOLD`).
+11. Paper report anomaly alert tuning (`PAPER_REPORT_ANOMALY_STREAK_ALERT`, `PAPER_REPORT_REJECT_DOMINANT_RATIO`).
+12. Future AI placeholders (`AI_AGENT_*`).
+
+---
+
+## File and Tests
+
+Core runtime file:
+1. [market_discovery.py](market_discovery.py)
+
+Key tests:
+1. [tests/test_fetch_markets.py](tests/test_fetch_markets.py)
+2. [tests/test_parse_market.py](tests/test_parse_market.py)
+3. [tests/test_fetch_forecast.py](tests/test_fetch_forecast.py)
+4. [tests/test_calculate_edge.py](tests/test_calculate_edge.py)
+5. [tests/test_filter.py](tests/test_filter.py)
+6. [tests/test_hybrid_exit.py](tests/test_hybrid_exit.py)
+7. [tests/test_paper_cycle.py](tests/test_paper_cycle.py)
+8. [tests/test_main.py](tests/test_main.py)
+
+---
+
+## Out of Scope
+
+Still out of scope for this baseline:
+1. Live CLOB order execution.
+2. Exchange auth/session management for production trading.
+3. Fee/slippage production risk engine.
+4. AI inference in trading decisions (only placeholders currently).

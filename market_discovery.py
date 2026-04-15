@@ -13,87 +13,65 @@ import os
 import sys
 import time
 import json
-import re
 from datetime import datetime, timezone
 
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
-
-
-def _env_bool(name, default=False):
-    """Parse boolean environment variables using common truthy values."""
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+from market_discovery_internal.cli import (
+    parse_cli_mode_flags,
+    run_main_discovery_mode as _run_main_discovery_mode_impl,
+    run_main_paper_loop_mode as _run_main_paper_loop_mode_impl,
+    run_main_paper_report_mode as _run_main_paper_report_mode_impl,
+    run_main_paper_single_mode as _run_main_paper_single_mode_impl,
+)
+from market_discovery_internal.config import *  # noqa: F401,F403
+from market_discovery_internal.cycles import (
+    enrich_discovery_markets as _enrich_discovery_markets_impl,
+    parse_discovery_markets as _parse_discovery_markets_impl,
+    run_discovery_cycle as _run_discovery_cycle_impl,
+    run_paper_trading_cycle as _run_paper_trading_cycle_impl,
+)
+from market_discovery_internal.diagnostics import (
+    analyze_discovery_raw_market as _analyze_discovery_raw_market_impl,
+    build_discovery_diagnostics as _build_discovery_diagnostics_impl,
+    classify_discovery_rejection_reason as _classify_discovery_rejection_reason_impl,
+    collect_discovery_bucket_counts as _collect_discovery_bucket_counts_impl,
+    collect_discovery_evidence_and_ai as _collect_discovery_evidence_and_ai_impl,
+)
+from market_discovery_internal.forecasting import (
+    fetch_forecast_with_cache as _fetch_forecast_with_cache_impl,
+    forecast_still_valid as _forecast_still_valid_impl,
+    position_to_market as _position_to_market_impl,
+    prefetch_forecasts as _prefetch_forecasts_impl,
+)
+from market_discovery_internal.output import (
+    print_discovery_diagnostics as _print_discovery_diagnostics_impl,
+    print_opportunities as _print_opportunities_impl,
+    print_paper_cycle_summary as _print_paper_cycle_summary_impl,
+    print_paper_state_report as _print_paper_state_report_impl,
+    print_summary as _print_summary_impl,
+)
+from market_discovery_internal.reporting import (
+    build_journal_anomaly_counters as _build_journal_anomaly_counters_impl,
+    build_journal_age_breakdown as _build_journal_age_breakdown_impl,
+    build_journal_retention_payload as _build_journal_retention_payload_impl,
+    build_paper_state_report as _build_paper_state_report_impl,
+    normalize_last_cycle_performance as _normalize_last_cycle_performance_impl,
+    normalize_recent_journal_entries as _normalize_recent_journal_entries_impl,
+    normalize_rolling_acceptance_metrics as _normalize_rolling_acceptance_metrics_impl,
+    normalize_rolling_city_coverage_metrics as _normalize_rolling_city_coverage_metrics_impl,
+    parse_utc_datetime as _parse_utc_datetime_impl,
+)
+from market_discovery_internal.state_persistence import (
+    load_paper_state as _load_paper_state_impl,
+    save_paper_state as _save_paper_state_impl,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-GAMMA_API = "https://gamma-api.polymarket.com/markets"
-OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
-LOG_FILE = "logs/unmatched_markets.log"
-
-# Target cities with hardcoded coordinates (lat, lon)
-TARGET_CITIES = {
-    "new york":  {"lat": 40.7128,  "lon": -74.0060},
-    "chicago":   {"lat": 41.8781,  "lon": -87.6298},
-    "london":    {"lat": 51.5074,  "lon":  -0.1278},
-    "tokyo":     {"lat": 35.6762,  "lon": 139.6503},
-    "hong kong": {"lat": 22.3193,  "lon": 114.1694},
-    "miami":     {"lat": 25.7617,  "lon": -80.1918},
-    "sydney":    {"lat": -33.8688, "lon": 151.2093},
-    "toronto":   {"lat": 43.6532,  "lon": -79.3832},
-}
-
-# Regex patterns for matching city names (handles abbreviations/variants)
-CITY_PATTERNS = {
-    "new york":  r"\bnew york(?:\s+city)?\b|\bnyc\b",
-    "chicago":   r"\bchicago\b|\bchi\b",  # \bchi\b is broad but safe within weather tag filter
-    "london":    r"\blondon\b",
-    "tokyo":     r"\btokyo\b",
-    "hong kong": r"\bhong kong\b|\bhk\b|\bhkg\b",
-    "miami":     r"\bmiami\b",
-    "sydney":    r"\bsydney\b",
-    "toronto":   r"\btoronto\b",
-}
-
-# Matches: "75°F", "80F", "25°C", "30 C", "75 degrees F"
-THRESHOLD_PATTERN = r"(\d+(?:\.\d+)?)\s*(?:degrees?\s*)?(?:°\s*)?([FC])\b"
-
-# Direction hints
-EXACT_KEYWORDS = r"\b(exact(?:ly)?|equal(?:s| to)?|at exactly|precisely|on the dot)\b"
-BELOW_KEYWORDS = r"\b(below|under|less than|cooler than|drop below|stay under)\b"
-WEATHER_CONTEXT_PATTERN = r"\b(weather|forecast|temperature|temp|degrees?|rain|snow|humidity|hot|cold|heat|chill|high|low)\b"
-DIRECTION_CANDIDATE_PATTERN = r"\b(above|below|under|over|exceed|reach|hit|drop|stay|exact(?:ly)?|equal(?:s| to)?)\b"
-
-# Paper-trading strategy defaults (can be overridden via environment variables)
-PAPER_STAKE_USD = float(os.getenv("PAPER_STAKE_USD", "100"))
-HYBRID_TAKE_PROFIT_MIN_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MIN_PRICE", "0.50"))
-HYBRID_TAKE_PROFIT_MAX_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MAX_PRICE", "0.60"))
-HYBRID_STOP_LOSS_MULTIPLIER = float(os.getenv("HYBRID_STOP_LOSS_MULTIPLIER", "0.48"))
-HYBRID_LATE_WINDOW_HOURS = float(os.getenv("HYBRID_LATE_WINDOW_HOURS", "2.0"))
-HYBRID_MIN_CONFIDENCE_TO_HOLD = float(os.getenv("HYBRID_MIN_CONFIDENCE_TO_HOLD", "0.75"))
-HYBRID_CONFIDENCE_EDGE_SCALE = float(os.getenv("HYBRID_CONFIDENCE_EDGE_SCALE", "0.35"))
-PAPER_STATE_FILE = os.getenv("PAPER_STATE_FILE", "logs/paper_positions.json")
-PAPER_MAX_OPEN_POSITIONS = int(os.getenv("PAPER_MAX_OPEN_POSITIONS", "3"))
-PAPER_ENTRY_MIN_PRICE = float(os.getenv("PAPER_ENTRY_MIN_PRICE", "0.20"))
-PAPER_ENTRY_MAX_PRICE = float(os.getenv("PAPER_ENTRY_MAX_PRICE", "0.30"))
-PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"))
-
-# Discovery + entry strategy (runtime-tunable)
-DISCOVERY_MAX_FETCH_PAGES = int(os.getenv("DISCOVERY_MAX_FETCH_PAGES", "2"))
-DISCOVERY_ENABLE_AUTO_AGGRESSIVE_SCAN = _env_bool("DISCOVERY_ENABLE_AUTO_AGGRESSIVE_SCAN", True)
-DISCOVERY_AGGRESSIVE_SCAN_PAGES = int(os.getenv("DISCOVERY_AGGRESSIVE_SCAN_PAGES", "3"))
-DISCOVERY_AUTO_AGGRESSIVE_AFTER_EMPTY_CYCLES = int(
-    os.getenv("DISCOVERY_AUTO_AGGRESSIVE_AFTER_EMPTY_CYCLES", "3")
-)
-STRATEGY_MAX_YES_PRICE = float(os.getenv("STRATEGY_MAX_YES_PRICE", "0.35"))
-STRATEGY_MIN_MODEL_PROB = float(os.getenv("STRATEGY_MIN_MODEL_PROB", "0.70"))
-STRATEGY_MIN_EDGE = float(os.getenv("STRATEGY_MIN_EDGE", "0.35"))
+# Constants are imported from market_discovery_internal.config to keep
+# market_discovery.py as a backward-compatible public surface.
 
 # ---------------------------------------------------------------------------
 # HTTP Utility
@@ -154,10 +132,15 @@ def _market_search_text(raw):
 
 def _has_target_city(text_lower):
     """Return True when text mentions one of the configured target cities."""
-    return any(
-        re.search(pattern, text_lower, re.IGNORECASE)
-        for pattern in CITY_PATTERNS.values()
-    )
+    return any(pattern.search(text_lower) for _, pattern in CITY_REGEXES)
+
+
+def _match_target_city(text_lower):
+    """Return canonical city name when text matches configured city patterns."""
+    for city, pattern in CITY_REGEXES:
+        if pattern.search(text_lower):
+            return city
+    return None
 
 
 def _is_temperature_market_candidate(raw):
@@ -165,12 +148,14 @@ def _is_temperature_market_candidate(raw):
     text = _market_search_text(raw)
     text_lower = text.lower()
 
-    has_city = _has_target_city(text_lower)
-    has_threshold = bool(re.search(THRESHOLD_PATTERN, text, re.IGNORECASE))
-    has_context = bool(re.search(WEATHER_CONTEXT_PATTERN, text_lower, re.IGNORECASE))
-    has_direction = bool(re.search(DIRECTION_CANDIDATE_PATTERN, text_lower, re.IGNORECASE))
+    if not _has_target_city(text_lower):
+        return False
+    if not THRESHOLD_RE.search(text):
+        return False
+    if WEATHER_CONTEXT_RE.search(text_lower):
+        return True
 
-    return has_city and has_threshold and (has_context or has_direction)
+    return bool(DIRECTION_CANDIDATE_RE.search(text_lower))
 
 
 def _dedupe_markets(markets):
@@ -191,105 +176,96 @@ def _dedupe_markets(markets):
 
     return unique
 
+def _events_to_markets(events):
+    """Flatten a list of event dicts into their constituent market dicts."""
+    markets = []
+    for event in events:
+        for market in event.get("markets", []):
+            markets.append(market)
+    return markets
+
+
 def fetch_markets(inspect=False, aggressive_scan=False):
     """
-    Fetch active weather markets from the Polymarket Gamma API.
+    Fetch active weather markets from the Polymarket Gamma Events API.
 
-    If inspect=True, prints the first 3 raw market dicts as formatted JSON
-    and exits. Use this once to understand the API response structure
-    before building the parser.
+    Uses /events/pagination?tag_slug=weather which returns the correct
+    weather temperature markets (not the tag=weather markets endpoint
+    which returns unrelated results).
+
+    If inspect=True, prints the first 3 raw event + market structures
+    and exits.
 
     Returns a list of raw market dicts on success.
     Exits with code 1 if the API is unreachable after 3 retries.
     """
-    params = {
-        "tag": "weather",
+    base_params = {
+        "tag_slug": "weather",
         "active": "true",
-        "limit": 100,
+        "archived": "false",
+        "closed": "false",
+        "order": "volume24hr",
+        "ascending": "false",
+        "limit": 200,
     }
 
     try:
-        data = fetch_with_retry(GAMMA_API, params=params)
+        data = fetch_with_retry(GAMMA_EVENTS_API, params={**base_params, "offset": 0})
     except Exception as e:
         print(f"\nERROR: Could not fetch markets from Gamma API: {e}")
         print("Check your internet connection and try again.")
         sys.exit(1)
 
-    # API returns either a list directly or {"markets": [...]}
-    markets = _extract_market_list(data)
+    # Events pagination returns {"data": [...], "count": N} or a plain list
+    if isinstance(data, dict):
+        events = data.get("data", data.get("events", []))
+    else:
+        events = data
 
     if inspect:
-        print("=== INSPECT MODE: First 3 raw market structures ===\n")
-        for i, market in enumerate(markets[:3], 1):
-            print(f"--- Market {i} ---")
-            print(json.dumps(market, indent=2, default=str))
+        print("=== INSPECT MODE: First event and its first 3 markets ===\n")
+        for i, event in enumerate(events[:2], 1):
+            print(f"--- Event {i}: {event.get('title', '')} ---")
+            for j, market in enumerate(event.get("markets", [])[:3], 1):
+                print(f"  Market {j}:")
+                print(json.dumps(market, indent=4, default=str))
             print()
         sys.exit(0)
 
-    candidates = [m for m in markets if _is_temperature_market_candidate(m)]
+    markets = _events_to_markets(events)
+    candidates = [market for market in markets if _is_temperature_market_candidate(market)]
     if candidates:
         return _dedupe_markets(candidates)
 
-    # Gamma weather tagging currently returns many unrelated markets;
-    # scan a couple of additional pages via offset to improve candidate quality
-    # without making normal CLI runs too slow.
+    # Fetch additional pages if first page had no candidates
+    page_limit = base_params["limit"]
     scanned = list(markets)
-    page_limit = params["limit"]
     offset = page_limit
 
     for _ in range(max(0, DISCOVERY_MAX_FETCH_PAGES)):
-        page_params = {**params, "offset": offset}
         try:
-            page_data = fetch_with_retry(GAMMA_API, params=page_params, max_retries=1)
+            page_data = fetch_with_retry(GAMMA_EVENTS_API, params={**base_params, "offset": offset}, max_retries=1)
         except Exception:
             break
 
-        page_markets = _extract_market_list(page_data)
-        if not page_markets:
+        if isinstance(page_data, dict):
+            page_events = page_data.get("data", page_data.get("events", []))
+        else:
+            page_events = page_data
+
+        if not page_events:
             break
 
+        page_markets = _events_to_markets(page_events)
         scanned.extend(page_markets)
-        candidates = [m for m in scanned if _is_temperature_market_candidate(m)]
-        if candidates:
-            break
+        page_candidates = [market for market in page_markets if _is_temperature_market_candidate(market)]
+        if page_candidates:
+            candidates.extend(page_candidates)
+            return _dedupe_markets(candidates)
 
         offset += page_limit
 
-    candidates = [m for m in scanned if _is_temperature_market_candidate(m)]
-    if candidates:
-        return _dedupe_markets(candidates)
-
-    if aggressive_scan:
-        broad_params = {
-            "active": "true",
-            "limit": 100,
-        }
-        broad_scanned = []
-        broad_offset = 0
-
-        for _ in range(max(1, DISCOVERY_AGGRESSIVE_SCAN_PAGES)):
-            page_params = {**broad_params, "offset": broad_offset}
-            try:
-                broad_data = fetch_with_retry(GAMMA_API, params=page_params, max_retries=1)
-            except Exception:
-                break
-
-            broad_page = _extract_market_list(broad_data)
-            if not broad_page:
-                break
-
-            broad_scanned.extend(broad_page)
-            candidates = [m for m in broad_scanned if _is_temperature_market_candidate(m)]
-            if candidates:
-                return _dedupe_markets(candidates)
-
-            broad_offset += broad_params["limit"]
-
-        if broad_scanned:
-            return _dedupe_markets(broad_scanned)
-
-    # Fallback: return everything scanned so parser can still discover
-    # opportunities outside candidate heuristics.
+    # Fallback: return everything so parser can still discover markets
     return _dedupe_markets(scanned)
 
 
@@ -312,7 +288,13 @@ def _log_unmatched(title, reason):
 # Layer 2: Parse Raw Market Dict into Structured Fields
 # ---------------------------------------------------------------------------
 
-def parse_market(raw):
+def parse_market(
+    raw,
+    now_utc=None,
+    daily_resolve_only=DAILY_RESOLVE_ONLY,
+    daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE,
+    return_skip_reason=False,
+):
     """
     Parse a raw Gamma API market dict into structured fields.
 
@@ -329,90 +311,117 @@ def parse_market(raw):
     - Cannot extract temperature (logged)
     - Missing price/token data (logged)
     - Resolves outside 3-day forecast window (silent skip)
+    - Daily mode active and market resolve date/hour constraints are not met
     """
+    def _with_reason(parsed_market, skip_reason=None):
+        if return_skip_reason:
+            return parsed_market, skip_reason
+        return parsed_market
+
     question = raw.get("question") or raw.get("title") or ""
 
     search_text = _market_search_text(raw)
     search_text_lower = search_text.lower()
 
     # Step 1: Match city
-    city = None
-    for target_city, pattern in CITY_PATTERNS.items():
-        if re.search(pattern, search_text_lower, re.IGNORECASE):
-            city = target_city
-            break
+    city = _match_target_city(search_text_lower)
 
     if city is None:
-        return None  # Not a target city — skip silently
+        return _with_reason(None)  # Not a target city — skip silently
 
-    has_weather_context = bool(re.search(WEATHER_CONTEXT_PATTERN, search_text_lower, re.IGNORECASE))
-    has_temperature_hint = bool(re.search(THRESHOLD_PATTERN, search_text, re.IGNORECASE))
+    has_weather_context = bool(WEATHER_CONTEXT_RE.search(search_text_lower))
+    has_temperature_hint = bool(THRESHOLD_RE.search(search_text))
 
     # Skip non-weather city markets early to avoid noisy unmatched logs.
     if not has_weather_context and not has_temperature_hint:
-        return None
+        return _with_reason(None)
 
     # Step 2: Extract temperature threshold and unit
-    match = re.search(THRESHOLD_PATTERN, question, re.IGNORECASE)
+    match = THRESHOLD_RE.search(question)
     if not match:
-        match = re.search(THRESHOLD_PATTERN, search_text, re.IGNORECASE)
+        match = THRESHOLD_RE.search(search_text)
     if not match:
         _log_unmatched(question, "no temperature threshold found")
-        return None
+        return _with_reason(None)
 
     threshold = float(match.group(1))
     unit = match.group(2).upper()
 
     # Step 3: Determine direction
-    if re.search(EXACT_KEYWORDS, search_text_lower, re.IGNORECASE):
+    # Check question text (most reliable) then fallback to full search text
+    question_lower = question.lower()
+    direction_text = f"{question_lower} {search_text_lower}"
+    if EXACT_RE.search(direction_text):
         direction = "exact"
-    elif re.search(BELOW_KEYWORDS, search_text_lower, re.IGNORECASE):
+    elif ABOVE_RE.search(direction_text):
+        direction = "above"
+    elif BELOW_RE.search(direction_text):
         direction = "below"
     else:
-        direction = "above"
+        direction = "exact"  # Polymarket exact-temp markets: "be 17°C on date"
 
     # Step 4: Extract YES price from outcomePrices (JSON string or list)
     outcome_prices_raw = raw.get("outcomePrices")
     if not outcome_prices_raw:
         _log_unmatched(question, "missing outcomePrices")
-        return None
+        return _with_reason(None)
 
     try:
         prices = json.loads(outcome_prices_raw) if isinstance(outcome_prices_raw, str) else outcome_prices_raw
         if not isinstance(prices, list) or len(prices) == 0:
             _log_unmatched(question, "outcomePrices is not a non-empty list")
-            return None
+            return _with_reason(None)
         yes_price = float(prices[0])
     except (json.JSONDecodeError, ValueError, TypeError):
         _log_unmatched(question, "could not parse outcomePrices")
-        return None
+        return _with_reason(None)
 
-    # Step 5: Extract token ID (YES token is first in tokens array)
-    tokens = raw.get("tokens", [])
+    # Step 5: Extract token ID — Gamma API returns clobTokenIds as a JSON string ["id1","id2"]
+    # The first ID is the YES token.
+    clob_ids_raw = raw.get("clobTokenIds")
     token_id = None
-    if tokens:
-        token_id = tokens[0].get("tokenId") or tokens[0].get("token_id")
+    if clob_ids_raw:
+        try:
+            clob_ids = json.loads(clob_ids_raw) if isinstance(clob_ids_raw, str) else clob_ids_raw
+            if isinstance(clob_ids, list) and clob_ids:
+                token_id = str(clob_ids[0])
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     if not token_id:
         _log_unmatched(question, "missing token_id")
-        return None
+        return _with_reason(None)
 
     # Step 6: Parse resolution date from endDate
     end_date_raw = raw.get("endDate") or raw.get("end_date") or ""
     try:
         end_dt = datetime.fromisoformat(end_date_raw.replace("Z", "+00:00"))
         date_str = end_dt.strftime("%Y-%m-%d")
-        now = datetime.now(timezone.utc)
+        now = now_utc if isinstance(now_utc, datetime) else datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
         hours_until_resolve = (end_dt - now).total_seconds() / 3600
     except (ValueError, AttributeError):
         _log_unmatched(question, f"could not parse endDate: {end_date_raw}")
-        return None
+        return _with_reason(None)
 
     # Only include markets within 3-day forecast window
     if hours_until_resolve <= 0 or hours_until_resolve > 72:
-        return None
+        return _with_reason(None)
 
-    return {
+    if daily_resolve_only:
+        try:
+            min_hours = float(daily_min_hours_to_resolve)
+        except (TypeError, ValueError):
+            min_hours = DAILY_MIN_HOURS_TO_RESOLVE
+
+        min_hours = max(min_hours, 0.0)
+        if end_dt.date() != now.date():
+            return _with_reason(None, "daily_date_mismatch")
+        if hours_until_resolve < min_hours:
+            return _with_reason(None, "daily_min_hours_not_met")
+
+    return _with_reason({
         "city": city,
         "date": date_str,
         "end_date": end_dt.isoformat(),
@@ -423,7 +432,7 @@ def parse_market(raw):
         "yes_price": yes_price,
         "token_id": token_id,
         "hours_until_resolve": round(hours_until_resolve, 1),
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +476,80 @@ def fetch_forecast(city, date):
         return temps[times.index(date)]
 
     return None
+
+
+def _hours_until_target_date(date_str, now_utc=None):
+    """Compute hours until target date (YYYY-MM-DD)."""
+    if not date_str:
+        return None
+
+    try:
+        target_dt = datetime.fromisoformat(f"{date_str}T12:00:00+00:00")
+    except ValueError:
+        return None
+
+    now_dt = now_utc or datetime.now(timezone.utc)
+    return (target_dt - now_dt).total_seconds() / 3600
+
+
+def build_weather_evidence(city, date, forecast_temp_c, source="open-meteo", now_utc=None, fetched_at=None):
+    """Build normalized weather evidence contract for entry/hold decisions."""
+    now_dt = now_utc or datetime.now(timezone.utc)
+    fetched_dt = fetched_at or now_dt
+
+    if isinstance(fetched_dt, str):
+        try:
+            fetched_dt = datetime.fromisoformat(fetched_dt.replace("Z", "+00:00"))
+        except ValueError:
+            fetched_dt = now_dt
+
+    age_hours = max((now_dt - fetched_dt).total_seconds() / 3600, 0.0)
+    horizon_hours = _hours_until_target_date(date, now_utc=now_dt)
+
+    if horizon_hours is None:
+        horizon_component = 0.6
+    elif horizon_hours <= 24:
+        horizon_component = 1.0
+    elif horizon_hours <= 48:
+        horizon_component = 0.9
+    elif horizon_hours <= 72:
+        horizon_component = 0.8
+    else:
+        horizon_component = 0.5
+
+    source_component = 0.85 if source == "open-meteo" else 0.70
+    data_component = 1.0 if forecast_temp_c is not None else 0.0
+    quality_score = round((0.50 * data_component) + (0.30 * horizon_component) + (0.20 * source_component), 4)
+
+    return {
+        "city": city,
+        "date": date,
+        "source": source,
+        "forecast_temp_c": None if forecast_temp_c is None else round(float(forecast_temp_c), 2),
+        "fetched_at": fetched_dt.isoformat(),
+        "age_hours": round(age_hours, 4),
+        "horizon_hours": None if horizon_hours is None else round(horizon_hours, 2),
+        "quality_score": quality_score,
+    }
+
+
+def is_weather_evidence_valid(
+    evidence,
+    max_age_hours=WEATHER_EVIDENCE_MAX_AGE_HOURS,
+    min_quality_score=WEATHER_EVIDENCE_MIN_QUALITY_SCORE,
+):
+    """Return True when evidence freshness and quality pass configured thresholds."""
+    if not isinstance(evidence, dict):
+        return False
+
+    age_hours = _safe_float(evidence.get("age_hours"), 9999.0)
+    quality_score = _safe_float(evidence.get("quality_score"), 0.0)
+    forecast_temp = evidence.get("forecast_temp_c")
+
+    if forecast_temp is None:
+        return False
+
+    return age_hours <= float(max_age_hours) and quality_score >= float(min_quality_score)
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +622,286 @@ def filter_opportunities(
     return sorted(opportunities, key=lambda item: item["edge"], reverse=True)
 
 
+def _safe_float(value, default=0.0):
+    """Convert a value to float or return default when conversion fails."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_div(numerator, denominator, default=0.0):
+    """Safely divide two numeric values and guard against zero denominator."""
+    den = _safe_float(denominator, 0.0)
+    if den == 0:
+        return default
+    return _safe_float(numerator, 0.0) / den
+
+
+def _elapsed_ms(started_at):
+    """Return elapsed milliseconds from a perf_counter timestamp."""
+    return round((time.perf_counter() - started_at) * 1000, 3)
+
+
+def _clamp(value, low=0.0, high=1.0):
+    """Clamp a numeric value into a closed interval."""
+    return max(low, min(high, float(value)))
+
+
+def _normalize_city_key(city):
+    """Normalize city labels into stable lowercase keys."""
+    if city is None:
+        return None
+    value = str(city).strip().lower()
+    return value or None
+
+
+def _city_candidate_rank(opportunity, bucket):
+    """Rank candidates by confidence, then edge, then cheaper YES price."""
+    confidence = _safe_float(bucket.get("confidence"), 0.0)
+    edge = _safe_float(opportunity.get("edge"), 0.0)
+    yes_price = _safe_float(opportunity.get("yes_price"), 1.0)
+    return (confidence, edge, -yes_price)
+
+
+def _get_ai_provider_config():
+    """Read AI provider configuration from environment."""
+    return {
+        "provider": os.getenv("AI_AGENT_PROVIDER", "").strip().lower(),
+        "model": os.getenv("AI_AGENT_MODEL", "").strip(),
+        "api_key": os.getenv("AI_AGENT_API_KEY", "").strip(),
+        "endpoint": os.getenv("AI_AGENT_ENDPOINT", "").strip(),
+        "timeout_seconds": AI_AGENT_TIMEOUT_SECONDS,
+    }
+
+
+def _is_ai_config_ready(config):
+    """Return True when minimum AI configuration is present."""
+    return bool(config.get("provider") and config.get("model") and config.get("api_key"))
+
+
+def _build_ai_decision_payload(opportunity):
+    """Build compact payload contract for future AI decision providers."""
+    return {
+        "city": opportunity.get("city"),
+        "date": opportunity.get("date"),
+        "market_question": opportunity.get("market_question"),
+        "direction": opportunity.get("direction"),
+        "threshold": opportunity.get("threshold"),
+        "unit": opportunity.get("unit"),
+        "yes_price": opportunity.get("yes_price"),
+        "model_prob": opportunity.get("model_prob"),
+        "edge": opportunity.get("edge"),
+        "hours_until_resolve": opportunity.get("hours_until_resolve"),
+        "weather_evidence": opportunity.get("weather_evidence"),
+    }
+
+
+def _validate_ai_decision_response(response):
+    """Validate AI decision response schema and normalize values."""
+    if not isinstance(response, dict):
+        raise ValueError("ai response must be a dict")
+
+    bucket = response.get("ai_bucket")
+    confidence = _safe_float(response.get("ai_confidence"), -1.0)
+    allowed = {"reject", "watchlist", "enter_swing", "enter_hold_candidate"}
+
+    if bucket not in allowed:
+        raise ValueError(f"invalid ai_bucket: {bucket}")
+    if confidence < 0.0 or confidence > 1.0:
+        raise ValueError(f"invalid ai_confidence: {confidence}")
+
+    return {
+        "ai_bucket": bucket,
+        "ai_confidence": round(confidence, 4),
+    }
+
+
+def _call_ai_provider(payload, config):
+    """
+    Call AI provider adapter.
+
+    Current implementation intentionally supports only a deterministic "mock"
+    adapter for future readiness and tests. Real provider adapters can be
+    added later without changing bucket engine flow.
+    """
+    provider = config.get("provider", "")
+
+    if provider == "mock":
+        price = _safe_float(payload.get("yes_price"), 1.0)
+        model_prob = _safe_float(payload.get("model_prob"), 0.0)
+        edge = _safe_float(payload.get("edge"), 0.0)
+
+        if price < PAPER_ENTRY_MIN_PRICE:
+            bucket = "watchlist"
+        elif (
+            model_prob >= ENTRY_BUCKET_HOLD_MIN_PROB
+            and edge >= ENTRY_BUCKET_HOLD_MIN_EDGE
+        ):
+            bucket = "enter_hold_candidate"
+        elif PAPER_ENTRY_MIN_PRICE <= price <= PAPER_ENTRY_MAX_PRICE:
+            bucket = "enter_swing"
+        else:
+            bucket = "reject"
+
+        return {
+            "ai_bucket": bucket,
+            "ai_confidence": 0.85,
+        }
+
+    raise NotImplementedError(f"AI provider adapter not implemented: {provider}")
+
+
+def _maybe_apply_ai_decision(opportunity):
+    """
+    Optionally enrich opportunity with AI bucket signals.
+
+    Safe behavior guarantees:
+    - AI disabled -> deterministic path only.
+    - Missing config / provider error -> deterministic fallback, no crash.
+    """
+    enriched = {**opportunity}
+
+    if not AI_AGENT_ENABLED:
+        enriched["ai_status"] = "off"
+        return enriched
+
+    config = _get_ai_provider_config()
+    if not _is_ai_config_ready(config):
+        enriched["ai_status"] = "missing_config"
+        return enriched
+
+    try:
+        payload = _build_ai_decision_payload(enriched)
+        raw_response = _call_ai_provider(payload, config)
+        validated = _validate_ai_decision_response(raw_response)
+        enriched.update(validated)
+        enriched["ai_status"] = "applied"
+    except Exception as exc:
+        enriched["ai_status"] = "fallback_error"
+        enriched["ai_error"] = str(exc)[:160]
+
+    return enriched
+
+
+def _entry_confidence_score(opportunity):
+    """Compute deterministic confidence score (0-1) for entry bucketing."""
+    model_prob = _clamp(_safe_float(opportunity.get("model_prob"), 0.0))
+    edge = max(_safe_float(opportunity.get("edge"), 0.0), 0.0)
+
+    edge_scale = STRATEGY_MIN_EDGE if STRATEGY_MIN_EDGE > 0 else 0.35
+    edge_component = min(edge / edge_scale, 1.0)
+
+    hours = opportunity.get("hours_until_resolve")
+    if hours is None:
+        freshness_component = 0.5
+    else:
+        hours = _safe_float(hours, 999.0)
+        if hours <= 0:
+            freshness_component = 0.3
+        elif hours <= 24:
+            freshness_component = 1.0
+        elif hours <= 48:
+            freshness_component = 0.8
+        else:
+            freshness_component = 0.6
+
+    score = (0.65 * model_prob) + (0.25 * edge_component) + (0.10 * freshness_component)
+    return round(_clamp(score), 4)
+
+
+def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
+    """
+    Classify opportunity into one bucket:
+    - reject
+    - watchlist
+    - enter_swing
+    - enter_hold_candidate
+
+    AI override is optional and never bypasses hard entry guardrails.
+    """
+    price = _safe_float(opportunity.get("yes_price"), -1.0)
+    model_prob = _safe_float(opportunity.get("model_prob"), 0.0)
+    edge = _safe_float(opportunity.get("edge"), -1.0)
+    confidence = _entry_confidence_score(opportunity)
+
+    if price < 0 or price > 1:
+        decision = {
+            "bucket": "reject",
+            "reason": "invalid_price",
+            "confidence": confidence,
+        }
+    elif model_prob < STRATEGY_MIN_MODEL_PROB:
+        decision = {
+            "bucket": "reject",
+            "reason": "low_model_prob",
+            "confidence": confidence,
+        }
+    elif edge < STRATEGY_MIN_EDGE:
+        decision = {
+            "bucket": "reject",
+            "reason": "low_edge",
+            "confidence": confidence,
+        }
+    elif min_entry_price <= price <= max_entry_price:
+        if (
+            model_prob >= ENTRY_BUCKET_HOLD_MIN_PROB
+            and edge >= ENTRY_BUCKET_HOLD_MIN_EDGE
+            and confidence >= ENTRY_BUCKET_HOLD_MIN_CONFIDENCE
+        ):
+            decision = {
+                "bucket": "enter_hold_candidate",
+                "reason": "high_confidence_hold_candidate",
+                "confidence": confidence,
+            }
+        else:
+            decision = {
+                "bucket": "enter_swing",
+                "reason": "entry_band_swing",
+                "confidence": confidence,
+            }
+    elif price <= ENTRY_BUCKET_WATCH_MAX_PRICE:
+        decision = {
+            "bucket": "watchlist",
+            "reason": "out_of_entry_band_watch",
+            "confidence": confidence,
+        }
+    else:
+        decision = {
+            "bucket": "reject",
+            "reason": "out_of_entry_band_reject",
+            "confidence": confidence,
+        }
+
+    ai_bucket = opportunity.get("ai_bucket")
+    ai_confidence_raw = opportunity.get("ai_confidence")
+    if AI_AGENT_ENABLED and isinstance(ai_bucket, str):
+        allowed_buckets = {"reject", "watchlist", "enter_swing", "enter_hold_candidate"}
+        ai_confidence = _clamp(_safe_float(ai_confidence_raw, confidence))
+
+        if ai_bucket in allowed_buckets and ai_confidence >= AI_AGENT_MIN_OVERRIDE_CONFIDENCE:
+            # Hard guardrail: AI cannot force entry outside configured entry bounds.
+            if ai_bucket.startswith("enter") and not (min_entry_price <= price <= max_entry_price):
+                return {
+                    **decision,
+                    "ai_override_applied": False,
+                    "ai_override_reason": "blocked_by_entry_band",
+                }
+
+            return {
+                **decision,
+                "bucket": ai_bucket,
+                "reason": f"ai_override_{decision['bucket']}_to_{ai_bucket}",
+                "confidence": round(max(confidence, ai_confidence), 4),
+                "ai_override_applied": True,
+            }
+
+    return {
+        **decision,
+        "ai_override_applied": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Layer 6: Paper Trading Helpers (Hybrid Exit Strategy)
 # ---------------------------------------------------------------------------
@@ -557,6 +920,29 @@ def _hours_until_resolve_from_end_date(end_date, now_utc=None):
     return (end_dt - now_dt).total_seconds() / 3600
 
 
+def _compute_take_profit_price(entry_price):
+    """Compute take-profit target price for +100% policy (2x entry by default)."""
+    entry = _safe_float(entry_price, 0.0)
+    if entry <= 0:
+        return HYBRID_TAKE_PROFIT_MIN_PRICE
+    return round(min(entry * HYBRID_TAKE_PROFIT_MULTIPLIER, 1.0), 4)
+
+
+def _ensure_take_profit_target(position):
+    """Normalize legacy positions so all open positions follow +100% TP policy."""
+    normalized = {**position}
+    entry_price = _safe_float(normalized.get("entry_price"), 0.0)
+    if entry_price <= 0:
+        return normalized
+
+    target_price = _compute_take_profit_price(entry_price)
+    normalized["target_price"] = target_price
+    normalized["target_price_low"] = target_price
+    normalized["target_price_high"] = target_price
+    normalized["target_policy"] = "take_profit_100pct"
+    return normalized
+
+
 def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     """Create a paper position from an opportunity candidate."""
     entry_price = float(opportunity["yes_price"])
@@ -565,6 +951,7 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
 
     quantity = round(float(stake_usd) / entry_price, 6)
     cost_basis = round(quantity * entry_price, 4)
+    target_price = _compute_take_profit_price(entry_price)
 
     return {
         "status": "open",
@@ -579,9 +966,10 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "entry_price": entry_price,
         "quantity": quantity,
         "cost_basis": cost_basis,
-        "target_price": HYBRID_TAKE_PROFIT_MIN_PRICE,
-        "target_price_low": HYBRID_TAKE_PROFIT_MIN_PRICE,
-        "target_price_high": HYBRID_TAKE_PROFIT_MAX_PRICE,
+        "target_price": target_price,
+        "target_price_low": target_price,
+        "target_price_high": target_price,
+        "target_policy": "take_profit_100pct",
         "stop_loss_price": round(entry_price * HYBRID_STOP_LOSS_MULTIPLIER, 4),
         "entry_model_prob": opportunity.get("model_prob"),
         "entry_edge": opportunity.get("edge"),
@@ -619,7 +1007,7 @@ def evaluate_hybrid_exit(
 ):
     """
     Hybrid exit strategy:
-    1) Take-profit when price reaches configured TP band (default 0.50+).
+     1) Take-profit at +100% from entry (2x by default).
     2) Stop-loss when current price <= configured stop-loss price.
     3) If within late window (H-2 by default):
        - forecast valid + confidence >= min threshold -> hold to resolve
@@ -627,9 +1015,7 @@ def evaluate_hybrid_exit(
     4) Otherwise hold and wait.
     """
     price = float(current_yes_price)
-    target_price = float(position.get("target_price", HYBRID_TAKE_PROFIT_MIN_PRICE))
-    tp_low = float(position.get("target_price_low", HYBRID_TAKE_PROFIT_MIN_PRICE))
-    tp_high = float(position.get("target_price_high", HYBRID_TAKE_PROFIT_MAX_PRICE))
+    target_price = float(position.get("target_price", _compute_take_profit_price(position.get("entry_price"))))
     stop_loss_price = float(position["stop_loss_price"])
 
     if confidence_score is None:
@@ -644,11 +1030,10 @@ def evaluate_hybrid_exit(
             "confidence_score": confidence_score,
         }
 
-    if price >= tp_low:
-        reason = "take_profit_band" if price <= tp_high else "take_profit_band_breakout"
+    if price >= target_price:
         return {
             "action": "sell",
-            "reason": reason,
+            "reason": "take_profit_100pct",
             "target_price": target_price,
             "confidence_score": confidence_score,
         }
@@ -751,216 +1136,573 @@ def update_paper_position(
 
 def load_paper_state(path=PAPER_STATE_FILE):
     """Load paper-trading state from disk or return an empty state."""
-    if not os.path.exists(path):
-        return {"positions": [], "history": [], "updated_at": None}
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {"positions": [], "history": [], "updated_at": None}
-
-    positions = data.get("positions", []) if isinstance(data, dict) else []
-    history = data.get("history", []) if isinstance(data, dict) else []
-    updated_at = data.get("updated_at") if isinstance(data, dict) else None
-    meta = data.get("meta") if isinstance(data, dict) else None
-
-    if not isinstance(positions, list):
-        positions = []
-    if not isinstance(history, list):
-        history = []
-
-    state = {
-        "positions": positions,
-        "history": history,
-        "updated_at": updated_at,
-    }
-
-    if isinstance(meta, dict):
-        state["meta"] = meta
-
-    return state
+    return _load_paper_state_impl(path=path)
 
 
 def save_paper_state(state, path=PAPER_STATE_FILE):
     """Persist paper-trading state to disk."""
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
+    _save_paper_state_impl(state=state, path=path)
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
+
+def _closed_reason_counts(closed_positions):
+    """Count close reasons in this cycle for quick post-run diagnostics."""
+    counts = {}
+    for position in closed_positions:
+        reason = str(position.get("close_reason") or "unknown")
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def _build_cycle_acceptance_metrics(discovery, bucket_counts, opened_positions, closed_positions):
+    """Build per-cycle acceptance metrics from discovery to entry to close."""
+    opportunities = len(discovery.get("opportunities", []))
+    parsed = len(discovery.get("parsed", []))
+    enriched = len(discovery.get("enriched", []))
+    opened = len(opened_positions)
+    closed = len(closed_positions)
+
+    enter_swing = int(bucket_counts.get("enter_swing", 0))
+    enter_hold = int(bucket_counts.get("enter_hold_candidate", 0))
+    entry_candidates = enter_swing + enter_hold
+
+    closed_realized_pnl = round(
+        sum(_safe_float(position.get("realized_pnl_usd"), 0.0) for position in closed_positions),
+        4,
+    )
+    closed_wins = sum(1 for position in closed_positions if _safe_float(position.get("realized_pnl_usd"), 0.0) > 0)
+    avg_closed_roi = round(
+        _safe_div(
+            sum(_safe_float(position.get("realized_roi_pct"), 0.0) for position in closed_positions),
+            closed,
+            default=0.0,
+        ),
+        4,
+    )
+
+    return {
+        "raw_total": len(discovery.get("markets_raw", [])),
+        "parsed_total": parsed,
+        "enriched_total": enriched,
+        "opportunities_total": opportunities,
+        "entry_candidates_total": entry_candidates,
+        "opened_total": opened,
+        "closed_total": closed,
+        "closed_wins_total": closed_wins,
+        "closed_realized_pnl_usd": closed_realized_pnl,
+        "closed_avg_roi_pct": avg_closed_roi,
+        "parsed_to_opportunity_rate": round(_safe_div(opportunities, parsed, default=0.0), 4),
+        "opportunity_to_candidate_rate": round(_safe_div(entry_candidates, opportunities, default=0.0), 4),
+        "opportunity_to_open_rate": round(_safe_div(opened, opportunities, default=0.0), 4),
+        "candidate_to_open_rate": round(_safe_div(opened, entry_candidates, default=0.0), 4),
+        "close_win_rate": round(_safe_div(closed_wins, closed, default=0.0), 4),
+    }
+
+
+def _build_rolling_acceptance_metrics(previous, cycle_metrics, bucket_counts):
+    """Update cumulative acceptance metrics stored in paper state metadata."""
+    previous = previous if isinstance(previous, dict) else {}
+
+    bucket_totals_prev = previous.get("entry_bucket_totals", {})
+    bucket_totals = {
+        "reject": int(bucket_totals_prev.get("reject", 0)) + int(bucket_counts.get("reject", 0)),
+        "watchlist": int(bucket_totals_prev.get("watchlist", 0)) + int(bucket_counts.get("watchlist", 0)),
+        "enter_swing": int(bucket_totals_prev.get("enter_swing", 0)) + int(bucket_counts.get("enter_swing", 0)),
+        "enter_hold_candidate": int(bucket_totals_prev.get("enter_hold_candidate", 0))
+        + int(bucket_counts.get("enter_hold_candidate", 0)),
+    }
+
+    cycles_total = int(previous.get("cycles_total", 0)) + 1
+    opportunities_total = int(previous.get("opportunities_total", 0)) + int(cycle_metrics.get("opportunities_total", 0))
+    entry_candidates_total = int(previous.get("entry_candidates_total", 0)) + int(cycle_metrics.get("entry_candidates_total", 0))
+    opened_total = int(previous.get("opened_total", 0)) + int(cycle_metrics.get("opened_total", 0))
+    closed_total = int(previous.get("closed_total", 0)) + int(cycle_metrics.get("closed_total", 0))
+    closed_wins_total = int(previous.get("closed_wins_total", 0)) + int(cycle_metrics.get("closed_wins_total", 0))
+    closed_realized_pnl_total = round(
+        _safe_float(previous.get("closed_realized_pnl_total_usd"), 0.0)
+        + _safe_float(cycle_metrics.get("closed_realized_pnl_usd"), 0.0),
+        4,
+    )
+
+    return {
+        "cycles_total": cycles_total,
+        "opportunities_total": opportunities_total,
+        "entry_candidates_total": entry_candidates_total,
+        "opened_total": opened_total,
+        "closed_total": closed_total,
+        "closed_wins_total": closed_wins_total,
+        "closed_realized_pnl_total_usd": closed_realized_pnl_total,
+        "entry_bucket_totals": bucket_totals,
+        "opportunity_to_open_rate": round(_safe_div(opened_total, opportunities_total, default=0.0), 4),
+        "candidate_to_open_rate": round(_safe_div(opened_total, entry_candidates_total, default=0.0), 4),
+        "close_win_rate": round(_safe_div(closed_wins_total, closed_total, default=0.0), 4),
+    }
+
+
+def _build_city_coverage_metrics(
+    opportunity_city_keys,
+    candidate_city_keys,
+    opened_city_keys,
+    min_city_target=PAPER_MIN_CITY_DIVERSITY,
+):
+    """Build per-cycle city diversification metrics for soft target tracking."""
+    target = max(1, int(_safe_float(min_city_target, PAPER_MIN_CITY_DIVERSITY)))
+    opportunity_total = len(opportunity_city_keys)
+    shortfall = max(target - opportunity_total, 0)
+
+    return {
+        "min_city_target": target,
+        "unique_opportunity_cities": opportunity_total,
+        "unique_candidate_cities": len(candidate_city_keys),
+        "unique_opened_cities": len(opened_city_keys),
+        "target_met": shortfall == 0,
+        "shortfall": shortfall,
+        "warning": shortfall > 0,
+        "opportunity_cities": sorted(opportunity_city_keys),
+        "candidate_cities": sorted(candidate_city_keys),
+        "opened_cities": sorted(opened_city_keys),
+    }
+
+
+def _build_rolling_city_coverage_metrics(previous, cycle_city_coverage):
+    """Update rolling city coverage counters for diversification monitoring."""
+    previous = previous if isinstance(previous, dict) else {}
+
+    cycles_total = int(previous.get("cycles_total", 0)) + 1
+    opportunities_city_total = int(previous.get("opportunity_cities_total", 0)) + int(
+        cycle_city_coverage.get("unique_opportunity_cities", 0)
+    )
+    candidates_city_total = int(previous.get("candidate_cities_total", 0)) + int(
+        cycle_city_coverage.get("unique_candidate_cities", 0)
+    )
+    opened_city_total = int(previous.get("opened_cities_total", 0)) + int(
+        cycle_city_coverage.get("unique_opened_cities", 0)
+    )
+    cycles_below_target = int(previous.get("cycles_below_target", 0)) + (
+        1 if cycle_city_coverage.get("warning") else 0
+    )
+
+    return {
+        "cycles_total": cycles_total,
+        "opportunity_cities_total": opportunities_city_total,
+        "candidate_cities_total": candidates_city_total,
+        "opened_cities_total": opened_city_total,
+        "cycles_below_target": cycles_below_target,
+        "avg_opportunity_cities": round(_safe_div(opportunities_city_total, cycles_total, default=0.0), 4),
+        "avg_candidate_cities": round(_safe_div(candidates_city_total, cycles_total, default=0.0), 4),
+        "avg_opened_cities": round(_safe_div(opened_city_total, cycles_total, default=0.0), 4),
+        "min_city_target": int(cycle_city_coverage.get("min_city_target", PAPER_MIN_CITY_DIVERSITY)),
+    }
+
+
+def _build_cycle_journal_entry(
+    now_utc,
+    cycle_metrics,
+    bucket_counts,
+    cycle,
+    city_coverage_metrics=None,
+    performance_metrics=None,
+):
+    """Create one compact journal record for this cycle."""
+    entry = {
+        "timestamp": now_utc.isoformat(),
+        "aggressive_scan": bool(cycle.get("used_aggressive_scan", False)),
+        "empty_temperature_cycles": int(cycle.get("empty_temperature_cycles", 0) or 0),
+        "counts": {
+            "opportunities": int(cycle_metrics.get("opportunities_total", 0)),
+            "entry_candidates": int(cycle_metrics.get("entry_candidates_total", 0)),
+            "opened": int(cycle_metrics.get("opened_total", 0)),
+            "closed": int(cycle_metrics.get("closed_total", 0)),
+            "open_positions_after": len(cycle.get("open_positions", [])),
+        },
+        "bucket_counts": dict(bucket_counts),
+        "closed_reason_counts": _closed_reason_counts(cycle.get("closed", [])),
+        "acceptance_rates": {
+            "opportunity_to_open_rate": cycle_metrics.get("opportunity_to_open_rate", 0.0),
+            "candidate_to_open_rate": cycle_metrics.get("candidate_to_open_rate", 0.0),
+            "close_win_rate": cycle_metrics.get("close_win_rate", 0.0),
+        },
+        "closed_realized_pnl_usd": cycle_metrics.get("closed_realized_pnl_usd", 0.0),
+    }
+
+    if isinstance(city_coverage_metrics, dict):
+        entry["city_coverage"] = {
+            "min_city_target": int(city_coverage_metrics.get("min_city_target", PAPER_MIN_CITY_DIVERSITY)),
+            "unique_opportunity_cities": int(city_coverage_metrics.get("unique_opportunity_cities", 0)),
+            "unique_candidate_cities": int(city_coverage_metrics.get("unique_candidate_cities", 0)),
+            "unique_opened_cities": int(city_coverage_metrics.get("unique_opened_cities", 0)),
+            "target_met": bool(city_coverage_metrics.get("target_met", False)),
+            "shortfall": int(city_coverage_metrics.get("shortfall", 0)),
+        }
+
+    if isinstance(performance_metrics, dict):
+        entry["performance"] = {
+            "total_ms": _safe_float(performance_metrics.get("total_ms"), 0.0),
+            "discovery_ms": _safe_float(performance_metrics.get("discovery_ms"), 0.0),
+            "position_management_ms": _safe_float(performance_metrics.get("position_management_ms"), 0.0),
+            "entry_selection_ms": _safe_float(performance_metrics.get("entry_selection_ms"), 0.0),
+            "metrics_persist_ms": _safe_float(performance_metrics.get("metrics_persist_ms"), 0.0),
+        }
+
+    return entry
+
+
+def _parse_discovery_markets(markets_raw):
+    """Parse raw markets and collect skip metrics used by discovery diagnostics."""
+    return _parse_discovery_markets_impl(
+        markets_raw=markets_raw,
+        parse_market_fn=parse_market,
+    )
+
+
+def _enrich_discovery_markets(parsed):
+    """Enrich parsed markets with forecast/edge and keep forecast cache diagnostics."""
+    return _enrich_discovery_markets_impl(
+        parsed=parsed,
+        perf_counter_fn=time.perf_counter,
+        elapsed_ms_fn=_elapsed_ms,
+        prefetch_forecasts_fn=_prefetch_forecasts,
+        fetch_forecast_with_cache_fn=_fetch_forecast_with_cache,
+        build_weather_evidence_fn=build_weather_evidence,
+        is_weather_evidence_valid_fn=is_weather_evidence_valid,
+        calculate_edge_fn=calculate_edge,
+        maybe_apply_ai_decision_fn=_maybe_apply_ai_decision,
+        discovery_forecast_prefetch_min_keys=DISCOVERY_FORECAST_PREFETCH_MIN_KEYS,
+        discovery_forecast_prefetch_max_workers=DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS,
+    )
 
 
 def run_discovery_cycle(inspect=False, aggressive_scan=False):
     """Run one discovery cycle and return structured results."""
-    markets_raw = fetch_markets(inspect=inspect, aggressive_scan=aggressive_scan)
+    return _run_discovery_cycle_impl(
+        inspect=inspect,
+        aggressive_scan=aggressive_scan,
+        perf_counter_fn=time.perf_counter,
+        elapsed_ms_fn=_elapsed_ms,
+        fetch_markets_fn=fetch_markets,
+        parse_discovery_markets_fn=_parse_discovery_markets,
+        enrich_discovery_markets_fn=_enrich_discovery_markets,
+        filter_opportunities_fn=filter_opportunities,
+        daily_resolve_only=DAILY_RESOLVE_ONLY,
+        daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE,
+    )
 
-    parsed = []
-    skipped_markets = 0
-    exact_skipped = 0
 
-    for raw in markets_raw:
-        parsed_market = parse_market(raw)
-        if not parsed_market:
-            skipped_markets += 1
-            continue
+def _collect_discovery_evidence_and_ai(enriched_markets):
+    """Aggregate evidence validity and AI status counters for diagnostics."""
+    return _collect_discovery_evidence_and_ai_impl(enriched_markets=enriched_markets)
 
-        if parsed_market["direction"] == "exact":
-            exact_skipped += 1
-            continue
 
-        parsed.append(parsed_market)
+def _collect_discovery_bucket_counts(
+    opportunities,
+    decide_entry_bucket_fn=None,
+    paper_entry_min_price=None,
+    paper_entry_max_price=None,
+):
+    """Aggregate entry bucket and reason counters for diagnostics."""
+    decide_fn = decide_entry_bucket if decide_entry_bucket_fn is None else decide_entry_bucket_fn
+    min_price = PAPER_ENTRY_MIN_PRICE if paper_entry_min_price is None else paper_entry_min_price
+    max_price = PAPER_ENTRY_MAX_PRICE if paper_entry_max_price is None else paper_entry_max_price
 
-    failed_cities = []
-    enriched = []
+    return _collect_discovery_bucket_counts_impl(
+        opportunities=opportunities,
+        decide_entry_bucket_fn=decide_fn,
+        paper_entry_min_price=min_price,
+        paper_entry_max_price=max_price,
+    )
 
-    for market in parsed:
-        city = market["city"]
-        date = market["date"]
-        forecast_temp = fetch_forecast(city, date)
 
-        if forecast_temp is None:
-            if city not in failed_cities:
-                failed_cities.append(city)
-            continue
+def _classify_discovery_rejection_reason(has_city, has_threshold, has_weather, has_direction):
+    """Classify why a raw market is rejected from temperature-candidate stage."""
+    return _classify_discovery_rejection_reason_impl(
+        has_city=has_city,
+        has_threshold=has_threshold,
+        has_weather=has_weather,
+        has_direction=has_direction,
+    )
 
-        edge_result = calculate_edge(market, forecast_temp)
-        if edge_result:
-            enriched.append(edge_result)
 
-    opportunities = filter_opportunities(enriched)
+def _analyze_discovery_raw_market(raw):
+    """Return candidate-stage signals for one raw market item."""
+    return _analyze_discovery_raw_market_impl(
+        raw=raw,
+        market_search_text_fn=_market_search_text,
+        has_target_city_fn=_has_target_city,
+        threshold_re=THRESHOLD_RE,
+        weather_context_re=WEATHER_CONTEXT_RE,
+        direction_candidate_re=DIRECTION_CANDIDATE_RE,
+    )
 
-    return {
-        "markets_raw": markets_raw,
-        "parsed": parsed,
-        "enriched": enriched,
-        "opportunities": opportunities,
-        "failed_cities": failed_cities,
-        "skipped_markets": skipped_markets,
-        "exact_skipped": exact_skipped,
-        "aggressive_scan": aggressive_scan,
-    }
+
+def _format_discovery_timing_line(perf):
+    """Build discovery timing line for diagnostics output."""
+    return (
+        "  Timing (ms)        : "
+        f"fetch={_safe_float(perf.get('fetch_markets_ms'), 0.0):.2f}, "
+        f"parse={_safe_float(perf.get('parse_ms'), 0.0):.2f}, "
+        f"prefetch={_safe_float(perf.get('forecast_prefetch_ms'), 0.0):.2f}, "
+        f"enrich={_safe_float(perf.get('enrich_ms'), 0.0):.2f}, "
+        f"filter={_safe_float(perf.get('filter_ms'), 0.0):.2f}, "
+        f"total={_safe_float(perf.get('total_ms'), 0.0):.2f}"
+    )
+
+
+def _format_discovery_cache_line(forecast_cache):
+    """Build forecast cache line for diagnostics output."""
+    return (
+        "  Forecast cache     : "
+        f"size={int(_safe_float(forecast_cache.get('size'), 0.0))}, "
+        f"hits={int(_safe_float(forecast_cache.get('hits'), 0.0))}, "
+        f"misses={int(_safe_float(forecast_cache.get('misses'), 0.0))}"
+    )
+
+
+def _format_discovery_prefetch_line(forecast_prefetch):
+    """Build forecast prefetch line for diagnostics output."""
+    return (
+        "  Forecast prefetch  : "
+        f"eligible={int(_safe_float(forecast_prefetch.get('eligible'), 0.0))}, "
+        f"attempted={int(_safe_float(forecast_prefetch.get('attempted'), 0.0))}, "
+        f"success={int(_safe_float(forecast_prefetch.get('successful'), 0.0))}, "
+        f"failed={int(_safe_float(forecast_prefetch.get('failed'), 0.0))}, "
+        f"workers={int(_safe_float(forecast_prefetch.get('workers'), 0.0))}, "
+        f"skipped={'yes' if forecast_prefetch.get('skipped') else 'no'}"
+    )
+
+
+def _format_discovery_daily_skip_line(diag):
+    """Build daily skip line for diagnostics output."""
+    return (
+        "  Daily skips         : "
+        f"date-mismatch={int(diag.get('daily_date_mismatch', 0))}, "
+        f"min-hours={int(diag.get('daily_min_hours_not_met', 0))} "
+        f"(min={float(diag.get('daily_min_hours_to_resolve', DAILY_MIN_HOURS_TO_RESOLVE)):.1f}h)"
+    )
 
 
 def build_discovery_diagnostics(discovery):
     """Build drop-off statistics to debug why opportunities are zero."""
-    raw_markets = discovery.get("markets_raw", [])
-    sample_rejections = []
-
-    counts = {
-        "raw_total": len(raw_markets),
-        "city_match": 0,
-        "temperature_hint": 0,
-        "weather_context": 0,
-        "direction_hint": 0,
-        "temperature_candidates": 0,
-        "parsed": len(discovery.get("parsed", [])),
-        "enriched": len(discovery.get("enriched", [])),
-        "opportunities": len(discovery.get("opportunities", [])),
-    }
-
-    for raw in raw_markets:
-        question = raw.get("question") or raw.get("title") or ""
-        text = _market_search_text(raw)
-        lower = text.lower()
-
-        has_city = _has_target_city(lower)
-        has_threshold = bool(re.search(THRESHOLD_PATTERN, text, re.IGNORECASE))
-        has_weather = bool(re.search(WEATHER_CONTEXT_PATTERN, lower, re.IGNORECASE))
-        has_direction = bool(re.search(DIRECTION_CANDIDATE_PATTERN, lower, re.IGNORECASE))
-
-        if has_city:
-            counts["city_match"] += 1
-        if has_threshold:
-            counts["temperature_hint"] += 1
-        if has_weather:
-            counts["weather_context"] += 1
-        if has_direction:
-            counts["direction_hint"] += 1
-
-        is_candidate = has_city and has_threshold and (has_weather or has_direction)
-        if is_candidate:
-            counts["temperature_candidates"] += 1
-        elif len(sample_rejections) < 5 and question:
-            if not has_city:
-                reason = "no_city"
-            elif not has_threshold:
-                reason = "no_threshold"
-            elif not (has_weather or has_direction):
-                reason = "no_weather_context"
-            else:
-                reason = "other"
-            sample_rejections.append({"reason": reason, "question": question})
-
-    return {
-        **counts,
-        "failed_cities": list(discovery.get("failed_cities", [])),
-        "skipped_markets": discovery.get("skipped_markets", 0),
-        "exact_skipped": discovery.get("exact_skipped", 0),
-        "sample_rejections": sample_rejections,
-    }
+    return _build_discovery_diagnostics_impl(
+        discovery=discovery,
+        collect_discovery_evidence_and_ai_fn=_collect_discovery_evidence_and_ai,
+        collect_discovery_bucket_counts_fn=_collect_discovery_bucket_counts,
+        analyze_discovery_raw_market_fn=_analyze_discovery_raw_market,
+        classify_discovery_rejection_reason_fn=_classify_discovery_rejection_reason,
+        decide_entry_bucket_fn=decide_entry_bucket,
+        paper_entry_min_price=PAPER_ENTRY_MIN_PRICE,
+        paper_entry_max_price=PAPER_ENTRY_MAX_PRICE,
+        daily_resolve_only=DAILY_RESOLVE_ONLY,
+        daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE,
+    )
 
 
 def print_discovery_diagnostics(discovery, aggressive_scan=False):
     """Print a concise per-stage drop-off report for discovery debugging."""
-    diag = build_discovery_diagnostics(discovery)
-
-    print(f"\n{'=' * 49}")
-    print("  DISCOVERY DIAGNOSTICS")
-    print(f"{'=' * 49}")
-    print(f"  Aggressive scan      : {'on' if aggressive_scan else 'off'}")
-    print(f"  Raw markets          : {diag['raw_total']}")
-    print(f"  City match           : {diag['city_match']}")
-    print(f"  Temperature hint     : {diag['temperature_hint']}")
-    print(f"  Weather context      : {diag['weather_context']}")
-    print(f"  Direction hint       : {diag['direction_hint']}")
-    print(f"  Temp candidates      : {diag['temperature_candidates']}")
-    print(f"  Parsed               : {diag['parsed']}")
-    print(f"  Enriched             : {diag['enriched']}")
-    print(f"  Opportunities        : {diag['opportunities']}")
-    print(f"  Skipped              : {diag['skipped_markets']}")
-    print(f"  Exact skipped        : {diag['exact_skipped']}")
-
-    failed_cities = diag["failed_cities"]
-    if failed_cities:
-        names = ", ".join(city.title() for city in failed_cities)
-        print(f"  Forecast failures    : {names}")
-
-    if diag["sample_rejections"]:
-        print("  Rejection samples    :")
-        for sample in diag["sample_rejections"]:
-            snippet = sample["question"][:120]
-            print(f"    - [{sample['reason']}] {snippet}")
-
-    print(f"{'=' * 49}")
+    _print_discovery_diagnostics_impl(
+        discovery=discovery,
+        aggressive_scan=aggressive_scan,
+        build_discovery_diagnostics_fn=build_discovery_diagnostics,
+        format_discovery_timing_line_fn=_format_discovery_timing_line,
+        format_discovery_cache_line_fn=_format_discovery_cache_line,
+        format_discovery_prefetch_line_fn=_format_discovery_prefetch_line,
+        format_discovery_daily_skip_line_fn=_format_discovery_daily_skip_line,
+    )
 
 
 def _position_to_market(position, current_yes_price, hours_until_resolve):
     """Build calculate_edge-compatible market dict from an open position."""
-    return {
-        "city": position["city"],
-        "date": position["date"],
-        "end_date": position.get("end_date"),
-        "market_question": position.get("market_question", ""),
-        "threshold": position["threshold"],
-        "unit": position["unit"],
-        "direction": position["direction"],
-        "yes_price": float(current_yes_price),
-        "token_id": position["token_id"],
-        "hours_until_resolve": hours_until_resolve if hours_until_resolve is not None else position.get("hours_until_resolve"),
+    return _position_to_market_impl(
+        position=position,
+        current_yes_price=current_yes_price,
+        hours_until_resolve=hours_until_resolve,
+    )
+
+
+def _fetch_forecast_with_cache(city, date, cache, stats=None):
+    """Fetch forecast with per-cycle cache for successful city/date lookups."""
+    return _fetch_forecast_with_cache_impl(
+        city=city,
+        date=date,
+        cache=cache,
+        stats=stats,
+        fetch_forecast_fn=fetch_forecast,
+    )
+
+
+def _prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1):
+    """Warm forecast cache in parallel for large unique city/date batches."""
+    return _prefetch_forecasts_impl(
+        cache_keys=cache_keys,
+        cache=cache,
+        min_keys=min_keys,
+        max_workers=max_workers,
+        fetch_forecast_fn=fetch_forecast,
+    )
+
+
+def _forecast_still_valid(
+    position,
+    current_yes_price,
+    hours_until_resolve,
+    forecast_cache=None,
+    forecast_cache_stats=None,
+):
+    """Evaluate whether forecast still supports the open position thesis."""
+    return _forecast_still_valid_impl(
+        position=position,
+        current_yes_price=current_yes_price,
+        hours_until_resolve=hours_until_resolve,
+        forecast_cache=forecast_cache,
+        forecast_cache_stats=forecast_cache_stats,
+        fetch_forecast_with_cache_fn=_fetch_forecast_with_cache,
+        build_weather_evidence_fn=build_weather_evidence,
+        is_weather_evidence_valid_fn=is_weather_evidence_valid,
+        position_to_market_fn=_position_to_market,
+        calculate_edge_fn=calculate_edge,
+    )
+
+
+def _build_open_position_inventory(open_positions):
+    """Build token and per-city occupancy maps for currently open positions."""
+    open_token_ids = {position.get("token_id") for position in open_positions if position.get("status") == "open"}
+    open_city_counts = {}
+
+    for position in open_positions:
+        if position.get("status") != "open":
+            continue
+
+        city_key = _normalize_city_key(position.get("city"))
+        if city_key:
+            open_city_counts[city_key] = open_city_counts.get(city_key, 0) + 1
+
+    return open_token_ids, open_city_counts
+
+
+def _build_entry_candidates(opportunities, open_token_ids, open_city_counts, min_bound, max_bound):
+    """Build ranked entry candidates while enforcing one-best-candidate per city."""
+    bucket_counts = {
+        "reject": 0,
+        "watchlist": 0,
+        "enter_swing": 0,
+        "enter_hold_candidate": 0,
     }
 
+    opportunity_city_keys = {
+        city_key
+        for city_key in (
+            _normalize_city_key(opportunity.get("city"))
+            for opportunity in opportunities
+        )
+        if city_key
+    }
+    candidate_city_keys = set()
+    best_candidate_by_city = {}
+    cityless_candidates = []
 
-def _forecast_still_valid(position, current_yes_price, hours_until_resolve):
-    """Evaluate whether forecast still supports the open position thesis."""
-    forecast_temp = fetch_forecast(position["city"], position["date"])
-    if forecast_temp is None:
-        return False
+    for index, opportunity in enumerate(opportunities):
+        bucket = decide_entry_bucket(opportunity, min_bound, max_bound)
+        bucket_name = bucket.get("bucket", "reject")
+        bucket_counts[bucket_name] = bucket_counts.get(bucket_name, 0) + 1
 
-    market_view = _position_to_market(position, current_yes_price, hours_until_resolve)
-    edge_result = calculate_edge(market_view, forecast_temp)
-    return bool(edge_result and edge_result["model_prob"] >= 0.70)
+        if bucket_name not in {"enter_swing", "enter_hold_candidate"}:
+            continue
+
+        token_id = opportunity.get("token_id")
+        price = float(opportunity["yes_price"])
+
+        if token_id in open_token_ids:
+            continue
+        if price < min_bound or price > max_bound:
+            continue
+
+        city_key = _normalize_city_key(opportunity.get("city"))
+        if city_key:
+            if open_city_counts.get(city_key, 0) >= PAPER_MAX_OPEN_PER_CITY:
+                continue
+            candidate_city_keys.add(city_key)
+
+        candidate = {
+            "index": index,
+            "city_key": city_key,
+            "opportunity": opportunity,
+            "bucket": bucket,
+            "bucket_name": bucket_name,
+            "rank": _city_candidate_rank(opportunity, bucket),
+        }
+
+        if city_key is None:
+            cityless_candidates.append(candidate)
+            continue
+
+        current_best = best_candidate_by_city.get(city_key)
+        if (
+            current_best is None
+            or candidate["rank"] > current_best["rank"]
+            or (candidate["rank"] == current_best["rank"] and candidate["index"] < current_best["index"])
+        ):
+            best_candidate_by_city[city_key] = candidate
+
+    entry_candidates = list(best_candidate_by_city.values()) + cityless_candidates
+    entry_candidates.sort(
+        key=lambda item: (
+            item["rank"][0],
+            item["rank"][1],
+            item["rank"][2],
+            -item["index"],
+        ),
+        reverse=True,
+    )
+
+    return entry_candidates, bucket_counts, opportunity_city_keys, candidate_city_keys
+
+
+def _append_opened_positions_from_candidates(
+    entry_candidates,
+    next_open_positions,
+    open_token_ids,
+    open_city_counts,
+    available_slots,
+    stake_usd,
+):
+    """Open positions from ranked candidates while respecting city and slot limits."""
+    opened_this_cycle = []
+    opened_city_keys = set()
+
+    for candidate in entry_candidates:
+        if available_slots <= 0:
+            break
+
+        opportunity = candidate["opportunity"]
+        bucket = candidate["bucket"]
+        bucket_name = candidate["bucket_name"]
+        city_key = candidate["city_key"]
+        token_id = opportunity.get("token_id")
+
+        if token_id in open_token_ids:
+            continue
+        if city_key and open_city_counts.get(city_key, 0) >= PAPER_MAX_OPEN_PER_CITY:
+            continue
+
+        position = build_paper_position(opportunity, stake_usd=stake_usd)
+        position["entry_bucket"] = bucket_name
+        position["entry_bucket_reason"] = bucket.get("reason")
+        position["entry_confidence_score"] = bucket.get("confidence")
+        position["entry_ai_status"] = opportunity.get("ai_status", "off")
+        if opportunity.get("ai_bucket") is not None:
+            position["entry_ai_bucket"] = opportunity.get("ai_bucket")
+        if opportunity.get("ai_confidence") is not None:
+            position["entry_ai_confidence"] = opportunity.get("ai_confidence")
+        if bucket.get("ai_override_applied"):
+            position["entry_ai_override_applied"] = True
+
+        next_open_positions.append(position)
+        opened_this_cycle.append(position)
+        open_token_ids.add(token_id)
+        if city_key:
+            open_city_counts[city_key] = open_city_counts.get(city_key, 0) + 1
+            opened_city_keys.add(city_key)
+        available_slots -= 1
+
+    return opened_this_cycle, opened_city_keys, available_slots
 
 
 def run_paper_trading_cycle(
@@ -971,148 +1713,183 @@ def run_paper_trading_cycle(
     force_aggressive_scan=False,
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
-    now = datetime.now(timezone.utc)
-    state = load_paper_state(path=state_path)
-
-    state_meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
-    empty_temperature_cycles = int(state_meta.get("empty_temperature_cycles", 0) or 0)
-
-    auto_aggressive = (
-        DISCOVERY_ENABLE_AUTO_AGGRESSIVE_SCAN
-        and empty_temperature_cycles >= max(0, DISCOVERY_AUTO_AGGRESSIVE_AFTER_EMPTY_CYCLES)
+    return _run_paper_trading_cycle_impl(
+        min_price=min_price,
+        max_price=max_price,
+        stake_usd=stake_usd,
+        state_path=state_path,
+        force_aggressive_scan=force_aggressive_scan,
+        perf_counter_fn=time.perf_counter,
+        now_utc_fn=lambda: datetime.now(timezone.utc),
+        elapsed_ms_fn=_elapsed_ms,
+        load_paper_state_fn=load_paper_state,
+        run_discovery_cycle_fn=run_discovery_cycle,
+        prefetch_forecasts_fn=_prefetch_forecasts,
+        ensure_take_profit_target_fn=_ensure_take_profit_target,
+        forecast_still_valid_fn=_forecast_still_valid,
+        position_confidence_score_fn=_position_confidence_score,
+        update_paper_position_fn=update_paper_position,
+        close_paper_position_fn=close_paper_position,
+        build_open_position_inventory_fn=_build_open_position_inventory,
+        build_entry_candidates_fn=_build_entry_candidates,
+        append_opened_positions_from_candidates_fn=_append_opened_positions_from_candidates,
+        build_city_coverage_metrics_fn=_build_city_coverage_metrics,
+        build_cycle_acceptance_metrics_fn=_build_cycle_acceptance_metrics,
+        build_rolling_acceptance_metrics_fn=_build_rolling_acceptance_metrics,
+        build_rolling_city_coverage_metrics_fn=_build_rolling_city_coverage_metrics,
+        build_cycle_journal_entry_fn=_build_cycle_journal_entry,
+        save_paper_state_fn=save_paper_state,
+        discovery_enable_auto_aggressive_scan=DISCOVERY_ENABLE_AUTO_AGGRESSIVE_SCAN,
+        discovery_auto_aggressive_after_empty_cycles=DISCOVERY_AUTO_AGGRESSIVE_AFTER_EMPTY_CYCLES,
+        paper_position_forecast_prefetch_min_keys=PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS,
+        paper_position_forecast_prefetch_max_workers=PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS,
+        paper_entry_min_price=PAPER_ENTRY_MIN_PRICE,
+        paper_entry_max_price=PAPER_ENTRY_MAX_PRICE,
+        paper_max_open_positions=PAPER_MAX_OPEN_POSITIONS,
+        paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
+        paper_journal_max_entries=PAPER_JOURNAL_MAX_ENTRIES,
     )
-    use_aggressive_scan = force_aggressive_scan or auto_aggressive
-    discovery = run_discovery_cycle(inspect=False, aggressive_scan=use_aggressive_scan)
-
-    market_by_token = {m["token_id"]: m for m in discovery["parsed"] if m.get("token_id")}
-    next_open_positions = []
-    next_history = list(state.get("history", []))
-    closed_this_cycle = []
-
-    for position in state.get("positions", []):
-        if position.get("status") != "open":
-            next_history.append(position)
-            continue
-
-        token_id = position.get("token_id")
-        live_market = market_by_token.get(token_id)
-
-        if not live_market:
-            next_open_positions.append(position)
-            continue
-
-        current_yes_price = float(live_market["yes_price"])
-        hours_until_resolve = live_market.get("hours_until_resolve")
-        forecast_valid = _forecast_still_valid(position, current_yes_price, hours_until_resolve)
-        confidence_score = _position_confidence_score(position, current_yes_price, forecast_valid)
-
-        updated_position, decision = update_paper_position(
-            position=position,
-            current_yes_price=current_yes_price,
-            forecast_still_valid=forecast_valid,
-            hours_until_resolve=hours_until_resolve,
-            now_utc=now,
-            confidence_score=confidence_score,
-        )
-
-        if decision["action"] == "hold_to_resolve" and hours_until_resolve is not None and hours_until_resolve <= 0:
-            settle_price = 1.0 if forecast_valid else 0.0
-            updated_position = close_paper_position(
-                position=updated_position,
-                exit_price=settle_price,
-                reason="resolved_after_hold",
-                now_utc=now,
-            )
-
-        if updated_position.get("status") == "closed":
-            closed_this_cycle.append(updated_position)
-            next_history.append(updated_position)
-        else:
-            next_open_positions.append(updated_position)
-
-    min_bound = PAPER_ENTRY_MIN_PRICE if min_price is None else float(min_price)
-    max_bound = PAPER_ENTRY_MAX_PRICE if max_price is None else float(max_price)
-
-    open_token_ids = {p.get("token_id") for p in next_open_positions if p.get("status") == "open"}
-    available_slots = max(PAPER_MAX_OPEN_POSITIONS - len(open_token_ids), 0)
-    opened_this_cycle = []
-
-    for opportunity in discovery["opportunities"]:
-        if available_slots <= 0:
-            break
-
-        token_id = opportunity.get("token_id")
-        price = float(opportunity["yes_price"])
-
-        if token_id in open_token_ids:
-            continue
-        if price < min_bound or price > max_bound:
-            continue
-
-        position = build_paper_position(opportunity, stake_usd=stake_usd)
-
-        next_open_positions.append(position)
-        opened_this_cycle.append(position)
-        open_token_ids.add(token_id)
-        available_slots -= 1
-
-    if discovery["parsed"]:
-        empty_temperature_cycles = 0
-    else:
-        empty_temperature_cycles += 1
-
-    next_state = {
-        "positions": next_open_positions,
-        "history": next_history,
-        "updated_at": now.isoformat(),
-        "meta": {
-            "empty_temperature_cycles": empty_temperature_cycles,
-        },
-    }
-    save_paper_state(next_state, path=state_path)
-
-    return {
-        "opened": opened_this_cycle,
-        "closed": closed_this_cycle,
-        "open_positions": next_open_positions,
-        "state_path": state_path,
-        "discovery": discovery,
-        "min_bound": min_bound,
-        "max_bound": max_bound,
-        "used_aggressive_scan": use_aggressive_scan,
-        "empty_temperature_cycles": empty_temperature_cycles,
-    }
 
 
 def print_paper_cycle_summary(cycle):
     """Print concise paper-trading cycle summary."""
-    discovery = cycle["discovery"]
+    _print_paper_cycle_summary_impl(
+        cycle=cycle,
+        safe_float_fn=_safe_float,
+        paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
+    )
 
-    print(f"\n{'=' * 43}")
-    print("  PAPER TRADING CYCLE")
-    print(f"{'=' * 43}")
-    print(f"  Opportunities      : {len(discovery['opportunities'])}")
-    print(f"  Opened this cycle  : {len(cycle['opened'])}")
-    print(f"  Closed this cycle  : {len(cycle['closed'])}")
-    print(f"  Open positions now : {len(cycle['open_positions'])}")
-    print(f"  Entry bounds       : {cycle['min_bound']:.4f} - {cycle['max_bound']:.4f}")
-    print(f"  Aggressive scan    : {'on' if cycle.get('used_aggressive_scan') else 'off'}")
-    print(f"  Empty temp cycles  : {cycle.get('empty_temperature_cycles', 0)}")
-    print(f"  State file         : {cycle['state_path']}")
-    print(f"{'=' * 43}")
 
-    if cycle["opened"]:
-        print("  Opened tokens      :")
-        for position in cycle["opened"]:
-            print(f"    - {position['token_id']} @ {position['entry_price']:.4f}")
+def _parse_utc_datetime(value):
+    """Parse datetime inputs into timezone-aware UTC datetime objects."""
+    return _parse_utc_datetime_impl(value=value)
 
-    if cycle["closed"]:
-        print("  Closed tokens      :")
-        for position in cycle["closed"]:
-            print(
-                f"    - {position['token_id']} @ {position['exit_price']:.4f} "
-                f"({position['close_reason']}, PnL {position['realized_pnl_usd']:+.4f})"
-            )
+
+def _build_journal_age_breakdown(journal_entries, now_utc=None):
+    """Return age-bucket counts and timestamp coverage information for journal entries."""
+    return _build_journal_age_breakdown_impl(
+        journal_entries=journal_entries,
+        now_utc=now_utc,
+        parse_utc_datetime_fn=_parse_utc_datetime,
+    )
+
+
+def _normalize_rolling_acceptance_metrics(rolling):
+    """Normalize rolling acceptance metrics into report payload schema."""
+    return _normalize_rolling_acceptance_metrics_impl(
+        rolling=rolling,
+        safe_float_fn=_safe_float,
+    )
+
+
+def _normalize_rolling_city_coverage_metrics(city_rolling):
+    """Normalize rolling city coverage metrics into report payload schema."""
+    return _normalize_rolling_city_coverage_metrics_impl(
+        city_rolling=city_rolling,
+        safe_float_fn=_safe_float,
+        paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
+    )
+
+
+def _normalize_last_cycle_performance(last_cycle_performance):
+    """Normalize last-cycle timing and prefetch details for report payload."""
+    return _normalize_last_cycle_performance_impl(
+        last_cycle_performance=last_cycle_performance,
+        safe_float_fn=_safe_float,
+    )
+
+
+def _normalize_recent_journal_entries(journal, recent_entries):
+    """Normalize recent journal entries and return shown raw count."""
+    return _normalize_recent_journal_entries_impl(
+        journal=journal,
+        recent_entries=recent_entries,
+        safe_float_fn=_safe_float,
+    )
+
+
+def _build_journal_retention_payload(journal, shown_count, rolling, now_utc=None):
+    """Build journal retention and rotation summary payload."""
+    return _build_journal_retention_payload_impl(
+        journal=journal,
+        shown_count=shown_count,
+        rolling=rolling,
+        now_utc=now_utc,
+        safe_float_fn=_safe_float,
+        safe_div_fn=_safe_div,
+        build_journal_age_breakdown_fn=_build_journal_age_breakdown,
+        paper_journal_max_entries=PAPER_JOURNAL_MAX_ENTRIES,
+        paper_report_retention_warn_threshold=PAPER_REPORT_RETENTION_WARN_THRESHOLD,
+    )
+
+
+def _build_journal_anomaly_counters(
+    journal,
+    safe_float_fn=None,
+    paper_report_anomaly_streak_alert=None,
+    paper_report_reject_dominant_ratio=None,
+):
+    """Build anomaly streak counters for paper state report payload."""
+    safe_float = _safe_float if safe_float_fn is None else safe_float_fn
+    streak_alert = (
+        PAPER_REPORT_ANOMALY_STREAK_ALERT
+        if paper_report_anomaly_streak_alert is None
+        else paper_report_anomaly_streak_alert
+    )
+    reject_ratio = (
+        PAPER_REPORT_REJECT_DOMINANT_RATIO
+        if paper_report_reject_dominant_ratio is None
+        else paper_report_reject_dominant_ratio
+    )
+    return _build_journal_anomaly_counters_impl(
+        journal=journal,
+        safe_float_fn=safe_float,
+        paper_report_anomaly_streak_alert=streak_alert,
+        paper_report_reject_dominant_ratio=reject_ratio,
+    )
+
+
+def build_paper_state_report(state, state_path=PAPER_STATE_FILE, recent_entries=5, now_utc=None):
+    """Build a normalized paper-state report payload for text or JSON output."""
+    return _build_paper_state_report_impl(
+        state=state,
+        state_path=state_path,
+        recent_entries=recent_entries,
+        now_utc=now_utc,
+        safe_float_fn=_safe_float,
+        safe_div_fn=_safe_div,
+        paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
+        paper_journal_max_entries=PAPER_JOURNAL_MAX_ENTRIES,
+        paper_report_retention_warn_threshold=PAPER_REPORT_RETENTION_WARN_THRESHOLD,
+        normalize_rolling_acceptance_metrics_fn=_normalize_rolling_acceptance_metrics_impl,
+        normalize_rolling_city_coverage_metrics_fn=_normalize_rolling_city_coverage_metrics_impl,
+        normalize_last_cycle_performance_fn=_normalize_last_cycle_performance_impl,
+        normalize_recent_journal_entries_fn=_normalize_recent_journal_entries_impl,
+        build_journal_retention_payload_fn=_build_journal_retention_payload_impl,
+        build_journal_anomaly_counters_fn=_build_journal_anomaly_counters,
+        paper_report_anomaly_streak_alert=PAPER_REPORT_ANOMALY_STREAK_ALERT,
+        paper_report_reject_dominant_ratio=PAPER_REPORT_REJECT_DOMINANT_RATIO,
+    )
+
+
+def print_paper_state_report(
+    state,
+    state_path=PAPER_STATE_FILE,
+    recent_entries=5,
+    output_format="text",
+    now_utc=None,
+):
+    """Print persisted paper state summary without running a new cycle."""
+    return _print_paper_state_report_impl(
+        state=state,
+        state_path=state_path,
+        recent_entries=recent_entries,
+        output_format=output_format,
+        now_utc=now_utc,
+        build_paper_state_report_fn=build_paper_state_report,
+        safe_float_fn=_safe_float,
+        paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1121,25 +1898,7 @@ def print_paper_cycle_summary(cycle):
 
 def print_opportunities(opportunities):
     """Print a readable opportunity list."""
-    if not opportunities:
-        print("\nNo opportunities found matching criteria.")
-        return
-
-    print(f"\n{'=' * 57}")
-    print(f"  OPPORTUNITIES FOUND: {len(opportunities)}")
-    print(f"{'=' * 57}")
-
-    for i, opp in enumerate(opportunities, 1):
-        print(f"\n[{i}] {opp['city'].title()} — {opp['market_question']}")
-        print(f"    YES price  : {opp['yes_price']:.2f}")
-        print(f"    Model prob : {opp['model_prob']:.2f}")
-        print(f"    Edge       : {opp['edge']:+.4f}")
-        print(
-            f"    Forecast   : {opp['forecast_temp_converted']:.1f}°{opp['unit']} "
-            f"(threshold: {opp['threshold']}°{opp['unit']}, {opp['direction']})"
-        )
-        print(f"    Token ID   : {opp['token_id']}")
-        print(f"    Resolves   : {opp['hours_until_resolve']}h")
+    _print_opportunities_impl(opportunities=opportunities)
 
 
 def print_summary(
@@ -1152,20 +1911,64 @@ def print_summary(
     opportunities_count,
 ):
     """Print run-level coverage and result counts."""
-    success_count = total_cities - len(failed_cities)
-    failed_str = ""
-    if failed_cities:
-        names = ", ".join(city.title() for city in failed_cities)
-        failed_str = f"  ({names}: timeout/forecast unavailable)"
+    _print_summary_impl(
+        total_cities=total_cities,
+        failed_cities=failed_cities,
+        total_markets=total_markets,
+        parsed_markets=parsed_markets,
+        skipped_markets=skipped_markets,
+        exact_skipped=exact_skipped,
+        opportunities_count=opportunities_count,
+    )
 
-    print(f"\n{'=' * 37}")
-    print("  RUN SUMMARY")
-    print(f"{'=' * 37}")
-    print(f"  Cities fetched  : {success_count}/{total_cities}{failed_str}")
-    print(f"  Markets parsed  : {parsed_markets}/{total_markets}  ({skipped_markets} skipped)")
-    print(f"  Exact skipped   : {exact_skipped}")
-    print(f"  Opportunities   : {opportunities_count}")
-    print(f"{'=' * 37}\n")
+
+def _parse_cli_mode_flags(argv):
+    """Parse CLI mode flags used by main()."""
+    return parse_cli_mode_flags(argv)
+
+
+def _run_main_paper_report_mode(paper_report_json_mode):
+    """Handle paper report mode in main()."""
+    _run_main_paper_report_mode_impl(
+        paper_report_json_mode=paper_report_json_mode,
+        load_paper_state_fn=load_paper_state,
+        print_paper_state_report_fn=print_paper_state_report,
+        paper_state_file=PAPER_STATE_FILE,
+    )
+
+
+def _run_main_paper_loop_mode(aggressive_mode):
+    """Handle paper loop mode in main()."""
+    _run_main_paper_loop_mode_impl(
+        aggressive_mode=aggressive_mode,
+        paper_loop_interval_seconds=PAPER_LOOP_INTERVAL_SECONDS,
+        run_paper_trading_cycle_fn=run_paper_trading_cycle,
+        print_paper_cycle_summary_fn=print_paper_cycle_summary,
+        sleep_fn=time.sleep,
+    )
+
+
+def _run_main_paper_single_mode(aggressive_mode):
+    """Handle one-shot paper mode in main()."""
+    _run_main_paper_single_mode_impl(
+        aggressive_mode=aggressive_mode,
+        run_paper_trading_cycle_fn=run_paper_trading_cycle,
+        print_paper_cycle_summary_fn=print_paper_cycle_summary,
+    )
+
+
+def _run_main_discovery_mode(inspect_mode, aggressive_mode, diagnose_mode):
+    """Handle discovery/default mode in main()."""
+    _run_main_discovery_mode_impl(
+        inspect_mode=inspect_mode,
+        aggressive_mode=aggressive_mode,
+        diagnose_mode=diagnose_mode,
+        run_discovery_cycle_fn=run_discovery_cycle,
+        print_discovery_diagnostics_fn=print_discovery_diagnostics,
+        print_opportunities_fn=print_opportunities,
+        print_summary_fn=print_summary,
+        target_cities_len=len(TARGET_CITIES),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1174,42 +1977,24 @@ def print_summary(
 
 def main():
     """Run discovery mode or paper-trading mode based on CLI flags."""
-    inspect_mode = "--inspect" in sys.argv
-    paper_mode = "--paper" in sys.argv
-    paper_loop_mode = "--paper-loop" in sys.argv
-    diagnose_mode = "--diagnose" in sys.argv
-    aggressive_mode = "--aggressive" in sys.argv
+    modes = _parse_cli_mode_flags(sys.argv)
 
-    if paper_loop_mode:
-        print(f"Starting paper loop every {PAPER_LOOP_INTERVAL_SECONDS}s. Press Ctrl+C to stop.")
-        try:
-            while True:
-                cycle = run_paper_trading_cycle(force_aggressive_scan=aggressive_mode)
-                print_paper_cycle_summary(cycle)
-                time.sleep(PAPER_LOOP_INTERVAL_SECONDS)
-        except KeyboardInterrupt:
-            print("\nPaper loop stopped.")
+    if modes["paper_report_mode"]:
+        _run_main_paper_report_mode(modes["paper_report_json_mode"])
         return
 
-    if paper_mode:
-        cycle = run_paper_trading_cycle(force_aggressive_scan=aggressive_mode)
-        print_paper_cycle_summary(cycle)
+    if modes["paper_loop_mode"]:
+        _run_main_paper_loop_mode(modes["aggressive_mode"])
         return
 
-    discovery = run_discovery_cycle(inspect=inspect_mode, aggressive_scan=aggressive_mode)
+    if modes["paper_mode"]:
+        _run_main_paper_single_mode(modes["aggressive_mode"])
+        return
 
-    if diagnose_mode:
-        print_discovery_diagnostics(discovery, aggressive_scan=aggressive_mode)
-
-    print_opportunities(discovery["opportunities"])
-    print_summary(
-        total_cities=len(TARGET_CITIES),
-        failed_cities=discovery["failed_cities"],
-        total_markets=len(discovery["markets_raw"]),
-        parsed_markets=len(discovery["parsed"]),
-        skipped_markets=discovery["skipped_markets"],
-        exact_skipped=discovery["exact_skipped"],
-        opportunities_count=len(discovery["opportunities"]),
+    _run_main_discovery_mode(
+        inspect_mode=modes["inspect_mode"],
+        aggressive_mode=modes["aggressive_mode"],
+        diagnose_mode=modes["diagnose_mode"],
     )
 
 

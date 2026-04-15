@@ -1,0 +1,718 @@
+# Copilot Worklog
+
+## 2026-04-14
+
+### 2026-04-14T00:00:00Z - Cycle journal + acceptance metrics baseline
+- Scope:
+  - market_discovery.py
+  - tests/test_paper_cycle.py
+- Reason:
+  - Start next implementation phase: paper-state journal enrichment and acceptance metrics workflow.
+  - Establish deterministic observability for entry/exit quality without changing core hybrid decision intent.
+- Changes:
+  - Added cycle journal persistence in paper state via cycle_journal list.
+  - Added per-cycle acceptance metrics payload (opportunity, candidate, open, close, win-rate, cycle closed PnL).
+  - Added rolling acceptance metrics in state meta (totals + rates + cumulative bucket counts + cumulative closed PnL).
+  - Added journal entry generation for each paper cycle.
+  - Extended paper cycle summary output to print cycle and rolling acceptance rates.
+  - Updated paper cycle tests to validate new state schema and metrics persistence.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 88 passed in 0.21s
+  - Updated .env.example with PAPER_JOURNAL_MAX_ENTRIES.
+  - Updated docs/superpowers/specs/2026-04-13-market-discovery-design.md to include journal and acceptance metrics sections.
+- Status:
+  - Completed
+
+### 2026-04-14T02:05:00Z - Report retention summary for long journal visibility
+- Scope:
+  - market_discovery.py
+  - tests/test_paper_cycle.py
+  - .env.example
+  - docs/superpowers/specs/2026-04-13-market-discovery-design.md
+- Reason:
+  - Prevent paper report readability degradation as journal history grows by exposing explicit retention summary fields.
+  - Keep enhancement observability-only with no changes to hybrid entry/exit decisions.
+- Changes:
+  - Added `PAPER_REPORT_RETENTION_WARN_THRESHOLD` config for report-side warning threshold.
+  - Extended `build_paper_state_report()` with `journal_retention` payload:
+    - recent entries shown,
+    - older entries hidden,
+    - journal capacity/remaining/utilization,
+    - warning threshold flag.
+  - Extended text report output to print journal retention summary and warning line when threshold is reached.
+  - Extended JSON report test assertions to validate retention payload fields.
+  - Updated env template and design spec to document retention summary behavior and new config surface.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 94 passed in 0.21s
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: JSON report includes `journal_retention` block with capacity/utilization fields.
+  - Smoke run: ./run_paper_5usd.sh --paper-report --json
+  - Result: compatibility JSON path still emits the same retention-aware payload.
+  - Smoke run: ./run_paper_5usd.sh --paper-report
+  - Result: text report prints journal retention line with recent/older/capacity/utilization values.
+- Status:
+  - Completed
+
+### 2026-04-14T00:45:00Z - Stability follow-up: typo alias + rolling metrics hardening
+- Scope:
+  - market_discovery.py
+  - tests/test_main.py
+  - tests/test_paper_cycle.py
+  - run_paper_5usd.sh
+  - docs/superpowers/specs/2026-04-13-market-discovery-design.md
+- Reason:
+  - Prevent operator error from silently disabling aggressive mode due to common typo (`--aggresive`).
+  - Strengthen acceptance-metrics quality with explicit multi-cycle accumulation test.
+  - Make paper runner robust on systems where `python` is not on PATH.
+- Changes:
+  - Added aggressive flag compatibility alias in CLI (`--aggresive` -> aggressive mode on).
+  - Added CLI test covering typo alias path.
+  - Added multi-cycle rolling metrics test to validate cumulative counts/rates and journal growth.
+  - Updated runner script to auto-fallback interpreter resolution (`PYTHON_BIN` -> `python` -> `.venv/bin/python` -> `venv/bin/python`).
+  - Updated design spec runtime modes to mention typo compatibility alias.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 90 passed in 0.21s
+  - Smoke run: ./run_paper_5usd.sh --paper --aggresive
+  - Result: cycle completed, Aggressive scan = on, state file updated.
+- Status:
+  - Completed
+
+### 2026-04-14T01:10:00Z - Observability extension: paper state report mode
+- Scope:
+  - market_discovery.py
+  - tests/test_main.py
+  - run_paper_5usd.sh
+  - docs/superpowers/specs/2026-04-13-market-discovery-design.md
+- Reason:
+  - Enable quick inspection of persisted paper state/journal/rolling metrics without running a new trading cycle.
+  - Keep operational checks fast and low-risk while preserving hybrid behavior.
+- Changes:
+  - Added CLI mode `--paper-report` to print paper state summary, rolling acceptance metrics, and recent journal entries.
+  - Added test coverage for paper-report mode path in main orchestrator.
+  - Updated runner script to accept `--paper-report` mode.
+  - Updated design spec runtime modes with the new report flag.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 91 passed in 0.19s
+  - Smoke run: ./run_paper_5usd.sh --paper-report
+  - Result: report printed expected state/journal/rolling metrics summary.
+- Status:
+  - Completed
+
+### 2026-04-14T01:40:00Z - Observability extension: machine-readable paper report JSON
+- Scope:
+  - market_discovery.py
+  - tests/test_main.py
+  - tests/test_paper_cycle.py
+  - run_paper_5usd.sh
+  - docs/superpowers/specs/2026-04-13-market-discovery-design.md
+- Reason:
+  - Add machine-readable paper state report output for monitoring integration without changing hybrid trading behavior.
+  - Keep operator workflow simple with both dedicated JSON mode and text mode compatibility.
+- Changes:
+  - Added `build_paper_state_report()` to normalize persisted state into a stable report payload.
+  - Extended `print_paper_state_report()` with `output_format` (`text` or `json`) while preserving current text output.
+  - Added CLI support for JSON report via `--paper-report-json` and `--paper-report --json`.
+  - Added runner script support for `--paper-report-json`.
+  - Added tests for orchestrator JSON mode routing and JSON payload output structure.
+  - Updated design spec runtime mode section and observability notes.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 94 passed in 0.21s
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: JSON payload printed with expected state/journal/rolling fields.
+  - Smoke run: ./run_paper_5usd.sh --paper-report --json
+  - Result: compatibility JSON path printed matching payload shape.
+  - Smoke run: ./run_paper_5usd.sh --paper-report
+  - Result: human-readable report path still prints expected state/journal/rolling summary.
+- Status:
+  - Completed
+
+### 2026-04-14T02:30:00Z - Observability completion: journal age buckets + rotation summary
+- Scope:
+  - market_discovery.py
+  - tests/test_paper_cycle.py
+  - docs/superpowers/specs/2026-04-13-market-discovery-design.md
+- Reason:
+  - Close remaining non-drift observability gap for long-running paper loops.
+  - Expose report-side age distribution and rotation estimation without changing hybrid trading decisions.
+- Changes:
+  - Added UTC-safe timestamp parsing and age-bucket builder for cycle journal entries.
+  - Extended paper report payload with journal age buckets (`lt_24h`, `h24_to_72h`, `gt_72h`, `unknown`).
+  - Added rotation summary payload (`policy`, `capacity_reached`, `estimated_entries_rotated_out`, `coverage_hours`, oldest/newest timestamps).
+  - Extended text report output with age-bucket and rotation summary lines.
+  - Extended JSON report test to validate new retention/rotation payload fields with deterministic timestamp baseline.
+  - Updated design spec observability section to include the new report fields.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 94 passed in 0.15s
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: JSON payload includes `journal_retention.age_buckets` and `journal_retention.rotation_summary`.
+  - Smoke run: ./run_paper_5usd.sh --paper-report
+  - Result: text report prints Journal age buckets and Journal rotation lines.
+  - Smoke run: ./run_paper_5usd.sh --paper-report --json
+  - Result: compatibility JSON path prints the same enhanced payload.
+  - Smoke run: ./run_paper_5usd.sh --paper --aggresive
+  - Result: did not complete within terminal timeout window (external API latency); background terminal was terminated cleanly to avoid hanging session.
+- Status:
+  - Completed
+
+### 2026-04-14T03:10:00Z - Daily-resolve mode (UTC + min-hours) rollout via config flag
+- Scope:
+  - market_discovery.py
+  - .env.example
+  - tests/test_parse_market.py
+  - tests/test_discovery_diagnostics.py
+  - docs/superpowers/specs/2026-04-13-market-discovery-design.md
+- Reason:
+  - Implement focused daily trading mode: only temperature markets resolving on the same UTC date and with enough time-to-resolve.
+  - Keep rollout safe (opt-in flag), preserving baseline behavior when disabled.
+- Changes:
+  - Added config flags: `DAILY_RESOLVE_ONLY` (default `false`) and `DAILY_MIN_HOURS_TO_RESOLVE` (default `6`).
+  - Extended `parse_market()` with optional daily filter controls and skip-reason return path.
+  - Added daily filter logic in parser:
+    - reject by UTC date mismatch (`daily_date_mismatch`),
+    - reject by minimum hours not met (`daily_min_hours_not_met`).
+  - Added daily skip counters to discovery payload and diagnostics output.
+  - Updated diagnostics printout to show daily mode status and skip reason counts.
+  - Added test coverage for:
+    - same-day pass,
+    - next-day reject with reason,
+    - min-hours reject with reason,
+    - diagnostics daily counters.
+  - Updated design spec and env example with daily-mode contract.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 97 passed in 0.23s
+  - Smoke run (daily off baseline): ./run_paper_5usd.sh --paper-report --json
+  - Result: report path stable and schema intact.
+  - Smoke run (daily on cycle): DAILY_RESOLVE_ONLY=true DAILY_MIN_HOURS_TO_RESOLVE=6 ./run_paper_5usd.sh --paper --aggresive
+  - Result: cycle executed safely, 0 opportunities in sampled run (expected under stricter daily filter).
+  - Smoke run (daily on diagnostics): DAILY_RESOLVE_ONLY=true DAILY_MIN_HOURS_TO_RESOLVE=6 python market_discovery.py --diagnose --aggressive
+  - Result: diagnostics showed daily skips counters (`date-mismatch=385`, `min-hours=308`) and parsed/opportunity drop-off visibility.
+- Status:
+  - Completed
+
+### 2026-04-14T10:45:00Z - City diversification entry policy + soft 5-city coverage target
+- Scope:
+  - market_discovery.py
+  - tests/test_paper_cycle.py
+  - .env.example
+  - docs/superpowers/specs/2026-04-13-market-discovery-design.md
+- Reason:
+  - Implement one-city-one-position policy and deterministic best-per-city candidate selection.
+  - Add soft daily diversification target (minimum 5 opportunity cities) with warning-only behavior.
+  - Preserve hybrid exit and risk math (non-drift requirement).
+- Changes:
+  - Added city controls:
+    - `PAPER_MAX_OPEN_PER_CITY` (default `1`),
+    - `PAPER_MIN_CITY_DIVERSITY` (default `5`).
+  - Added deterministic city candidate ranking helper:
+    - confidence descending,
+    - edge descending,
+    - cheaper YES price as tie-break.
+  - Refactored paper entry flow to:
+    - keep existing bucketing and token dedupe,
+    - enforce max open per city,
+    - pick only the best candidate per city in each cycle,
+    - keep no-swap policy when city already has open position.
+  - Added city coverage metrics:
+    - per-cycle (`unique_opportunity_cities`, `unique_candidate_cities`, `unique_opened_cities`, target shortfall),
+    - rolling meta (`city_coverage_rolling`) in persisted state.
+  - Extended cycle journal/report payload with city coverage blocks.
+  - Extended paper cycle summary output with non-blocking city warning line when below target.
+  - Added tests for:
+    - best-per-city selection behavior,
+    - city-open-position blocking,
+    - token dedupe preservation under city filter,
+    - soft target warning metrics,
+    - report JSON exposure for rolling city metrics.
+  - Updated env and design spec documentation for city policy and soft-target semantics.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_paper_cycle.py
+  - Result: 12 passed in 0.20s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 101 passed in 0.20s
+  - Smoke run: DAILY_RESOLVE_ONLY=true DAILY_MIN_HOURS_TO_RESOLVE=0 ./run_paper_5usd.sh --paper --aggresive
+  - Result: cycle completed safely; city coverage summary and warning rendered as expected.
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: JSON payload includes `rolling_city_coverage_metrics` and latest journal entry includes `city_coverage` block.
+- Status:
+  - Completed
+
+### 2026-04-14T11:00:00Z - Phase 1 quick-win cleanup + parsing hot-path speedup
+- Scope:
+  - market_discovery.py
+- Reason:
+  - Start file cleanup and low-risk performance pass on the largest hot paths while preserving runtime behavior.
+  - Reduce repeated regex compilation/search overhead in fetch/parse/diagnostic loops.
+- Changes:
+  - Added precompiled regex constants for threshold, direction, weather context, and city patterns.
+  - Added `_match_target_city()` helper and switched city detection to compiled regex matching.
+  - Optimized `_is_temperature_market_candidate()` with early exits:
+    - return early when city is absent,
+    - return early when threshold is absent,
+    - skip direction regex when weather context already passes.
+  - Optimized `fetch_markets()` page scan by evaluating candidates only for new page markets instead of re-scanning all accumulated markets each page.
+  - Updated `parse_market()` and `build_discovery_diagnostics()` to reuse precompiled regex and reduce repeated regex parsing overhead.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_fetch_markets.py tests/test_parse_market.py tests/test_discovery_diagnostics.py tests/test_paper_cycle.py
+  - Result: 44 passed in 0.21s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 101 passed in 0.20s
+  - Microbenchmark (candidate detection old-vs-new on synthetic mixed markets):
+    - old: 5.2840s
+    - new: 3.2069s
+    - speedup: 1.648x (39.31% faster on benchmarked hot path)
+  - Smoke run: DAILY_RESOLVE_ONLY=true DAILY_MIN_HOURS_TO_RESOLVE=0 ./run_paper_5usd.sh --paper --aggresive
+  - Result: cycle completed normally with expected summary output.
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: report JSON payload remained compatible, including city coverage blocks.
+- Status:
+  - Completed
+
+### 2026-04-14T11:10:00Z - Phase 1 continuation: per-cycle forecast cache (success-only)
+- Scope:
+  - market_discovery.py
+  - tests/test_discovery_cycle.py
+- Reason:
+  - Reduce duplicate forecast API calls in discovery and position-validation loops without changing decision behavior.
+  - Keep transient-failure behavior safe by caching successful forecast lookups only.
+- Changes:
+  - Added `_fetch_forecast_with_cache(city, date, cache)` helper for per-cycle cache use.
+  - Updated `run_discovery_cycle()` to reuse successful forecast values by city/date within one cycle.
+  - Updated `_forecast_still_valid()` to support optional cache and wired cache from `run_paper_trading_cycle()`.
+  - Added tests in `tests/test_discovery_cycle.py` to lock behavior:
+    - successful same-city/date lookup uses a single forecast call,
+    - failed lookup is not cached, allowing retry on subsequent market in the same cycle.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_discovery_cycle.py tests/test_fetch_markets.py tests/test_parse_market.py tests/test_paper_cycle.py
+  - Result: 45 passed in 0.20s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 103 passed in 0.16s
+  - Micro-check (same city/date repeated 20 markets):
+    - legacy forecast calls: 20,
+    - cached forecast calls: 1,
+    - call reduction: 95%.
+  - Smoke run: DAILY_RESOLVE_ONLY=true DAILY_MIN_HOURS_TO_RESOLVE=0 ./run_paper_5usd.sh --paper --aggresive
+  - Result: paper cycle completed normally.
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: report JSON remained schema-compatible.
+- Status:
+  - Completed
+
+### 2026-04-14T11:25:00Z - Phase 1 continuation: guarded parallel forecast prefetch
+- Scope:
+  - market_discovery.py
+  - tests/test_discovery_cycle.py
+  - tests/test_paper_cycle.py
+  - .env.example
+  - docs/superpowers/specs/2026-04-13-market-discovery-design.md
+- Reason:
+  - Reduce end-to-end cycle time further by parallelizing unique forecast lookups on larger batches.
+  - Keep failure semantics stable (failed forecast responses must remain uncached and retryable in normal flow).
+- Changes:
+  - Added `_prefetch_forecasts()` helper with guarded activation:
+    - prefetch runs only when eligible unique keys reach configured minimum,
+    - successful forecasts warm cache,
+    - failed forecasts are counted and not cached.
+  - Added new env knobs:
+    - `DISCOVERY_FORECAST_PREFETCH_MIN_KEYS`,
+    - `DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS`,
+    - `PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS`,
+    - `PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS`.
+  - Wired discovery prefetch before enrichment loop and exposed telemetry:
+    - `forecast_prefetch_ms`,
+    - `forecast_prefetch` stats block (eligible/attempted/successful/failed/workers/skipped).
+  - Wired paper-cycle open-position prefetch before position management and exposed telemetry:
+    - `position_prefetch_ms`,
+    - `position_forecast_prefetch` stats block.
+  - Extended text summaries and report payloads to surface prefetch timing/stats.
+  - Added tests:
+    - discovery prefetch activation behavior and stats,
+    - paper open-position prefetch behavior and stats.
+  - Updated design spec/config docs with prefetch architecture and knobs.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_discovery_cycle.py tests/test_paper_cycle.py tests/test_discovery_diagnostics.py
+  - Result: 17 passed in 0.22s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.22s
+  - Smoke run: DAILY_RESOLVE_ONLY=true DAILY_MIN_HOURS_TO_RESOLVE=0 ./run_paper_5usd.sh --paper --aggresive
+  - Result: cycle completed; summary includes position prefetch telemetry.
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: JSON payload includes `last_cycle_performance.position_prefetch_ms` and `position_forecast_prefetch`.
+- Status:
+  - Completed
+
+### 2026-04-14T13:20:00Z - Phase 1 continuation: paper-cycle structural refactor (non-drift)
+- Scope:
+  - market_discovery.py
+- Reason:
+  - Reduce cognitive load in the largest runtime path (`run_paper_trading_cycle`) while preserving behavior.
+  - Continue monolith cleanup with low-risk helper extraction and parity validation.
+- Changes:
+  - Added helper extraction for paper-cycle entry flow:
+    - `_build_open_position_inventory()`
+    - `_build_entry_candidates()`
+    - `_append_opened_positions_from_candidates()`
+  - Refactored `run_paper_trading_cycle()` to consume the new helpers instead of inline blocks.
+  - Kept deterministic ranking, city cap checks, token dedupe, and entry metadata attachment behavior unchanged.
+  - Added micro-optimization in discovery city-failure dedupe using set-backed membership while preserving output order.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_paper_cycle.py tests/test_discovery_cycle.py tests/test_discovery_diagnostics.py
+  - Result: 17 passed in 0.23s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.20s
+  - Smoke run: DAILY_RESOLVE_ONLY=true DAILY_MIN_HOURS_TO_RESOLVE=0 ./run_paper_5usd.sh --paper --aggresive
+  - Result: cycle completed normally; timing/telemetry output remained stable.
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: report payload remained schema-compatible.
+- Status:
+  - Completed
+
+### 2026-04-14T13:25:00Z - Phase 1 continuation: discovery structural refactor (non-drift)
+- Scope:
+  - market_discovery.py
+- Reason:
+  - Continue reducing monolith complexity while preserving output parity.
+  - Isolate discovery parse/enrich stages into internal helpers for easier maintenance and safer future tuning.
+- Changes:
+  - Added `_parse_discovery_markets()` helper to centralize parse + skip-reason accounting.
+  - Added `_enrich_discovery_markets()` helper to centralize forecast prefetch/cache enrichment flow.
+  - Refactored `run_discovery_cycle()` to orchestrate helper outputs instead of inline parse/enrich loops.
+  - Preserved discovery payload shape and telemetry fields (`parse_ms`, `forecast_prefetch_ms`, `enrich_ms`, cache stats).
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_discovery_cycle.py tests/test_discovery_diagnostics.py tests/test_paper_cycle.py
+  - Result: 17 passed in 0.19s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.31s
+  - Smoke run: DAILY_RESOLVE_ONLY=true DAILY_MIN_HOURS_TO_RESOLVE=0 ./run_paper_5usd.sh --paper --aggresive
+  - Result: paper cycle completed; summary output remained stable.
+  - Smoke run: ./run_paper_5usd.sh --paper-report-json
+  - Result: JSON report remained schema-compatible with expected telemetry blocks.
+- Status:
+  - Completed
+
+### 2026-04-14T13:35:00Z - Operator runbook: tuning guidance for live cycle telemetry
+- Scope:
+  - docs/superpowers/runbooks/2026-04-14-operator-tuning.md
+- Reason:
+  - Provide practical parameter tuning guide to keep runtime output aligned with operator targets.
+  - Document safe knob-adjustment workflow using existing telemetry fields.
+- Changes:
+  - Added operator runbook covering:
+    - safe baseline env knobs,
+    - cycle/report observation loop,
+    - action rules for discovery/position prefetch tuning,
+    - city diversification and acceptance-metric interpretation,
+    - one-change-at-a-time and rollback discipline.
+- Validation:
+  - Documentation-only update; no runtime behavior changes.
+- Status:
+  - Completed
+
+### 2026-04-14T14:25:00Z - Phase 1 continuation: report builder/printer structural refactor (non-drift)
+- Scope:
+  - market_discovery.py
+- Reason:
+  - Continue monolith cleanup by isolating report payload normalization and text-output formatting blocks.
+  - Keep `--paper-report` and `--paper-report-json` output contracts unchanged.
+- Changes:
+  - Extracted report normalization helpers:
+    - `_normalize_rolling_acceptance_metrics()`
+    - `_normalize_rolling_city_coverage_metrics()`
+    - `_normalize_last_cycle_performance()`
+    - `_normalize_recent_journal_entries()`
+    - `_build_journal_retention_payload()`
+  - Refactored `build_paper_state_report()` to orchestrate helper outputs instead of inline assembly blocks.
+  - Extracted text report print helpers:
+    - `_print_report_journal_retention_block()`
+    - `_print_report_rolling_block()`
+    - `_print_report_rolling_city_block()`
+    - `_print_report_last_cycle_performance_block()`
+    - `_print_report_recent_journal_block()`
+  - Refactored `print_paper_state_report()` to use helper printers while preserving line text and ordering.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest tests/test_paper_cycle.py tests/test_discovery_diagnostics.py tests/test_main.py
+  - Result: 22 passed in 0.21s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest
+  - Result: 105 passed in 0.21s
+  - Smoke run: PYTHON_BIN=/Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python ./run_paper_5usd.sh --paper
+  - Result: cycle completed; summary output and telemetry blocks remained stable.
+  - Smoke run: PYTHON_BIN=/Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python ./run_paper_5usd.sh --paper-report-json
+  - Result: JSON report payload remained schema-compatible.
+- Status:
+  - Completed
+
+### 2026-04-14T14:40:00Z - Phase 1 continuation: CLI dispatcher + paper-cycle summary helper extraction (non-drift)
+- Scope:
+  - market_discovery.py
+- Reason:
+  - Continue reducing monolith complexity in remaining CLI/output paths outside report/diagnostics.
+  - Keep mode routing and summary output behavior unchanged.
+- Changes:
+  - Added paper-cycle summary helper blocks:
+    - `_print_paper_cycle_performance_block()`
+    - `_print_paper_cycle_acceptance_block()`
+    - `_print_paper_cycle_city_coverage_block()`
+    - `_print_paper_cycle_rolling_block()`
+    - `_print_paper_cycle_token_changes()`
+  - Refactored `print_paper_cycle_summary()` to orchestrate helper outputs (same line content and order preserved).
+  - Added CLI/main dispatch helpers:
+    - `_parse_cli_mode_flags()`
+    - `_run_main_paper_report_mode()`
+    - `_run_main_paper_loop_mode()`
+    - `_run_main_paper_single_mode()`
+    - `_run_main_discovery_mode()`
+  - Refactored `main()` to use parsed-mode dict + explicit dispatch helpers.
+  - Fixed intermediate syntax regression during extraction and revalidated all gates.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest tests/test_main.py tests/test_paper_cycle.py tests/test_discovery_diagnostics.py
+  - Result: 22 passed in 0.20s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest
+  - Result: 105 passed in 0.23s
+  - Smoke run: PYTHON_BIN=/Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python ./run_paper_5usd.sh --paper
+  - Result: cycle completed; summary output and telemetry blocks remained stable.
+  - Smoke run (direct): PAPER_STATE_FILE=logs/paper_positions_5usd.json /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python market_discovery.py --paper-report-json | head -n 80
+  - Result: JSON report payload remained schema-compatible for 5usd state file.
+  - Note: wrapper invocation `./run_paper_5usd.sh --paper-report-json` produced terminal noise (`y` stream) once and was interrupted; direct runtime validation passed.
+- Status:
+  - Completed
+
+### 2026-04-14T14:45:00Z - Wrapper report-json revalidation follow-up
+- Scope:
+  - run_paper_5usd.sh (runtime invocation path)
+  - market_discovery.py (`--paper-report-json` runtime path)
+- Reason:
+  - Confirm whether one-off terminal-noise anomaly on wrapper JSON report path is reproducible.
+- Changes:
+  - No code changes.
+- Validation:
+  - PYTHON_BIN=/Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python ./run_paper_5usd.sh --paper-report-json | head -n 80
+  - Result: wrapper output returned valid JSON payload (no repeated `y` stream on retry).
+- Status:
+  - Completed
+
+### 2026-04-14T15:10:00Z - Phase 2 start: compat-first internal module extraction (config/state/CLI)
+- Scope:
+  - market_discovery.py
+  - market_discovery_internal/__init__.py
+  - market_discovery_internal/config.py
+  - market_discovery_internal/state_persistence.py
+  - market_discovery_internal/cli.py
+- Reason:
+  - Start requested implementation of file modularization while preserving runtime behavior and test patch-points.
+  - Execute low-risk quick wins first: centralize config constants, isolate state persistence, and isolate CLI flag parsing.
+- Changes:
+  - Created new internal namespace package `market_discovery_internal` for compatibility-first extraction.
+  - Extracted all env/config constants + regex assets into `market_discovery_internal/config.py`.
+  - Extracted state load/save logic into `market_discovery_internal/state_persistence.py`.
+  - Extracted CLI mode flag parser into `market_discovery_internal/cli.py`.
+  - Updated `market_discovery.py` to:
+    - import centralized config from internal module,
+    - keep existing public module surface intact,
+    - use compatibility wrappers for `load_paper_state()`, `save_paper_state()`, and `_parse_cli_mode_flags()`.
+  - Preserved `python market_discovery.py ...` entrypoint behavior and existing test import patterns.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_main.py tests/test_paper_cycle.py tests/test_bucket_decision.py tests/test_ai_agent_integration.py
+  - Result: 31 passed in 0.20s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.23s
+  - Smoke run: PYTHON_BIN=/Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python ./run_paper_5usd.sh --paper-report-json | head -n 40
+  - Result: valid JSON payload from wrapper path.
+  - Smoke run: /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python market_discovery.py --paper-report-json | head -n 40
+  - Result: direct script entrypoint preserved and valid JSON payload emitted.
+- Status:
+  - Completed
+
+### 2026-04-14T15:40:00Z - Phase 2 continuation: output + CLI handler extraction (compat-first)
+- Scope:
+  - market_discovery.py
+  - market_discovery_internal/cli.py
+  - market_discovery_internal/output.py
+- Reason:
+  - Continue requested modular split with low-risk quick wins while preserving public API and runtime output behavior.
+  - Reduce monolith size by moving print/output and main-mode handler logic out of the primary module.
+- Changes:
+  - Added internal output module `market_discovery_internal/output.py`:
+    - discovery diagnostics printer,
+    - paper cycle summary printer,
+    - paper state report printer,
+    - opportunity list and run summary printers.
+  - Expanded internal CLI module `market_discovery_internal/cli.py`:
+    - paper report mode handler,
+    - paper loop mode handler,
+    - paper single-run mode handler,
+    - discovery mode handler.
+  - Updated `market_discovery.py` public functions to delegate to internal modules while keeping existing names/signatures for compatibility with tests and operator commands.
+  - Removed redundant local print helper implementations that became dead code after delegation.
+  - Monolith size reduced to 2568 lines (`market_discovery.py`) after extraction cleanup.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_main.py tests/test_paper_cycle.py tests/test_discovery_diagnostics.py
+  - Result: 22 passed in 0.22s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.30s
+  - Smoke run: PYTHON_BIN=/Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python ./run_paper_5usd.sh --paper-report-json | head -n 25
+  - Result: valid JSON payload on wrapper path.
+- Status:
+  - Completed
+
+### 2026-04-14T16:05:00Z - Phase 2 continuation: discovery + paper-cycle orchestration extraction (compat-first)
+- Scope:
+  - market_discovery.py
+  - market_discovery_internal/cycles.py
+- Reason:
+  - Complete the next deep modularization batch by moving discovery and paper-cycle orchestration out of the monolith while preserving behavior and test patch-points.
+- Changes:
+  - Added new internal cycle module `market_discovery_internal/cycles.py` with extracted orchestration logic:
+    - `parse_discovery_markets()`
+    - `enrich_discovery_markets()`
+    - `run_discovery_cycle()`
+    - `run_paper_trading_cycle()`
+  - Converted `_parse_discovery_markets()`, `_enrich_discovery_markets()`, `run_discovery_cycle()`, and `run_paper_trading_cycle()` in `market_discovery.py` into compatibility wrappers that delegate to internal implementations via dependency injection.
+  - Preserved all existing runtime contracts and monkeypatch-sensitive public symbols in `market_discovery.py`.
+  - Updated size snapshot after extraction:
+    - `market_discovery.py`: 2270 lines
+    - `market_discovery_internal/cycles.py`: 452 lines
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_main.py tests/test_paper_cycle.py tests/test_discovery_cycle.py tests/test_discovery_diagnostics.py
+  - Result: 25 passed in 0.19s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.17s
+  - Smoke run: PYTHON_BIN=.venv/bin/python ./run_paper_5usd.sh --paper-report-json | head -n 40
+  - Result: wrapper JSON report path valid.
+  - Smoke run: .venv/bin/python market_discovery.py --paper-report-json | head -n 40
+  - Result: direct entrypoint JSON report path valid.
+- Status:
+  - Completed
+
+### 2026-04-14T16:20:00Z - Phase 2 continuation: discovery diagnostics helper extraction (compat-first)
+- Scope:
+  - market_discovery.py
+  - market_discovery_internal/diagnostics.py
+- Reason:
+  - Continue monolith reduction by moving discovery diagnostics analysis helpers into internal module while preserving diagnostics output and compatibility patch-points.
+- Changes:
+  - Added new internal diagnostics module `market_discovery_internal/diagnostics.py` with extracted logic:
+    - `collect_discovery_evidence_and_ai()`
+    - `collect_discovery_bucket_counts()`
+    - `classify_discovery_rejection_reason()`
+    - `analyze_discovery_raw_market()`
+    - `build_discovery_diagnostics()`
+  - Converted corresponding functions in `market_discovery.py` into compatibility wrappers that delegate to internal implementations.
+  - Fixed wrapper signature for `_collect_discovery_bucket_counts()` to support injected dependency args used by internal diagnostics builder.
+  - Updated size snapshot after extraction:
+    - `market_discovery.py`: 2180 lines
+    - `market_discovery_internal/diagnostics.py`: 191 lines
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_main.py tests/test_paper_cycle.py tests/test_discovery_cycle.py tests/test_discovery_diagnostics.py
+  - Result: 25 passed in 0.20s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.21s
+  - Smoke run: PYTHON_BIN=.venv/bin/python ./run_paper_5usd.sh --paper-report-json | head -n 20
+  - Result: wrapper JSON report path valid.
+  - Smoke run: .venv/bin/python market_discovery.py --paper-report-json | head -n 20
+  - Result: direct entrypoint JSON report path valid.
+- Status:
+  - Completed
+
+### 2026-04-14T16:35:00Z - Phase 2 continuation: paper-state report helper extraction (compat-first)
+- Scope:
+  - market_discovery.py
+  - market_discovery_internal/reporting.py
+- Reason:
+  - Continue monolith reduction by extracting report payload/date/retention helpers into internal module while preserving text/JSON report contracts.
+- Changes:
+  - Added new internal reporting module `market_discovery_internal/reporting.py` with extracted logic:
+    - `parse_utc_datetime()`
+    - `build_journal_age_breakdown()`
+    - `normalize_rolling_acceptance_metrics()`
+    - `normalize_rolling_city_coverage_metrics()`
+    - `normalize_last_cycle_performance()`
+    - `normalize_recent_journal_entries()`
+    - `build_journal_retention_payload()`
+    - `build_paper_state_report()`
+  - Converted corresponding helpers in `market_discovery.py` into compatibility wrappers delegating to internal implementations.
+  - Preserved existing `print_paper_state_report()` behavior and payload schema.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_main.py tests/test_paper_cycle.py tests/test_discovery_cycle.py tests/test_discovery_diagnostics.py
+  - Result: 25 passed in 0.20s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.21s
+  - Smoke run: PYTHON_BIN=.venv/bin/python ./run_paper_5usd.sh --paper-report-json | head -n 20
+  - Result: wrapper JSON report path valid.
+  - Smoke run: .venv/bin/python market_discovery.py --paper-report-json | head -n 20
+  - Result: direct entrypoint JSON report path valid.
+- Status:
+  - Completed
+
+### 2026-04-14T16:50:00Z - Phase 2 continuation: forecast utility extraction (compat-first)
+- Scope:
+  - market_discovery.py
+  - market_discovery_internal/forecasting.py
+- Reason:
+  - Continue monolith reduction by extracting forecast cache/prefetch/validation helpers while preserving cache and retry semantics.
+- Changes:
+  - Added new internal forecasting module `market_discovery_internal/forecasting.py` with extracted logic:
+    - `position_to_market()`
+    - `fetch_forecast_with_cache()`
+    - `prefetch_forecasts()`
+    - `forecast_still_valid()`
+  - Converted `_position_to_market()`, `_fetch_forecast_with_cache()`, `_prefetch_forecasts()`, and `_forecast_still_valid()` in `market_discovery.py` into compatibility wrappers.
+  - Removed now-unneeded direct `ThreadPoolExecutor/as_completed` imports from `market_discovery.py`.
+  - Updated size snapshot after these extractions:
+    - `market_discovery.py`: 1972 lines
+    - `market_discovery_internal/forecasting.py`: 139 lines
+    - `market_discovery_internal/reporting.py`: 278 lines
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_main.py tests/test_paper_cycle.py tests/test_discovery_cycle.py tests/test_discovery_diagnostics.py
+  - Result: 25 passed in 0.20s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 105 passed in 0.23s
+  - Smoke run: PYTHON_BIN=.venv/bin/python ./run_paper_5usd.sh --paper-report-json | head -n 20
+  - Result: wrapper JSON report path valid.
+  - Smoke run: .venv/bin/python market_discovery.py --paper-report-json | head -n 20
+  - Result: direct entrypoint JSON report path valid.
+- Status:
+  - Completed
+
+### 2026-04-14T17:20:00Z - Implementation start: paper-report anomaly counters + alerts
+- Scope:
+  - .env.example
+  - market_discovery_internal/config.py
+  - market_discovery_internal/reporting.py
+  - market_discovery_internal/output.py
+  - market_discovery.py
+  - tests/test_paper_cycle.py
+- Reason:
+  - Start next implementation item from handoff by adding operator-facing anomaly counters/alerts to paper report payload.
+  - Keep changes observability-only (no entry/exit behavior drift).
+- Changes:
+  - Added new env/config knobs:
+    - `PAPER_REPORT_ANOMALY_STREAK_ALERT`
+    - `PAPER_REPORT_REJECT_DOMINANT_RATIO`
+  - Added anomaly computation stack in reporting helpers:
+    - zero-opportunity streak (current + max),
+    - reject-dominant streak (current + max),
+    - latest reject ratio,
+    - alert flags based on configured streak threshold.
+  - Added `anomaly_counters` block into paper report JSON payload.
+  - Extended text report output to print anomaly streak summary, thresholds, and active alert flags.
+  - Added compatibility wrapper in `market_discovery.py` with flexible injected signature for anomaly helper delegation.
+  - Added regression tests:
+    - baseline payload contains anomaly counters,
+    - reject-dominant streak alert path is triggered at threshold.
+- Validation:
+  - source venv/bin/activate && pytest -q tests/test_paper_cycle.py tests/test_main.py tests/test_discovery_diagnostics.py
+  - Result: 23 passed in 0.19s
+  - source venv/bin/activate && pytest -q
+  - Result: 106 passed in 0.22s
+  - source venv/bin/activate && python market_discovery.py --paper-report-json | head -n 80
+  - Result: direct path emitted valid JSON including `anomaly_counters`.
+  - source venv/bin/activate && ./run_paper_5usd.sh --paper-report-json | head -n 80
+  - Result: wrapper path emitted valid JSON including `anomaly_counters`.
+- Status:
+  - Completed

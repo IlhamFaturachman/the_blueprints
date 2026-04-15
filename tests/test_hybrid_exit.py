@@ -20,7 +20,13 @@ def make_opportunity(yes_price=0.25, hours_until_resolve=8.0):
     }
 
 
-def test_take_profit_band_exit():
+def test_build_position_sets_take_profit_to_100pct_target():
+    position = build_paper_position(make_opportunity(yes_price=0.20), stake_usd=100)
+    assert position["target_price"] == 0.4
+    assert position["target_policy"] == "take_profit_100pct"
+
+
+def test_take_profit_100pct_exit():
     position = build_paper_position(make_opportunity(yes_price=0.25), stake_usd=100)
     decision = evaluate_hybrid_exit(
         position=position,
@@ -29,7 +35,7 @@ def test_take_profit_band_exit():
         hours_until_resolve=5,
     )
     assert decision["action"] == "sell"
-    assert decision["reason"] == "take_profit_band"
+    assert decision["reason"] == "take_profit_100pct"
 
 
 def test_stop_loss_exit():
@@ -106,6 +112,6 @@ def test_update_paper_position_closes_and_calculates_pnl():
 
     assert decision["action"] == "sell"
     assert updated["status"] == "closed"
-    assert updated["close_reason"] == "take_profit_band"
+    assert updated["close_reason"] == "take_profit_100pct"
     assert updated["realized_pnl_usd"] == 100.0
     assert updated["realized_roi_pct"] == 100.0

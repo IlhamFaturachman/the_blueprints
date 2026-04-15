@@ -94,3 +94,96 @@ def test_main_diagnose_mode_prints_diagnostics(monkeypatch):
     mock_diag.assert_called_once()
     mock_opp.assert_called_once()
     mock_summary.assert_called_once()
+
+
+def test_main_typo_aggressive_flag_still_enables_aggressive(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["market_discovery.py", "--diagnose", "--aggresive"])
+
+    discovery = {
+        "markets_raw": [],
+        "parsed": [],
+        "enriched": [],
+        "opportunities": [],
+        "failed_cities": [],
+        "skipped_markets": 0,
+        "exact_skipped": 0,
+    }
+
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery) as mock_run, patch(
+        "market_discovery.print_discovery_diagnostics"
+    ), patch("market_discovery.print_opportunities"), patch("market_discovery.print_summary"):
+        main()
+
+    mock_run.assert_called_once_with(inspect=False, aggressive_scan=True)
+
+
+def test_main_paper_report_mode_prints_state(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["market_discovery.py", "--paper-report"])
+    sample_state = {
+        "positions": [],
+        "history": [],
+        "cycle_journal": [],
+        "updated_at": None,
+        "meta": {},
+    }
+
+    with patch("market_discovery.load_paper_state", return_value=sample_state) as mock_load, patch(
+        "market_discovery.print_paper_state_report"
+    ) as mock_report:
+        main()
+
+    mock_load.assert_called_once()
+    mock_report.assert_called_once_with(
+        state=sample_state,
+        state_path="logs/paper_positions.json",
+        recent_entries=5,
+        output_format="text",
+    )
+
+
+def test_main_paper_report_json_mode_prints_state_json(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["market_discovery.py", "--paper-report-json"])
+    sample_state = {
+        "positions": [],
+        "history": [],
+        "cycle_journal": [],
+        "updated_at": None,
+        "meta": {},
+    }
+
+    with patch("market_discovery.load_paper_state", return_value=sample_state) as mock_load, patch(
+        "market_discovery.print_paper_state_report"
+    ) as mock_report:
+        main()
+
+    mock_load.assert_called_once()
+    mock_report.assert_called_once_with(
+        state=sample_state,
+        state_path="logs/paper_positions.json",
+        recent_entries=5,
+        output_format="json",
+    )
+
+
+def test_main_paper_report_json_flag_prints_state_json(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["market_discovery.py", "--paper-report", "--json"])
+    sample_state = {
+        "positions": [],
+        "history": [],
+        "cycle_journal": [],
+        "updated_at": None,
+        "meta": {},
+    }
+
+    with patch("market_discovery.load_paper_state", return_value=sample_state) as mock_load, patch(
+        "market_discovery.print_paper_state_report"
+    ) as mock_report:
+        main()
+
+    mock_load.assert_called_once()
+    mock_report.assert_called_once_with(
+        state=sample_state,
+        state_path="logs/paper_positions.json",
+        recent_entries=5,
+        output_format="json",
+    )
