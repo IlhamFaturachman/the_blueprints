@@ -186,7 +186,10 @@ async function fetchData() {
                         <td>$${pos.last_price ? pos.last_price.toFixed(4) : (pos.entry_price||0).toFixed(4)}</td>
                         <td class="${pnlCls}"><strong>$${unPnl.toFixed(4)}</strong></td>
                         <td><span class="badge mode-auto">${pos.direction || 'LONG'}</span></td>
-                        <td><button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679;">Close API</button></td>
+                        <td>
+                            <a href="https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white; margin-right: 5px;">Buka Market</a>
+                            <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679; border: none;">Close API</button>
+                        </td>
                     </tr>
                 `;
             });
