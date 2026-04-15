@@ -37,6 +37,9 @@
         header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 10px; margin-bottom: 20px;}
         .refresh-btn { background: var(--primary); color: #000; border: none; padding: 10px 20px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: opacity 0.2s;}
         .refresh-btn:hover { opacity: 0.8; }
+        .pagination { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 16px 20px 20px; }
+        .pagination button:disabled { opacity: 0.45; cursor: not-allowed; }
+        .pagination-info { color: #aaa; font-size: 0.95rem; }
         
         /* Loading skeleton effect */
         .skeleton { background: #333; height: 30px; border-radius: 4px; animation: pulse 1.5s infinite; }
@@ -84,6 +87,16 @@
             <h3>🧠 Self-Learning</h3>
             <div class="value" id="valTuner" style="font-size: 1.3rem;"><div class="skeleton"></div></div>
             <div class="small-value" id="valTunerMeta">Cities: -</div>
+        </div>
+        <div class="card">
+            <h3>🕒 UTC Real Time</h3>
+            <div class="value" id="valUtcClock" style="font-size: 1.35rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valUtcDate">UTC -</div>
+        </div>
+        <div class="card">
+            <h3>🗽 ET Washington</h3>
+            <div class="value" id="valEtClock" style="font-size: 1.35rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valEtDate">America/New_York -</div>
         </div>
     </div>
 
@@ -143,10 +156,113 @@
                 <tr><td colspan="5" style="text-align:center;">Memuat data...</td></tr>
             </tbody>
         </table>
+        <div class="pagination">
+            <button id="cyclePrevBtn" class="refresh-btn" style="padding: 8px 16px;" onclick="cyclePrevPage()">Prev</button>
+            <div id="cyclePageInfo" class="pagination-info">Page 1 / 1</div>
+            <button id="cycleNextBtn" class="refresh-btn" style="padding: 8px 16px;" onclick="cycleNextPage()">Next</button>
+        </div>
     </div>
 </div>
 
 <script>
+const CYCLE_PAGE_SIZE = 10;
+let cyclePage = 0;
+let cycleRowsCache = [];
+
+function updateRealtimeClocks() {
+    const now = new Date();
+    const utcFmt = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'UTC',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    });
+    const etFmt = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    });
+
+    const utcText = utcFmt.format(now).replace(',', '');
+    const etText = etFmt.format(now).replace(',', '');
+
+    const utcEl = document.getElementById('valUtcClock');
+    const etEl = document.getElementById('valEtClock');
+    if (utcEl) utcEl.innerHTML = utcText;
+    if (etEl) etEl.innerHTML = etText;
+
+    const utcDateEl = document.getElementById('valUtcDate');
+    const etDateEl = document.getElementById('valEtDate');
+    if (utcDateEl) utcDateEl.innerHTML = 'Timezone: UTC';
+    if (etDateEl) etDateEl.innerHTML = 'Timezone: America/New_York';
+}
+
+function renderCycleTable() {
+    const tCyc = document.getElementById('cycleTable');
+    const pageInfo = document.getElementById('cyclePageInfo');
+    const prevBtn = document.getElementById('cyclePrevBtn');
+    const nextBtn = document.getElementById('cycleNextBtn');
+
+    tCyc.innerHTML = '';
+    if (!cycleRowsCache.length) {
+        tCyc.innerHTML = "<tr><td colspan='5' style='text-align:center;'>Log cycle kosong.</td></tr>";
+        pageInfo.innerHTML = 'Page 1 / 1';
+        prevBtn.disabled = true;
+        nextBtn.disabled = true;
+        return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE));
+    if (cyclePage > totalPages - 1) {
+        cyclePage = totalPages - 1;
+    }
+
+    const startIdx = cyclePage * CYCLE_PAGE_SIZE;
+    const pageRows = cycleRowsCache.slice(startIdx, startIdx + CYCLE_PAGE_SIZE);
+    pageRows.forEach(c => {
+        let ms = c.performance?.total_ms ? c.performance.total_ms.toFixed(1) : 0;
+        let modeBg = c.aggressive_scan ? 'mode-manual' : 'mode-auto';
+        let modeText = c.aggressive_scan ? 'Aggressive SCAN' : 'Standard Loop';
+        tCyc.innerHTML += `
+            <tr>
+                <td>${new Date(c.timestamp).toLocaleString()}</td>
+                <td><span class="badge ${modeBg}">${modeText}</span></td>
+                <td><span class="good" style="font-weight:bold;">${c.counts?.opportunities || 0}</span> events</td>
+                <td><span class="neutral" style="font-weight:bold;">${c.counts?.opened || 0}</span> trades</td>
+                <td>${ms} ms</td>
+            </tr>
+        `;
+    });
+
+    pageInfo.innerHTML = `Page ${cyclePage + 1} / ${totalPages} (max ${CYCLE_PAGE_SIZE} rows)`;
+    prevBtn.disabled = cyclePage <= 0;
+    nextBtn.disabled = cyclePage >= totalPages - 1;
+}
+
+function cyclePrevPage() {
+    if (cyclePage > 0) {
+        cyclePage -= 1;
+        renderCycleTable();
+    }
+}
+
+function cycleNextPage() {
+    const totalPages = Math.max(1, Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE));
+    if (cyclePage < totalPages - 1) {
+        cyclePage += 1;
+        renderCycleTable();
+    }
+}
+
 async function fetchData() {
     try {
         const res = await fetch('../logs/paper_positions_5usd.json', { cache: "no-store" });
@@ -216,6 +332,8 @@ async function fetchData() {
         const tunerMinTrades = tuner.min_trades || 0;
         document.getElementById('valTuner').innerHTML = `A:${tunerAggressive} | C:${tunerCautious} | B:${tunerBlacklist}`;
         document.getElementById('valTunerMeta').innerHTML = `Cities tracked: ${tunerCities} | Min trades: ${tunerMinTrades}`;
+
+        updateRealtimeClocks();
 
 
         if(last_cycle) {
@@ -305,33 +423,16 @@ async function fetchData() {
             });
         }
 
-        const tCyc = document.getElementById('cycleTable');
-        tCyc.innerHTML = "";
-        if(d_cycle.length === 0) {
-            tCyc.innerHTML = "<tr><td colspan='5' style='text-align:center;'>Log cycle kosong.</td></tr>";
-        } else {
-            let recentCycles = [...d_cycle].reverse().slice(0, 15);
-            recentCycles.forEach(c => {
-                let ms = c.performance?.total_ms ? c.performance.total_ms.toFixed(1) : 0;
-                let modeBg = c.aggressive_scan ? "mode-manual" : "mode-auto";
-                let modeText = c.aggressive_scan ? "Aggressive SCAN" : "Standard Loop";
-                tCyc.innerHTML += `
-                    <tr>
-                        <td>${new Date(c.timestamp).toLocaleString()}</td>
-                        <td><span class="badge ${modeBg}">${modeText}</span></td>
-                        <td><span class="good" style="font-weight:bold;">${c.counts?.opportunities || 0}</span> events</td>
-                        <td><span class="neutral" style="font-weight:bold;">${c.counts?.opened || 0}</span> trades</td>
-                        <td>${ms} ms</td>
-                    </tr>
-                `;
-            });
-        }
+        cycleRowsCache = [...d_cycle].reverse();
+        renderCycleTable();
     } catch (e) {
         console.error(e);
     }
 }
 fetchData();
+updateRealtimeClocks();
 setInterval(fetchData, 10000);
+setInterval(updateRealtimeClocks, 1000);
 </script>
 </body>
 </html>
