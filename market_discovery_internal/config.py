@@ -226,3 +226,12 @@ AI_AGENT_TIMEOUT_SECONDS = float(os.getenv("AI_AGENT_TIMEOUT_SECONDS", "5.0"))
 # Weather evidence quality controls (for hold-to-resolve safety)
 WEATHER_EVIDENCE_MAX_AGE_HOURS = float(os.getenv("WEATHER_EVIDENCE_MAX_AGE_HOURS", "3.0"))
 WEATHER_EVIDENCE_MIN_QUALITY_SCORE = float(os.getenv("WEATHER_EVIDENCE_MIN_QUALITY_SCORE", "0.65"))
+
+# WebSocket real-time position monitor
+WS_PRICE_WATCHER_ENABLED = _env_bool("WS_PRICE_WATCHER_ENABLED", True)
+WS_PRICE_WATCHER_URL = os.getenv(
+    "WS_PRICE_WATCHER_URL",
+    "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+)
+WS_RECONNECT_DELAY_SECONDS = max(1, int(os.getenv("WS_RECONNECT_DELAY_SECONDS", "5")))
+WS_PING_INTERVAL_SECONDS = max(5, int(os.getenv("WS_PING_INTERVAL_SECONDS", "10")))
