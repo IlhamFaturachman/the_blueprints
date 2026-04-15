@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 
 
 _EMPTY_STATE = {
@@ -50,9 +51,26 @@ def load_paper_state(path):
 
 def save_paper_state(state, path):
     """Persist paper-trading state to disk."""
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
 
-    with open(path, "w", encoding="utf-8") as file_handle:
-        json.dump(state, file_handle, indent=2, sort_keys=True)
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".paper_state_",
+            suffix=".tmp",
+            dir=directory,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as file_handle:
+            json.dump(state, file_handle, indent=2, sort_keys=True)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass

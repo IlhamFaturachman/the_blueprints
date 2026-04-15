@@ -1357,28 +1357,57 @@ def update_paper_position(
 
 
 def _update_cash_state(state):
-    import os
-    base_wallet = float(os.getenv("PAPER_MAX_OPEN_POSITIONS", 5)) * 1.0
-    history = state.get("history", [])
-    positions = state.get("positions", [])
-    meta = state.get("meta", {})
+    state = state if isinstance(state, dict) else {}
+    history = state.get("history") if isinstance(state.get("history"), list) else []
+    positions = state.get("positions") if isinstance(state.get("positions"), list) else []
+
+    meta = state.get("meta")
     if not isinstance(meta, dict):
         meta = {}
-    
-    realized_pnl = sum(float(p.get("realized_pnl_usd", 0.0)) for p in history)
-    open_cost = sum(float(p.get("cost_basis", 0.0)) for p in positions)
-    
+
+    base_wallet = _safe_float(meta.get("base_wallet"), PAPER_BASE_WALLET)
+    if base_wallet <= 0:
+        base_wallet = PAPER_BASE_WALLET
+
+    realized_pnl = round(
+        sum(
+            _safe_float(position.get("realized_pnl_usd"), 0.0)
+            for position in history
+            if isinstance(position, dict)
+        ),
+        4,
+    )
+    open_positions = [
+        position
+        for position in positions
+        if isinstance(position, dict) and position.get("status", "open") != "closed"
+    ]
+    open_cost = round(
+        sum(_safe_float(position.get("cost_basis"), 0.0) for position in open_positions),
+        4,
+    )
+
     current_wallet = round(base_wallet + realized_pnl, 4)
     cash = round(current_wallet - open_cost, 4)
-    
-    meta["base_wallet"] = base_wallet
+    recommended_stake = (
+        float(int(current_wallet / 5.0))
+        if current_wallet >= 10.0
+        else _safe_float(PAPER_STAKE_USD, 1.0)
+    )
+    recommended_stake = max(0.01, _safe_float(recommended_stake, 1.0))
+
+    meta["base_wallet"] = round(base_wallet, 4)
     meta["current_wallet"] = current_wallet
     meta["cash"] = cash
-    meta["realized_pnl_usd"] = round(realized_pnl, 4)
-    meta["open_cost_basis"] = round(open_cost, 4)
+    meta["realized_pnl_usd"] = realized_pnl
+    meta["open_cost_basis"] = open_cost
+    meta["open_positions_count"] = len(open_positions)
+    meta["recommended_stake_usd"] = round(recommended_stake, 4)
     meta["daily_session"] = _build_daily_session_meta(meta, current_wallet=current_wallet)
     meta["auto_tuner"] = _evaluate_historical_tuner(history)
-    
+
+    state["positions"] = positions
+    state["history"] = history
     state["meta"] = meta
     return state
 
@@ -1970,14 +1999,15 @@ def run_paper_trading_cycle(
     meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
     current_wallet = _safe_float(
         meta.get("current_wallet"),
-        float(os.getenv("PAPER_MAX_OPEN_POSITIONS", 5)) * 1.0,
+        PAPER_BASE_WALLET,
     )
 
     if current_wallet >= 10.0:
         stake_usd = float(int(current_wallet / 5.0))
 
     stake_usd = max(0.01, _safe_float(stake_usd, PAPER_STAKE_USD))
-    paper_max_open_positions = max(1, int(current_wallet // stake_usd)) if current_wallet > 0 else 1
+    paper_max_open_positions = int(current_wallet // stake_usd) if current_wallet > 0 else 0
+    paper_max_open_positions = max(1, paper_max_open_positions)
 
     daily_session = meta.get("daily_session") if isinstance(meta.get("daily_session"), dict) else {}
     allow_new_entries = bool(daily_session.get("entry_gate_open", True))
@@ -2220,6 +2250,30 @@ def _run_main_paper_report_mode(paper_report_json_mode):
     )
 
 
+def _append_runtime_error_log(mode, error, consecutive_errors=None, retry_in_seconds=None):
+    """Append a compact runtime error line for unattended operation diagnostics."""
+    log_path = str(PAPER_RUNTIME_ERROR_LOG)
+    directory = os.path.dirname(log_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    timestamp_utc = datetime.now(timezone.utc).isoformat()
+    error_type = type(error).__name__
+    error_text = str(error).replace("\n", " ").strip() or "unknown_error"
+
+    details = [f"ts={timestamp_utc}", f"mode={mode}", f"type={error_type}", f"message={error_text}"]
+    if consecutive_errors is not None:
+        details.append(f"consecutive_errors={int(consecutive_errors)}")
+    if retry_in_seconds is not None:
+        details.append(f"retry_in_seconds={int(retry_in_seconds)}")
+
+    try:
+        with open(log_path, "a", encoding="utf-8") as file_handle:
+            file_handle.write(" | ".join(details) + "\n")
+    except OSError:
+        pass
+
+
 def _run_main_paper_loop_mode(aggressive_mode):
     """Handle paper loop mode in main()."""
     _run_main_paper_loop_mode_impl(
@@ -2228,16 +2282,29 @@ def _run_main_paper_loop_mode(aggressive_mode):
         run_paper_trading_cycle_fn=run_paper_trading_cycle,
         print_paper_cycle_summary_fn=print_paper_cycle_summary,
         sleep_fn=time.sleep,
+        continue_on_error=PAPER_LOOP_CONTINUE_ON_ERROR,
+        error_backoff_seconds=PAPER_LOOP_ERROR_BACKOFF_SECONDS,
+        max_error_backoff_seconds=PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS,
+        report_error_fn=lambda error, consecutive_errors, retry_in_seconds: _append_runtime_error_log(
+            mode="paper_loop",
+            error=error,
+            consecutive_errors=consecutive_errors,
+            retry_in_seconds=retry_in_seconds,
+        ),
     )
 
 
 def _run_main_paper_single_mode(aggressive_mode):
     """Handle one-shot paper mode in main()."""
-    _run_main_paper_single_mode_impl(
-        aggressive_mode=aggressive_mode,
-        run_paper_trading_cycle_fn=run_paper_trading_cycle,
-        print_paper_cycle_summary_fn=print_paper_cycle_summary,
-    )
+    try:
+        _run_main_paper_single_mode_impl(
+            aggressive_mode=aggressive_mode,
+            run_paper_trading_cycle_fn=run_paper_trading_cycle,
+            print_paper_cycle_summary_fn=print_paper_cycle_summary,
+        )
+    except Exception as error:
+        _append_runtime_error_log(mode="paper_single", error=error)
+        raise
 
 
 def _run_main_discovery_mode(inspect_mode, aggressive_mode, diagnose_mode):

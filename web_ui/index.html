@@ -299,15 +299,18 @@ async function fetchData() {
 
         // Fetch Cash Data from Meta (Bot Engine direct injection)
         const meta = data.meta || {};
-        let current_wallet = typeof meta.current_wallet === 'number' ? meta.current_wallet : (5.0 + total_pnl);
-        let cash = meta.cash || (current_wallet - (meta.open_cost_basis || 0));
+        const baseWallet = typeof meta.base_wallet === 'number' ? meta.base_wallet : 5.0;
+        let current_wallet = typeof meta.current_wallet === 'number' ? meta.current_wallet : (baseWallet + total_pnl);
+        let cash = typeof meta.cash === 'number' ? meta.cash : (current_wallet - (meta.open_cost_basis || 0));
         let pos_limit = meta.open_positions_count || openKeys.length;
         
-        let portfolio_value = current_wallet + openPnlTotal; 
-        let sim_stake = current_wallet >= 10.0 ? Math.floor(current_wallet / 5.0) : 1.0;
+        let portfolio_value = current_wallet + openPnlTotal;
+        let sim_stake = typeof meta.recommended_stake_usd === 'number'
+            ? meta.recommended_stake_usd
+            : (current_wallet >= 10.0 ? Math.floor(current_wallet / 5.0) : 1.0);
 
         document.getElementById('valWallet').innerHTML = `$${portfolio_value.toFixed(4)}`;
-        document.getElementById('valWalletMode').innerHTML = `Cash: $${cash.toFixed(4)} | Stake: $${sim_stake}/trade`;
+        document.getElementById('valWalletMode').innerHTML = `Base: $${baseWallet.toFixed(4)} | Cash: $${cash.toFixed(4)} | Stake: $${Number(sim_stake).toFixed(2)}/trade`;
 
         const daily = meta.daily_session || {};
         const dailyBaseline = typeof daily.baseline_wallet === 'number' ? daily.baseline_wallet : current_wallet;

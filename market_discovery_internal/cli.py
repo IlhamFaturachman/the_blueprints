@@ -1,5 +1,7 @@
 """CLI helpers for market_discovery modes."""
 
+from datetime import datetime, timezone
+
 
 def parse_cli_mode_flags(argv):
     """Parse CLI mode flags used by main()."""
@@ -39,14 +41,59 @@ def run_main_paper_loop_mode(
     run_paper_trading_cycle_fn,
     print_paper_cycle_summary_fn,
     sleep_fn,
+    continue_on_error=True,
+    error_backoff_seconds=30,
+    max_error_backoff_seconds=None,
+    report_error_fn=None,
 ):
     """Handle paper loop mode in main()."""
     print(f"Starting paper loop every {paper_loop_interval_seconds}s. Press Ctrl+C to stop.")
+
+    consecutive_errors = 0
+    backoff_base = max(1, int(error_backoff_seconds))
+    max_backoff = max(
+        backoff_base,
+        int(
+            max_error_backoff_seconds
+            if max_error_backoff_seconds is not None
+            else max(backoff_base, paper_loop_interval_seconds)
+        ),
+    )
+
     try:
         while True:
-            cycle = run_paper_trading_cycle_fn(force_aggressive_scan=aggressive_mode)
-            print_paper_cycle_summary_fn(cycle)
-            sleep_fn(paper_loop_interval_seconds)
+            try:
+                cycle = run_paper_trading_cycle_fn(force_aggressive_scan=aggressive_mode)
+                print_paper_cycle_summary_fn(cycle)
+                consecutive_errors = 0
+                sleep_fn(paper_loop_interval_seconds)
+            except Exception as error:
+                if not continue_on_error:
+                    raise
+
+                consecutive_errors += 1
+                retry_in_seconds = min(
+                    max_backoff,
+                    backoff_base * (2 ** min(consecutive_errors - 1, 6)),
+                )
+                timestamp_utc = datetime.now(timezone.utc).isoformat()
+                print(
+                    f"[{timestamp_utc}] Paper cycle failed "
+                    f"({consecutive_errors} consecutive): {error}"
+                )
+                print(f"Retrying in {retry_in_seconds}s...")
+
+                if callable(report_error_fn):
+                    try:
+                        report_error_fn(
+                            error=error,
+                            consecutive_errors=consecutive_errors,
+                            retry_in_seconds=retry_in_seconds,
+                        )
+                    except Exception:
+                        pass
+
+                sleep_fn(retry_in_seconds)
     except KeyboardInterrupt:
         print("\nPaper loop stopped.")
 

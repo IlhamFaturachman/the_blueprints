@@ -41,7 +41,10 @@ def test_load_paper_state_empty_when_file_missing(tmp_path):
     assert state["positions"] == []
     assert state["history"] == []
     assert state["cycle_journal"] == []
-    assert state["meta"] == {}
+    assert isinstance(state["meta"], dict)
+    assert state["meta"]["base_wallet"] > 0
+    assert "daily_session" in state["meta"]
+    assert "auto_tuner" in state["meta"]
 
 
 def test_save_then_load_paper_state_round_trip(tmp_path):
@@ -55,7 +58,33 @@ def test_save_then_load_paper_state_round_trip(tmp_path):
     }
     save_paper_state(initial, path=str(state_file))
     loaded = load_paper_state(path=str(state_file))
-    assert loaded == initial
+    assert loaded["positions"] == initial["positions"]
+    assert loaded["history"] == initial["history"]
+    assert loaded["cycle_journal"] == initial["cycle_journal"]
+    assert loaded["updated_at"] == initial["updated_at"]
+    assert loaded["meta"]["empty_temperature_cycles"] == 0
+    assert loaded["meta"]["base_wallet"] > 0
+
+
+def test_save_paper_state_atomic_does_not_leave_temp_files(tmp_path):
+    state_file = tmp_path / "paper_state.json"
+    save_paper_state({"positions": [], "history": [], "updated_at": None}, path=str(state_file))
+
+    assert state_file.exists()
+    assert list(tmp_path.glob(".paper_state_*.tmp")) == []
+
+
+def test_cash_state_uses_configured_base_wallet_in_meta(tmp_path):
+    state_file = tmp_path / "paper_state.json"
+
+    with patch("market_discovery.PAPER_BASE_WALLET", 42.0), patch("market_discovery.PAPER_STAKE_USD", 2.0):
+        save_paper_state({"positions": [], "history": [], "updated_at": None}, path=str(state_file))
+        loaded = load_paper_state(path=str(state_file))
+
+    assert loaded["meta"]["base_wallet"] == 42.0
+    assert loaded["meta"]["current_wallet"] == 42.0
+    assert loaded["meta"]["cash"] == 42.0
+    assert loaded["meta"]["recommended_stake_usd"] == 8.0
 
 
 def test_run_paper_cycle_opens_new_position(tmp_path):
@@ -143,7 +172,11 @@ def test_run_paper_cycle_force_aggressive_scan_passes_through(tmp_path):
         )
 
     assert cycle["used_aggressive_scan"] is True
-    mock_discovery.assert_called_once_with(inspect=False, aggressive_scan=True)
+    mock_discovery.assert_called_once()
+    kwargs = mock_discovery.call_args.kwargs
+    assert kwargs["inspect"] is False
+    assert kwargs["aggressive_scan"] is True
+    assert callable(kwargs.get("filter_opportunities_fn"))
 
 
 def test_run_paper_cycle_auto_aggressive_scan_after_empty_cycles(tmp_path):

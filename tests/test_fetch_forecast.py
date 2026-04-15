@@ -46,7 +46,13 @@ def test_returns_none_on_network_failure():
 def test_sends_correct_coordinates_for_paris():
     with patch("market_discovery.fetch_with_retry", return_value=MOCK_FORECAST) as mock_fetch:
         fetch_forecast("paris", "2026-04-13")
-    call_params = mock_fetch.call_args[1]["params"]
+    open_meteo_params = [
+        call.kwargs.get("params")
+        for call in mock_fetch.call_args_list
+        if "params" in call.kwargs
+    ]
+    assert open_meteo_params
+    call_params = open_meteo_params[0]
     assert call_params["latitude"] == 48.8566
     assert call_params["longitude"] == 2.3522
 
@@ -54,6 +60,12 @@ def test_sends_correct_coordinates_for_paris():
 def test_requests_3_forecast_days():
     with patch("market_discovery.fetch_with_retry", return_value=MOCK_FORECAST) as mock_fetch:
         fetch_forecast("london", "2026-04-13")
-    call_params = mock_fetch.call_args[1]["params"]
+    open_meteo_params = [
+        call.kwargs.get("params")
+        for call in mock_fetch.call_args_list
+        if "params" in call.kwargs
+    ]
+    assert open_meteo_params
+    call_params = open_meteo_params[0]
     assert call_params["forecast_days"] == 3
     assert call_params["daily"] == "temperature_2m_max"
