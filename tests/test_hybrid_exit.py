@@ -26,6 +26,23 @@ def test_build_position_sets_take_profit_to_100pct_target():
     assert position["target_policy"] == "take_profit_100pct"
 
 
+def test_build_position_uses_entry_price_override_as_buy_ask():
+    opp = make_opportunity(yes_price=0.20)
+    opp["entry_price"] = 0.24
+    opp["entry_price_source"] = "buy_ask"
+    opp["entry_quote_best_bid"] = 0.22
+    opp["entry_quote_best_ask"] = 0.24
+
+    position = build_paper_position(opp, stake_usd=100)
+
+    assert position["entry_price"] == 0.24
+    assert position["entry_price_source"] == "buy_ask"
+    assert position["entry_yes_reference"] == 0.20
+    assert position["entry_quote_best_bid"] == 0.22
+    assert position["entry_quote_best_ask"] == 0.24
+    assert position["last_price"] == 0.22
+
+
 def test_take_profit_100pct_exit():
     position = build_paper_position(make_opportunity(yes_price=0.25), stake_usd=100)
     decision = evaluate_hybrid_exit(

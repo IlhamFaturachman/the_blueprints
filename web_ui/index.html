@@ -241,7 +241,7 @@ function updatePositionLiveByToken(tokenId, bidPrice) {
     }
 
     const pos = latestPositions[idx];
-    const prevPrice = Number(pos.last_price || pos.entry_price || 0);
+    const prevPrice = Number(pos.last_price || pos.entry_quote_best_bid || 0);
     pos.last_price = Number(bidPrice);
 
     const bidCell = row.querySelector('.js-bid-price');
@@ -261,7 +261,8 @@ function updatePositionLiveByToken(tokenId, bidPrice) {
     if (openPnlEl) {
         let openPnlTotal = 0;
         latestPositions.forEach(p => {
-            const upnl = (Number(p.last_price || p.entry_price || 0) * Number(p.quantity || 0)) - Number(p.cost_basis || 0);
+            const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
+            const upnl = (markBid * Number(p.quantity || 0)) - Number(p.cost_basis || 0);
             openPnlTotal += upnl;
         });
         openPnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
@@ -458,7 +459,8 @@ async function fetchData() {
         let openPnlTotal = 0;
         openKeys.forEach(k => { 
             let pos = d_open[k];
-            let upnl = (pos.last_price || pos.entry_price || 0) * (pos.quantity || 0) - (pos.cost_basis || 0);
+            const markBid = Number(pos.last_price || pos.entry_quote_best_bid || 0);
+            let upnl = (markBid * (pos.quantity || 0)) - (pos.cost_basis || 0);
             openPnlTotal += upnl; 
         });
         const elOpenPnl = document.getElementById('valOpenPnl');
@@ -529,7 +531,8 @@ async function fetchData() {
         } else {
             openKeys.forEach(k => {
                 const pos = d_open[k];
-                const unPnl = ((pos.last_price || pos.entry_price || 0) * (pos.quantity || 0)) - (pos.cost_basis || 0);
+                const markBid = Number(pos.last_price || pos.entry_quote_best_bid || 0);
+                const unPnl = (markBid * (pos.quantity || 0)) - (pos.cost_basis || 0);
                 const pnlCls = unPnl >= 0 ? "good" : "bad";
                 const pnlPct = pos.cost_basis ? ((unPnl / pos.cost_basis) * 100) : 0;
                 let directionLabel = pos.direction === 'above' ? '≥' : (pos.direction === 'below' ? '≤' : '=');
@@ -549,7 +552,7 @@ async function fetchData() {
                         </td>
                         <td>$${(pos.entry_price || 0).toFixed(4)}</td>
                         <td>$${(pos.cost_basis || 0).toFixed(2)}</td>
-                        <td class="js-bid-price">$${pos.last_price ? pos.last_price.toFixed(4) : (pos.entry_price||0).toFixed(4)}</td>
+                        <td class="js-bid-price">$${(Number(pos.last_price || pos.entry_quote_best_bid || 0)).toFixed(4)}</td>
                         <td class="js-upnl ${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
                         <td><span class="badge mode-auto" style="margin-bottom:4px; display:inline-block;">${targetText}</span><br><small style="color: #bbb">${bucketText}</small></td>
                         <td>

@@ -95,6 +95,50 @@ def fetch_with_retry(url, params=None, max_retries=3):
     raise last_error
 
 
+def _extract_top_orderbook_price(levels):
+    """Return the first valid top-of-book price from CLOB orderbook levels."""
+    if not isinstance(levels, list):
+        return None
+
+    for level in levels:
+        raw_price = None
+        if isinstance(level, dict):
+            raw_price = level.get("price")
+        elif isinstance(level, (list, tuple)) and level:
+            raw_price = level[0]
+
+        price = _safe_float(raw_price, 0.0)
+        if price > 0:
+            return float(price)
+
+    return None
+
+
+def fetch_orderbook_quote(token_id):
+    """Fetch official CLOB top-of-book prices (best_bid, best_ask) for a token."""
+    token = str(token_id or "").strip()
+    if not token:
+        return None
+
+    try:
+        payload = fetch_with_retry(CLOB_BOOK_API, params={"token_id": token}, max_retries=2)
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    best_bid = _extract_top_orderbook_price(payload.get("bids"))
+    best_ask = _extract_top_orderbook_price(payload.get("asks"))
+    if best_bid is None and best_ask is None:
+        return None
+
+    return {
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Layer 1: Fetch Markets from Polymarket Gamma API
 # ---------------------------------------------------------------------------
@@ -1165,15 +1209,19 @@ def _ensure_take_profit_target(position):
 
 def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     """Create a paper position from an opportunity candidate."""
-    entry_price = float(opportunity["yes_price"])
+    entry_price = _safe_float(opportunity.get("entry_price"), _safe_float(opportunity.get("yes_price"), 0.0))
     if entry_price <= 0:
-        raise ValueError("yes_price must be > 0")
+        raise ValueError("entry_price must be > 0")
 
     quantity = round(float(stake_usd) / entry_price, 6)
     cost_basis = round(quantity * entry_price, 4)
     target_price = _compute_take_profit_price(entry_price)
+    entry_yes_reference = _safe_float(opportunity.get("yes_price"), entry_price)
+    entry_price_source = str(opportunity.get("entry_price_source") or "yes_price")
+    entry_quote_best_bid = _safe_float(opportunity.get("entry_quote_best_bid"), 0.0)
+    entry_quote_best_ask = _safe_float(opportunity.get("entry_quote_best_ask"), 0.0)
 
-    return {
+    position = {
         "status": "open",
         "city": opportunity["city"],
         "token_id": opportunity["token_id"],
@@ -1185,6 +1233,8 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "end_date": opportunity.get("end_date"),
         "market_slug": opportunity.get("market_slug", ""),
         "entry_price": entry_price,
+        "entry_price_source": entry_price_source,
+        "entry_yes_reference": entry_yes_reference,
         "quantity": quantity,
         "cost_basis": cost_basis,
         "target_price": target_price,
@@ -1196,6 +1246,14 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "entry_edge": opportunity.get("edge"),
         "opened_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    if entry_quote_best_bid > 0:
+        position["entry_quote_best_bid"] = round(entry_quote_best_bid, 4)
+        position["last_price"] = round(entry_quote_best_bid, 4)
+    if entry_quote_best_ask > 0:
+        position["entry_quote_best_ask"] = round(entry_quote_best_ask, 4)
+
+    return position
 
 
 def _position_confidence_score(position, current_yes_price, forecast_still_valid):
@@ -1941,6 +1999,9 @@ def _append_opened_positions_from_candidates(
     open_city_counts,
     available_slots,
     stake_usd,
+    min_bound,
+    max_bound,
+    fetch_orderbook_quote_fn,
 ):
     """Open positions from ranked candidates while respecting city and slot limits."""
     opened_this_cycle = []
@@ -1961,7 +2022,31 @@ def _append_opened_positions_from_candidates(
         if city_key and open_city_counts.get(city_key, 0) >= PAPER_MAX_OPEN_PER_CITY:
             continue
 
-        position = build_paper_position(opportunity, stake_usd=stake_usd)
+        quote = fetch_orderbook_quote_fn(token_id) if callable(fetch_orderbook_quote_fn) else None
+        best_ask = _safe_float((quote or {}).get("best_ask"), 0.0)
+        best_bid = _safe_float((quote or {}).get("best_bid"), 0.0)
+        if best_ask <= 0:
+            best_ask = _safe_float(opportunity.get("best_ask"), 0.0)
+        if best_bid <= 0:
+            best_bid = _safe_float(opportunity.get("best_bid"), 0.0)
+
+        # Entry must use executable buy-side price (best ask).
+        if best_ask <= 0:
+            continue
+        if best_ask < min_bound or best_ask > max_bound:
+            continue
+
+        entry_opportunity = {
+            **opportunity,
+            "entry_price": round(best_ask, 4),
+            "entry_price_source": "buy_ask",
+            "entry_yes_reference": _safe_float(opportunity.get("yes_price"), best_ask),
+            "entry_quote_best_ask": round(best_ask, 4),
+        }
+        if best_bid > 0:
+            entry_opportunity["entry_quote_best_bid"] = round(best_bid, 4)
+
+        position = build_paper_position(entry_opportunity, stake_usd=stake_usd)
         position["entry_bucket"] = bucket_name
         position["entry_bucket_reason"] = bucket.get("reason")
         position["entry_confidence_score"] = bucket.get("confidence")
@@ -2040,6 +2125,7 @@ def run_paper_trading_cycle(
         position_confidence_score_fn=_position_confidence_score,
         update_paper_position_fn=update_paper_position,
         close_paper_position_fn=close_paper_position,
+        fetch_orderbook_quote_fn=fetch_orderbook_quote,
         build_open_position_inventory_fn=_build_open_position_inventory,
         build_entry_candidates_fn=_build_entry_candidates,
         append_opened_positions_from_candidates_fn=_append_opened_positions_from_candidates,

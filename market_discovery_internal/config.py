@@ -18,6 +18,7 @@ def _env_bool(name, default=False):
 
 GAMMA_API = "https://gamma-api.polymarket.com/markets"
 GAMMA_EVENTS_API = "https://gamma-api.polymarket.com/events/pagination"
+CLOB_BOOK_API = os.getenv("CLOB_BOOK_API", "https://clob.polymarket.com/book")
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 LOG_FILE = "logs/unmatched_markets.log"
 

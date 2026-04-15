@@ -196,6 +196,7 @@ def run_paper_trading_cycle(
     position_confidence_score_fn,
     update_paper_position_fn,
     close_paper_position_fn,
+    fetch_orderbook_quote_fn,
     build_open_position_inventory_fn,
     build_entry_candidates_fn,
     append_opened_positions_from_candidates_fn,
@@ -238,6 +239,19 @@ def run_paper_trading_cycle(
     discovery = run_discovery_cycle_fn(inspect=False, aggressive_scan=use_aggressive_scan)
     discovery_ms = elapsed_ms_fn(discovery_started)
 
+    quote_cache = {}
+
+    def _get_orderbook_quote(token_id):
+        token = str(token_id or "").strip()
+        if not token:
+            return None
+        if token in quote_cache:
+            return quote_cache[token]
+
+        quote = fetch_orderbook_quote_fn(token) if callable(fetch_orderbook_quote_fn) else None
+        quote_cache[token] = quote if isinstance(quote, dict) else None
+        return quote_cache[token]
+
     market_by_token = {market["token_id"]: market for market in discovery["parsed"] if market.get("token_id")}
     next_open_positions = []
     next_history = list(state.get("history", []))
@@ -273,7 +287,22 @@ def run_paper_trading_cycle(
             next_open_positions.append(position)
             continue
 
-        current_yes_price = float(live_market["yes_price"])
+        quote = _get_orderbook_quote(token_id)
+        raw_bid = (quote or {}).get("best_bid")
+        if raw_bid is None:
+            raw_bid = live_market.get("best_bid")
+        if raw_bid is None:
+            raw_bid = position.get("last_price")
+
+        try:
+            current_yes_price = float(raw_bid)
+        except (TypeError, ValueError):
+            next_open_positions.append(position)
+            continue
+        if current_yes_price <= 0:
+            next_open_positions.append(position)
+            continue
+
         hours_until_resolve = live_market.get("hours_until_resolve")
         forecast_valid = forecast_still_valid_fn(
             position,
@@ -354,6 +383,9 @@ def run_paper_trading_cycle(
             open_city_counts=open_city_counts,
             available_slots=available_slots,
             stake_usd=stake_usd,
+            min_bound=min_bound,
+            max_bound=max_bound,
+            fetch_orderbook_quote_fn=_get_orderbook_quote,
         )
     else:
         opened_this_cycle = []

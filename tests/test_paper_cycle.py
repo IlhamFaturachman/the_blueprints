@@ -101,7 +101,10 @@ def test_run_paper_cycle_opens_new_position(tmp_path):
         "exact_skipped": 0,
     }
 
-    with patch("market_discovery.run_discovery_cycle", return_value=discovery):
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery), patch(
+        "market_discovery.fetch_orderbook_quote",
+        return_value={"best_bid": 0.24, "best_ask": 0.25},
+    ):
         cycle = run_paper_trading_cycle(
             min_price=0.20,
             max_price=0.35,
@@ -112,6 +115,9 @@ def test_run_paper_cycle_opens_new_position(tmp_path):
     assert len(cycle["opened"]) == 1
     assert len(cycle["open_positions"]) == 1
     assert cycle["opened"][0]["token_id"] == "0xabc"
+    assert cycle["opened"][0]["entry_price_source"] == "buy_ask"
+    assert cycle["opened"][0]["entry_price"] == 0.25
+    assert cycle["opened"][0]["entry_yes_reference"] == 0.25
     assert cycle["opened"][0]["entry_bucket"] in {"enter_swing", "enter_hold_candidate"}
     assert cycle["acceptance_metrics"]["opportunities_total"] == 1
     assert cycle["acceptance_metrics"]["opened_total"] == 1
@@ -146,6 +152,9 @@ def test_run_paper_cycle_closes_position_on_take_profit(tmp_path):
 
     with patch("market_discovery.run_discovery_cycle", return_value=discovery), patch(
         "market_discovery._forecast_still_valid", return_value=True
+    ), patch(
+        "market_discovery.fetch_orderbook_quote",
+        return_value={"best_bid": 0.50, "best_ask": 0.51},
     ):
         cycle = run_paper_trading_cycle(state_path=str(state_file))
 
@@ -165,7 +174,10 @@ def test_run_paper_cycle_force_aggressive_scan_passes_through(tmp_path):
         "exact_skipped": 0,
     }
 
-    with patch("market_discovery.run_discovery_cycle", return_value=discovery) as mock_discovery:
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery) as mock_discovery, patch(
+        "market_discovery.fetch_orderbook_quote",
+        return_value=None,
+    ):
         cycle = run_paper_trading_cycle(
             state_path=str(state_file),
             force_aggressive_scan=True,
@@ -201,7 +213,10 @@ def test_run_paper_cycle_auto_aggressive_scan_after_empty_cycles(tmp_path):
         "exact_skipped": 0,
     }
 
-    with patch("market_discovery.run_discovery_cycle", return_value=discovery):
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery), patch(
+        "market_discovery.fetch_orderbook_quote",
+        return_value=None,
+    ):
         cycle = run_paper_trading_cycle(state_path=str(state_file))
 
     assert cycle["used_aggressive_scan"] is True
@@ -226,6 +241,13 @@ def test_run_paper_cycle_rolling_metrics_accumulate_across_cycles(tmp_path):
 
     with patch("market_discovery.run_discovery_cycle", side_effect=[discovery, discovery]), patch(
         "market_discovery._forecast_still_valid", return_value=True
+    ), patch(
+        "market_discovery.fetch_orderbook_quote",
+        side_effect=[
+            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.24, "best_ask": 0.25},
+        ],
     ):
         first = run_paper_trading_cycle(state_path=str(state_file))
         second = run_paper_trading_cycle(state_path=str(state_file))
@@ -275,7 +297,14 @@ def test_run_paper_cycle_selects_best_candidate_per_city_by_confidence(tmp_path)
         "exact_skipped": 0,
     }
 
-    with patch("market_discovery.run_discovery_cycle", return_value=discovery):
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery), patch(
+        "market_discovery.fetch_orderbook_quote",
+        side_effect=[
+            {"best_bid": 0.19, "best_ask": 0.20},
+            {"best_bid": 0.29, "best_ask": 0.30},
+            {"best_bid": 0.24, "best_ask": 0.25},
+        ],
+    ):
         cycle = run_paper_trading_cycle(state_path=str(state_file))
 
     opened_tokens = {position["token_id"] for position in cycle["opened"]}
@@ -306,7 +335,14 @@ def test_run_paper_cycle_skips_new_entry_for_city_with_existing_open_position(tm
         "exact_skipped": 0,
     }
 
-    with patch("market_discovery.run_discovery_cycle", return_value=discovery):
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery), patch(
+        "market_discovery.fetch_orderbook_quote",
+        side_effect=[
+            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.24, "best_ask": 0.25},
+        ],
+    ):
         cycle = run_paper_trading_cycle(state_path=str(state_file))
 
     assert len(cycle["opened"]) == 1
@@ -335,7 +371,14 @@ def test_run_paper_cycle_keeps_token_dedupe_with_city_filter(tmp_path):
         "exact_skipped": 0,
     }
 
-    with patch("market_discovery.run_discovery_cycle", return_value=discovery):
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery), patch(
+        "market_discovery.fetch_orderbook_quote",
+        side_effect=[
+            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.24, "best_ask": 0.25},
+        ],
+    ):
         cycle = run_paper_trading_cycle(state_path=str(state_file))
 
     assert len(cycle["opened"]) == 1
@@ -361,6 +404,13 @@ def test_run_paper_cycle_city_coverage_warns_below_target(tmp_path):
 
     with patch("market_discovery.PAPER_MIN_CITY_DIVERSITY", 5), patch(
         "market_discovery.run_discovery_cycle", return_value=discovery
+    ), patch(
+        "market_discovery.fetch_orderbook_quote",
+        side_effect=[
+            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.24, "best_ask": 0.25},
+        ],
     ):
         cycle = run_paper_trading_cycle(state_path=str(state_file))
 
@@ -420,6 +470,29 @@ def test_run_paper_cycle_prefetches_open_position_forecasts(tmp_path):
     assert position_prefetch.get("failed") == 0
     assert position_prefetch.get("workers") == 2
     assert position_prefetch.get("skipped") is False
+
+
+def test_run_paper_cycle_skips_entry_when_best_ask_missing(tmp_path):
+    state_file = tmp_path / "paper_state.json"
+    opp = make_opportunity(yes_price=0.25, token_id="0xskip")
+    discovery = {
+        "markets_raw": [],
+        "parsed": [opp],
+        "enriched": [opp],
+        "opportunities": [opp],
+        "failed_cities": [],
+        "skipped_markets": 0,
+        "exact_skipped": 0,
+    }
+
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery), patch(
+        "market_discovery.fetch_orderbook_quote",
+        return_value={"best_bid": 0.24, "best_ask": None},
+    ):
+        cycle = run_paper_trading_cycle(state_path=str(state_file))
+
+    assert cycle["opened"] == []
+    assert cycle["open_positions"] == []
 
 
 def test_print_paper_state_report_json_output(capsys):
