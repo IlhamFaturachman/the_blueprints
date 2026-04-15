@@ -67,6 +67,12 @@ def save_paper_state(state, path):
             os.fsync(file_handle.fileno())
 
         os.replace(temp_path, path)
+        # The dashboard is served by nginx, so the state file must be world-readable.
+        # mkstemp() creates 0600 files; this best-effort chmod keeps static JSON access working.
+        try:
+            os.chmod(path, 0o644)
+        except OSError:
+            pass
         temp_path = None
     finally:
         if temp_path and os.path.exists(temp_path):
