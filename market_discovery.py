@@ -189,7 +189,7 @@ def fetch_markets(inspect=False, aggressive_scan=False):
     """
     Fetch active weather markets from the Polymarket Gamma Events API.
 
-    Uses /events/pagination?tag_slug=weather which returns the correct
+    Uses /events?tag_slug=weather which returns the correct
     weather temperature markets (not the tag=weather markets endpoint
     which returns unrelated results).
 
@@ -204,7 +204,7 @@ def fetch_markets(inspect=False, aggressive_scan=False):
         "active": "true",
         "archived": "false",
         "closed": "false",
-        "order": "volume24hr",
+        "order": "volume_24hr",
         "ascending": "false",
         "limit": 200,
     }
@@ -216,7 +216,7 @@ def fetch_markets(inspect=False, aggressive_scan=False):
         print("Check your internet connection and try again.")
         sys.exit(1)
 
-    # Events pagination returns {"data": [...], "count": N} or a plain list
+    # /events returns a plain JSON array; guard against unexpected dict wrapping
     if isinstance(data, dict):
         events = data.get("data", data.get("events", []))
     else:
