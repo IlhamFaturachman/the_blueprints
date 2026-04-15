@@ -165,6 +165,26 @@ PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS = max(
 STRATEGY_MAX_YES_PRICE = float(os.getenv("STRATEGY_MAX_YES_PRICE", "0.35"))
 STRATEGY_MIN_MODEL_PROB = float(os.getenv("STRATEGY_MIN_MODEL_PROB", "0.70"))
 STRATEGY_MIN_EDGE = float(os.getenv("STRATEGY_MIN_EDGE", "0.35"))
+DAILY_TARGET_MULTIPLIER = max(1.0, float(os.getenv("DAILY_TARGET_MULTIPLIER", "2.0")))
+
+# History-driven self-learning tuner (pre-AI adaptive layer)
+AUTO_TUNER_ENABLED = _env_bool("AUTO_TUNER_ENABLED", True)
+AUTO_TUNER_MIN_TRADES = max(1, int(os.getenv("AUTO_TUNER_MIN_TRADES", "3")))
+AUTO_TUNER_EDGE_RELAX = max(0.0, float(os.getenv("AUTO_TUNER_EDGE_RELAX", "0.05")))
+AUTO_TUNER_EDGE_PENALTY = max(0.0, float(os.getenv("AUTO_TUNER_EDGE_PENALTY", "0.15")))
+AUTO_TUNER_AGGRESSIVE_WIN_RATE = min(
+    1.0,
+    max(0.0, float(os.getenv("AUTO_TUNER_AGGRESSIVE_WIN_RATE", "0.60"))),
+)
+AUTO_TUNER_CAUTION_WIN_RATE = min(
+    1.0,
+    max(0.0, float(os.getenv("AUTO_TUNER_CAUTION_WIN_RATE", "0.45"))),
+)
+AUTO_TUNER_BLACKLIST_PNL = float(os.getenv("AUTO_TUNER_BLACKLIST_PNL", "-1.50"))
+AUTO_TUNER_BLACKLIST_STOP_LOSS_RATE = min(
+    1.0,
+    max(0.0, float(os.getenv("AUTO_TUNER_BLACKLIST_STOP_LOSS_RATE", "0.75"))),
+)
 
 # Entry bucket engine (deterministic-first, AI-ready)
 ENTRY_BUCKET_HOLD_MIN_PROB = float(os.getenv("ENTRY_BUCKET_HOLD_MIN_PROB", "0.90"))

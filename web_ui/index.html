@@ -75,6 +75,16 @@
             <div class="value" id="valLastRun" style="font-size: 1.4rem; padding-top: 10px;"><div class="skeleton"></div></div>
             <div class="small-value" id="valCoverage">City coverage met: -</div>
         </div>
+        <div class="card">
+            <h3>🎯 Daily Target (UTC)</h3>
+            <div class="value" id="valDailyTarget"><div class="skeleton"></div></div>
+            <div class="small-value" id="valDailyGate">Gate: -</div>
+        </div>
+        <div class="card">
+            <h3>🧠 Self-Learning</h3>
+            <div class="value" id="valTuner" style="font-size: 1.3rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valTunerMeta">Cities: -</div>
+        </div>
     </div>
 
     <h2 style="margin-top: 40px;">🟢 Live Open Positions <span id="posCountBadge" class="badge mode-auto">0</span></h2>
@@ -182,6 +192,30 @@ async function fetchData() {
 
         document.getElementById('valWallet').innerHTML = `$${portfolio_value.toFixed(4)}`;
         document.getElementById('valWalletMode').innerHTML = `Cash: $${cash.toFixed(4)} | Stake: $${sim_stake}/trade`;
+
+        const daily = meta.daily_session || {};
+        const dailyBaseline = typeof daily.baseline_wallet === 'number' ? daily.baseline_wallet : current_wallet;
+        const dailyTarget = typeof daily.target_wallet === 'number' ? daily.target_wallet : (dailyBaseline * 2.0);
+        const dailyProgress = typeof daily.progress_pct === 'number'
+            ? daily.progress_pct
+            : (dailyBaseline > 0 ? (current_wallet / dailyBaseline) * 100 : 0);
+        const dailyGateOpen = daily.entry_gate_open !== false;
+        const dailyTargetReached = daily.target_reached === true;
+        const dailyGateReason = daily.entry_gate_reason || 'active';
+
+        document.getElementById('valDailyTarget').innerHTML = `${dailyProgress.toFixed(2)}%`;
+        document.getElementById('valDailyTarget').className = dailyTargetReached ? 'value good' : 'value';
+        document.getElementById('valDailyGate').innerHTML = `Baseline: $${dailyBaseline.toFixed(4)} | Target: $${dailyTarget.toFixed(4)} | Gate: ${dailyGateOpen ? 'OPEN' : 'CLOSED'} (${dailyGateReason})`;
+
+        const tuner = meta.auto_tuner || {};
+        const tunerSummary = tuner.summary || {};
+        const tunerAggressive = tunerSummary.aggressive || 0;
+        const tunerCautious = tunerSummary.cautious || 0;
+        const tunerBlacklist = tunerSummary.blacklist || 0;
+        const tunerCities = tunerSummary.cities_total || 0;
+        const tunerMinTrades = tuner.min_trades || 0;
+        document.getElementById('valTuner').innerHTML = `A:${tunerAggressive} | C:${tunerCautious} | B:${tunerBlacklist}`;
+        document.getElementById('valTunerMeta').innerHTML = `Cities tracked: ${tunerCities} | Min trades: ${tunerMinTrades}`;
 
 
         if(last_cycle) {

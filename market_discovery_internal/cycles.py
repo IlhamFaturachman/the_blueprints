@@ -214,6 +214,8 @@ def run_paper_trading_cycle(
     paper_max_open_positions,
     paper_min_city_diversity,
     paper_journal_max_entries,
+    allow_new_entries=True,
+    entry_gate_reason="active",
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
     cycle_started = perf_counter_fn()
@@ -328,14 +330,34 @@ def run_paper_trading_cycle(
         max_bound=max_bound,
     )
 
-    opened_this_cycle, opened_city_keys, _ = append_opened_positions_from_candidates_fn(
-        entry_candidates=entry_candidates,
-        next_open_positions=next_open_positions,
-        open_token_ids=open_token_ids,
-        open_city_counts=open_city_counts,
-        available_slots=available_slots,
-        stake_usd=stake_usd,
-    )
+    effective_allow_new_entries = bool(allow_new_entries)
+    effective_entry_gate_reason = str(entry_gate_reason or "active")
+    daily_session = state_meta.get("daily_session") if isinstance(state_meta.get("daily_session"), dict) else {}
+    if effective_allow_new_entries and daily_session:
+        baseline_wallet = float(daily_session.get("baseline_wallet", 0.0) or 0.0)
+        target_wallet = float(daily_session.get("target_wallet", 0.0) or 0.0)
+        state_base_wallet = float(state_meta.get("base_wallet", baseline_wallet) or baseline_wallet)
+        realized_after_position_management = sum(
+            float(position.get("realized_pnl_usd", 0.0) or 0.0)
+            for position in next_history
+        )
+        wallet_after_position_management = round(state_base_wallet + realized_after_position_management, 4)
+        if target_wallet > 0 and wallet_after_position_management >= target_wallet:
+            effective_allow_new_entries = False
+            effective_entry_gate_reason = "daily_target_reached"
+
+    if effective_allow_new_entries:
+        opened_this_cycle, opened_city_keys, _ = append_opened_positions_from_candidates_fn(
+            entry_candidates=entry_candidates,
+            next_open_positions=next_open_positions,
+            open_token_ids=open_token_ids,
+            open_city_counts=open_city_counts,
+            available_slots=available_slots,
+            stake_usd=stake_usd,
+        )
+    else:
+        opened_this_cycle = []
+        opened_city_keys = set()
     entry_selection_ms = elapsed_ms_fn(entry_selection_started)
 
     city_coverage_metrics = build_city_coverage_metrics_fn(
@@ -404,6 +426,8 @@ def run_paper_trading_cycle(
         "bucket_counts": bucket_counts,
         "city_coverage_metrics": city_coverage_metrics,
         "used_aggressive_scan": use_aggressive_scan,
+        "entry_gate_open": bool(effective_allow_new_entries),
+        "entry_gate_reason": str(effective_entry_gate_reason),
         "empty_temperature_cycles": empty_temperature_cycles,
         "performance": performance,
     }
@@ -426,6 +450,8 @@ def run_paper_trading_cycle(
         "empty_temperature_cycles": empty_temperature_cycles,
         "last_cycle_at": now.isoformat(),
         "last_cycle_metrics": cycle_metrics,
+        "last_entry_gate_open": bool(effective_allow_new_entries),
+        "last_entry_gate_reason": str(effective_entry_gate_reason),
         "acceptance_metrics_rolling": rolling_metrics,
         "city_coverage_rolling": rolling_city_coverage_metrics,
         "last_cycle_performance": performance,

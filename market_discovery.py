@@ -688,6 +688,201 @@ def _city_candidate_rank(opportunity, bucket):
     return (confidence, edge, -yes_price)
 
 
+def _evaluate_historical_tuner(history):
+    """Build per-city adaptive edge thresholds from closed history."""
+    base_min_edge = max(0.0, _safe_float(STRATEGY_MIN_EDGE, 0.35))
+    min_trades = max(1, int(_safe_float(AUTO_TUNER_MIN_TRADES, 3)))
+
+    snapshot = {
+        "enabled": bool(AUTO_TUNER_ENABLED),
+        "base_min_edge": round(base_min_edge, 4),
+        "min_trades": min_trades,
+        "city_scores": {},
+        "summary": {
+            "cities_total": 0,
+            "aggressive": 0,
+            "cautious": 0,
+            "blacklist": 0,
+        },
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if not AUTO_TUNER_ENABLED or not isinstance(history, list):
+        return snapshot
+
+    per_city = {}
+    for position in history:
+        city_key = _normalize_city_key(position.get("city"))
+        if not city_key:
+            continue
+
+        stats = per_city.setdefault(
+            city_key,
+            {
+                "trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "stop_losses": 0,
+                "net_realized_pnl": 0.0,
+                "roi_total": 0.0,
+            },
+        )
+
+        pnl = _safe_float(position.get("realized_pnl_usd"), 0.0)
+        roi = _safe_float(position.get("realized_roi_pct"), 0.0)
+        close_reason = str(position.get("close_reason") or "")
+
+        stats["trades"] += 1
+        stats["net_realized_pnl"] += pnl
+        stats["roi_total"] += roi
+
+        if pnl > 0:
+            stats["wins"] += 1
+        else:
+            stats["losses"] += 1
+
+        if close_reason == "stop_loss":
+            stats["stop_losses"] += 1
+
+    for city_key, stats in per_city.items():
+        trades = int(stats["trades"])
+        wins = int(stats["wins"])
+        stop_losses = int(stats["stop_losses"])
+        win_rate = _safe_div(wins, trades, default=0.0)
+        stop_loss_rate = _safe_div(stop_losses, trades, default=0.0)
+        avg_roi = _safe_div(stats["roi_total"], trades, default=0.0)
+        net_pnl = _safe_float(stats["net_realized_pnl"], 0.0)
+
+        status = "neutral"
+        tuned_min_edge = base_min_edge
+
+        if trades >= min_trades:
+            if (
+                net_pnl <= _safe_float(AUTO_TUNER_BLACKLIST_PNL, -1.5)
+                or stop_loss_rate >= _safe_float(AUTO_TUNER_BLACKLIST_STOP_LOSS_RATE, 0.75)
+            ):
+                status = "blacklist"
+                tuned_min_edge = 2.0
+            elif (
+                win_rate >= _safe_float(AUTO_TUNER_AGGRESSIVE_WIN_RATE, 0.60)
+                and net_pnl > 0
+            ):
+                status = "aggressive"
+                tuned_min_edge = max(0.01, base_min_edge - _safe_float(AUTO_TUNER_EDGE_RELAX, 0.05))
+            elif (
+                win_rate <= _safe_float(AUTO_TUNER_CAUTION_WIN_RATE, 0.45)
+                or net_pnl < 0
+            ):
+                status = "cautious"
+                tuned_min_edge = min(0.99, base_min_edge + _safe_float(AUTO_TUNER_EDGE_PENALTY, 0.15))
+
+        city_snapshot = {
+            "status": status,
+            "trades": trades,
+            "win_rate": round(win_rate, 4),
+            "stop_loss_rate": round(stop_loss_rate, 4),
+            "net_realized_pnl": round(net_pnl, 4),
+            "avg_realized_roi": round(avg_roi, 4),
+            "min_edge": round(tuned_min_edge, 4),
+        }
+        snapshot["city_scores"][city_key] = city_snapshot
+
+        if status == "aggressive":
+            snapshot["summary"]["aggressive"] += 1
+        elif status == "cautious":
+            snapshot["summary"]["cautious"] += 1
+        elif status == "blacklist":
+            snapshot["summary"]["blacklist"] += 1
+
+    snapshot["summary"]["cities_total"] = len(snapshot["city_scores"])
+    return snapshot
+
+
+def _build_daily_session_meta(meta, current_wallet, now_utc=None):
+    """Build/update UTC daily session tracking used for entry gating."""
+    now_dt = now_utc or datetime.now(timezone.utc)
+    date_utc = now_dt.date().isoformat()
+    session = meta.get("daily_session") if isinstance(meta.get("daily_session"), dict) else {}
+
+    previous_date = str(session.get("date_utc") or "")
+    if previous_date != date_utc:
+        baseline_wallet = round(_safe_float(current_wallet, 0.0), 4)
+        target_wallet = round(baseline_wallet * _safe_float(DAILY_TARGET_MULTIPLIER, 2.0), 4)
+        session = {
+            "date_utc": date_utc,
+            "started_at_utc": now_dt.isoformat(),
+            "baseline_wallet": baseline_wallet,
+            "target_wallet": target_wallet,
+        }
+    else:
+        baseline_wallet = round(_safe_float(session.get("baseline_wallet"), current_wallet), 4)
+        target_wallet = round(
+            _safe_float(session.get("target_wallet"), baseline_wallet * _safe_float(DAILY_TARGET_MULTIPLIER, 2.0)),
+            4,
+        )
+        session["baseline_wallet"] = baseline_wallet
+        session["target_wallet"] = target_wallet
+
+    equity_wallet = round(_safe_float(current_wallet, 0.0), 4)
+    if baseline_wallet <= 0:
+        progress_pct = 0.0
+    else:
+        progress_pct = round((equity_wallet / baseline_wallet) * 100.0, 2)
+
+    target_reached = target_wallet > 0 and equity_wallet >= target_wallet
+    session.update(
+        {
+            "equity_wallet": equity_wallet,
+            "progress_pct": progress_pct,
+            "target_reached": bool(target_reached),
+            "entry_gate_open": not bool(target_reached),
+            "entry_gate_reason": "daily_target_reached" if target_reached else "active",
+            "updated_at_utc": now_dt.isoformat(),
+        }
+    )
+    return session
+
+
+def _build_tuned_filter_opportunities(tuner_snapshot):
+    """Build per-cycle opportunity filter with city-level tuned edge floors."""
+    city_scores = tuner_snapshot.get("city_scores") if isinstance(tuner_snapshot, dict) else {}
+    if not isinstance(city_scores, dict):
+        city_scores = {}
+
+    base_min_edge = _safe_float(
+        tuner_snapshot.get("base_min_edge") if isinstance(tuner_snapshot, dict) else STRATEGY_MIN_EDGE,
+        STRATEGY_MIN_EDGE,
+    )
+
+    def _filter(markets):
+        opportunities = []
+        for market in markets:
+            city_key = _normalize_city_key(market.get("city"))
+            city_rule = city_scores.get(city_key, {}) if city_key else {}
+            tuned_min_edge = _safe_float(city_rule.get("min_edge"), base_min_edge)
+            tuned_status = str(city_rule.get("status") or "neutral")
+
+            if tuned_status == "blacklist":
+                continue
+
+            if (
+                market["yes_price"] < STRATEGY_MAX_YES_PRICE
+                and market["model_prob"] >= STRATEGY_MIN_MODEL_PROB
+                and market["edge"] >= tuned_min_edge
+            ):
+                opportunities.append(
+                    {
+                        **market,
+                        "effective_min_edge": round(tuned_min_edge, 4),
+                        "tuner_status": tuned_status,
+                    }
+                )
+
+        return sorted(opportunities, key=lambda item: item["edge"], reverse=True)
+
+    return _filter
+
+
 def _get_ai_provider_config():
     """Read AI provider configuration from environment."""
     return {
@@ -813,7 +1008,8 @@ def _entry_confidence_score(opportunity):
     model_prob = _clamp(_safe_float(opportunity.get("model_prob"), 0.0))
     edge = max(_safe_float(opportunity.get("edge"), 0.0), 0.0)
 
-    edge_scale = STRATEGY_MIN_EDGE if STRATEGY_MIN_EDGE > 0 else 0.35
+    tuned_edge_floor = _safe_float(opportunity.get("effective_min_edge"), STRATEGY_MIN_EDGE)
+    edge_scale = tuned_edge_floor if tuned_edge_floor > 0 else 0.35
     edge_component = min(edge / edge_scale, 1.0)
 
     hours = opportunity.get("hours_until_resolve")
@@ -848,6 +1044,7 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
     model_prob = _safe_float(opportunity.get("model_prob"), 0.0)
     edge = _safe_float(opportunity.get("edge"), -1.0)
     confidence = _entry_confidence_score(opportunity)
+    min_edge_threshold = _safe_float(opportunity.get("effective_min_edge"), STRATEGY_MIN_EDGE)
 
     if price < 0 or price > 1:
         decision = {
@@ -861,7 +1058,7 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
             "reason": "low_model_prob",
             "confidence": confidence,
         }
-    elif edge < STRATEGY_MIN_EDGE:
+    elif edge < min_edge_threshold:
         decision = {
             "bucket": "reject",
             "reason": "low_edge",
@@ -1179,6 +1376,8 @@ def _update_cash_state(state):
     meta["cash"] = cash
     meta["realized_pnl_usd"] = round(realized_pnl, 4)
     meta["open_cost_basis"] = round(open_cost, 4)
+    meta["daily_session"] = _build_daily_session_meta(meta, current_wallet=current_wallet)
+    meta["auto_tuner"] = _evaluate_historical_tuner(history)
     
     state["meta"] = meta
     return state
@@ -1355,6 +1554,8 @@ def _build_cycle_journal_entry(
     entry = {
         "timestamp": now_utc.isoformat(),
         "aggressive_scan": bool(cycle.get("used_aggressive_scan", False)),
+        "entry_gate_open": bool(cycle.get("entry_gate_open", True)),
+        "entry_gate_reason": str(cycle.get("entry_gate_reason") or "active"),
         "empty_temperature_cycles": int(cycle.get("empty_temperature_cycles", 0) or 0),
         "counts": {
             "opportunities": int(cycle_metrics.get("opportunities_total", 0)),
@@ -1420,8 +1621,9 @@ def _enrich_discovery_markets(parsed):
     )
 
 
-def run_discovery_cycle(inspect=False, aggressive_scan=False):
+def run_discovery_cycle(inspect=False, aggressive_scan=False, filter_opportunities_fn=None):
     """Run one discovery cycle and return structured results."""
+    filter_fn = filter_opportunities if filter_opportunities_fn is None else filter_opportunities_fn
     return _run_discovery_cycle_impl(
         inspect=inspect,
         aggressive_scan=aggressive_scan,
@@ -1430,7 +1632,7 @@ def run_discovery_cycle(inspect=False, aggressive_scan=False):
         fetch_markets_fn=fetch_markets,
         parse_discovery_markets_fn=_parse_discovery_markets,
         enrich_discovery_markets_fn=_enrich_discovery_markets,
-        filter_opportunities_fn=filter_opportunities,
+        filter_opportunities_fn=filter_fn,
         daily_resolve_only=DAILY_RESOLVE_ONLY,
         daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE,
     )
@@ -1763,14 +1965,33 @@ def run_paper_trading_cycle(
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
     import os
+
     state = load_paper_state(state_path)
-    meta = state.get("meta", {})
-    current_wallet = meta.get("current_wallet", float(os.getenv("PAPER_MAX_OPEN_POSITIONS", 5)) * 1.0)
-    
+    meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+    current_wallet = _safe_float(
+        meta.get("current_wallet"),
+        float(os.getenv("PAPER_MAX_OPEN_POSITIONS", 5)) * 1.0,
+    )
+
     if current_wallet >= 10.0:
         stake_usd = float(int(current_wallet / 5.0))
-        
-    paper_max_open_positions = int(current_wallet // stake_usd)
+
+    stake_usd = max(0.01, _safe_float(stake_usd, PAPER_STAKE_USD))
+    paper_max_open_positions = max(1, int(current_wallet // stake_usd)) if current_wallet > 0 else 1
+
+    daily_session = meta.get("daily_session") if isinstance(meta.get("daily_session"), dict) else {}
+    allow_new_entries = bool(daily_session.get("entry_gate_open", True))
+    entry_gate_reason = str(daily_session.get("entry_gate_reason") or "active")
+
+    tuner_snapshot = meta.get("auto_tuner") if isinstance(meta.get("auto_tuner"), dict) else {}
+    tuned_filter_fn = _build_tuned_filter_opportunities(tuner_snapshot)
+
+    def _run_discovery_cycle_with_tuner(inspect=False, aggressive_scan=False):
+        return run_discovery_cycle(
+            inspect=inspect,
+            aggressive_scan=aggressive_scan,
+            filter_opportunities_fn=tuned_filter_fn,
+        )
 
     return _run_paper_trading_cycle_impl(
 
@@ -1783,7 +2004,7 @@ def run_paper_trading_cycle(
         now_utc_fn=lambda: datetime.now(timezone.utc),
         elapsed_ms_fn=_elapsed_ms,
         load_paper_state_fn=load_paper_state,
-        run_discovery_cycle_fn=run_discovery_cycle,
+        run_discovery_cycle_fn=_run_discovery_cycle_with_tuner,
         prefetch_forecasts_fn=_prefetch_forecasts,
         ensure_take_profit_target_fn=_ensure_take_profit_target,
         forecast_still_valid_fn=_forecast_still_valid,
@@ -1808,6 +2029,8 @@ def run_paper_trading_cycle(
         paper_max_open_positions=paper_max_open_positions,
         paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
         paper_journal_max_entries=PAPER_JOURNAL_MAX_ENTRIES,
+        allow_new_entries=allow_new_entries,
+        entry_gate_reason=entry_gate_reason,
     )
 
 
