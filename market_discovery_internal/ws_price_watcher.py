@@ -203,27 +203,38 @@ class PriceWatcher:
             logger.debug("[WS] Unparseable message: %.120s", raw)
             return
 
-        event_type = msg.get("event_type")
+        events = msg if isinstance(msg, list) else [msg]
+        for event in events:
+            if not isinstance(event, dict):
+                continue
 
-        if event_type == "best_bid_ask":
-            token_id = msg.get("asset_id", "")
-            raw_bid = msg.get("best_bid")
-            if token_id and raw_bid is not None:
-                try:
-                    self._on_price_update(token_id, float(raw_bid))
-                except Exception as exc:
-                    logger.warning("[WS] Callback error for %s: %s", token_id, exc)
+            event_type = event.get("event_type")
 
-        elif event_type == "price_change":
-            for change in msg.get("price_changes", []):
-                token_id = change.get("asset_id", "")
-                raw_best_bid = change.get("best_bid")
-                raw_bid = raw_best_bid if raw_best_bid is not None else change.get("price")
+            if event_type == "best_bid_ask":
+                token_id = event.get("asset_id", "")
+                raw_bid = event.get("best_bid")
                 if token_id and raw_bid is not None:
                     try:
                         self._on_price_update(token_id, float(raw_bid))
                     except Exception as exc:
                         logger.warning("[WS] Callback error for %s: %s", token_id, exc)
+
+            elif event_type == "price_change":
+                price_changes = event.get("price_changes")
+                if not isinstance(price_changes, list):
+                    continue
+
+                for change in price_changes:
+                    if not isinstance(change, dict):
+                        continue
+                    token_id = change.get("asset_id", "")
+                    raw_best_bid = change.get("best_bid")
+                    raw_bid = raw_best_bid if raw_best_bid is not None else change.get("price")
+                    if token_id and raw_bid is not None:
+                        try:
+                            self._on_price_update(token_id, float(raw_bid))
+                        except Exception as exc:
+                            logger.warning("[WS] Callback error for %s: %s", token_id, exc)
 
     # ------------------------------------------------------------------
     # Internal — send helpers

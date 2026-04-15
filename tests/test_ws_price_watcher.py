@@ -86,6 +86,38 @@ def test_unknown_event_type_ignored():
     assert received == []
 
 
+def test_list_payload_calls_callback():
+    """Polymarket may send a list of events in one message."""
+    received = []
+    msg = json.dumps([
+        {
+            "event_type": "best_bid_ask",
+            "asset_id": "tok_list",
+            "best_bid": "0.42",
+            "best_ask": "0.43",
+        }
+    ])
+    watcher = PriceWatcher(url="wss://fake", on_price_update=lambda tid, price: received.append((tid, price)))
+    watcher._handle_message(msg)
+    assert received == [("tok_list", 0.42)]
+
+
+def test_list_payload_ignores_non_dict_entries():
+    """Mixed list payload should ignore non-dict items and process valid events."""
+    received = []
+    msg = json.dumps([
+        "heartbeat",
+        123,
+        {
+            "event_type": "price_change",
+            "price_changes": [{"asset_id": "tok_list_2", "price": "0.11", "best_bid": "0.10"}],
+        },
+    ])
+    watcher = PriceWatcher(url="wss://fake", on_price_update=lambda tid, price: received.append((tid, price)))
+    watcher._handle_message(msg)
+    assert received == [("tok_list_2", 0.10)]
+
+
 def test_malformed_json_ignored():
     """Malformed JSON does not crash the watcher."""
     watcher = PriceWatcher(url="wss://fake", on_price_update=lambda tid, price: None)
