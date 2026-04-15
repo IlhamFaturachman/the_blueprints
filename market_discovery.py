@@ -19,7 +19,6 @@ import requests
 from market_discovery_internal.cli import (
     parse_cli_mode_flags,
     run_main_discovery_mode as _run_main_discovery_mode_impl,
-    run_main_paper_loop_mode as _run_main_paper_loop_mode_impl,
     run_main_paper_report_mode as _run_main_paper_report_mode_impl,
     run_main_paper_single_mode as _run_main_paper_single_mode_impl,
 )
@@ -2275,23 +2274,89 @@ def _append_runtime_error_log(mode, error, consecutive_errors=None, retry_in_sec
 
 
 def _run_main_paper_loop_mode(aggressive_mode):
-    """Handle paper loop mode in main()."""
-    _run_main_paper_loop_mode_impl(
-        aggressive_mode=aggressive_mode,
-        paper_loop_interval_seconds=PAPER_LOOP_INTERVAL_SECONDS,
-        run_paper_trading_cycle_fn=run_paper_trading_cycle,
-        print_paper_cycle_summary_fn=print_paper_cycle_summary,
-        sleep_fn=time.sleep,
-        continue_on_error=PAPER_LOOP_CONTINUE_ON_ERROR,
-        error_backoff_seconds=PAPER_LOOP_ERROR_BACKOFF_SECONDS,
-        max_error_backoff_seconds=PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS,
-        report_error_fn=lambda error, consecutive_errors, retry_in_seconds: _append_runtime_error_log(
-            mode="paper_loop",
-            error=error,
-            consecutive_errors=consecutive_errors,
-            retry_in_seconds=retry_in_seconds,
-        ),
+    """Handle paper loop mode in main(). Starts WS price watcher if enabled."""
+    import threading
+    from market_discovery_internal.ws_price_watcher import (
+        PriceWatcher,
+        make_ws_exit_callback,
     )
+
+    # Shared lock: both WS callback and polling cycle hold this when writing state
+    state_lock = threading.Lock()
+
+    watcher = None
+    if WS_PRICE_WATCHER_ENABLED:
+        exit_callback = make_ws_exit_callback(
+            state_path=PAPER_STATE_FILE,
+            lock=state_lock,
+        )
+        watcher = PriceWatcher(
+            url=WS_PRICE_WATCHER_URL,
+            on_price_update=exit_callback,
+            reconnect_delay=WS_RECONNECT_DELAY_SECONDS,
+            ping_interval=WS_PING_INTERVAL_SECONDS,
+        )
+        watcher.start()
+        print(f"[WS] Real-time price watcher started ({WS_PRICE_WATCHER_URL})")
+    else:
+        print("[WS] Price watcher disabled (WS_PRICE_WATCHER_ENABLED=false)")
+
+    def _run_cycle_with_lock(force_aggressive_scan):
+        """Run one paper trading cycle inside the shared state lock."""
+        with state_lock:
+            return run_paper_trading_cycle(force_aggressive_scan=force_aggressive_scan)
+
+    def _after_cycle(cycle):
+        """Update WS subscriptions after cycle so new positions are watched."""
+        if watcher is None:
+            return
+        open_positions = cycle.get("open_positions", [])
+        token_ids = {
+            pos["token_id"]
+            for pos in open_positions
+            if pos.get("status") == "open" and pos.get("token_id")
+        }
+        watcher.update_subscriptions(token_ids)
+
+    print(f"Starting paper loop every {PAPER_LOOP_INTERVAL_SECONDS}s. Press Ctrl+C to stop.")
+
+    consecutive_errors = 0
+    backoff_base = max(1, int(PAPER_LOOP_ERROR_BACKOFF_SECONDS))
+    max_backoff = max(backoff_base, int(PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS))
+
+    try:
+        while True:
+            try:
+                cycle = _run_cycle_with_lock(force_aggressive_scan=aggressive_mode)
+                print_paper_cycle_summary(cycle)
+                _after_cycle(cycle)
+                consecutive_errors = 0
+                time.sleep(PAPER_LOOP_INTERVAL_SECONDS)
+            except Exception as error:
+                if not PAPER_LOOP_CONTINUE_ON_ERROR:
+                    raise
+                consecutive_errors += 1
+                retry_in_seconds = min(
+                    max_backoff,
+                    backoff_base * (2 ** min(consecutive_errors - 1, 6)),
+                )
+                timestamp_utc = datetime.now(timezone.utc).isoformat()
+                print(
+                    f"[{timestamp_utc}] Paper cycle failed "
+                    f"({consecutive_errors} consecutive): {error}"
+                )
+                print(f"Retrying in {retry_in_seconds}s...")
+                _append_runtime_error_log(
+                    mode="paper_loop",
+                    error=error,
+                    consecutive_errors=consecutive_errors,
+                    retry_in_seconds=retry_in_seconds,
+                )
+                time.sleep(retry_in_seconds)
+    except KeyboardInterrupt:
+        print("\nPaper loop stopped.")
+        if watcher:
+            watcher.stop()
 
 
 def _run_main_paper_single_mode(aggressive_mode):
