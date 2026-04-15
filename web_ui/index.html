@@ -123,12 +123,12 @@ async function fetchData() {
         if (!res.ok) throw new Error("File JSON tidak ditemukan. Pastikan bot sudah run pertama.");
         const data = await res.json();
         
-        const d_open = data.open_positions || {};
-        const d_closed = data.closed_positions || {};
+        const d_open = data.positions || [];
+        const d_closed = data.history || [];
         const d_cycle = data.cycle_journal || [];
         const last_cycle = d_cycle.length > 0 ? d_cycle[d_cycle.length - 1] : null;
         
-        const openKeys = Object.keys(d_open);
+        const openKeys = Object.keys(d_open); // using as array indices
         const closedKeys = Object.keys(d_closed);
 
         document.getElementById('valOpenPositions').innerHTML = `Active deals: ${openKeys.length}`;
@@ -136,15 +136,17 @@ async function fetchData() {
         document.getElementById('posCountBadge').innerHTML = openKeys.length;
         
         let openPnlTotal = 0;
-        openKeys.forEach(k => { openPnlTotal += (d_open[k].unrealized_pnl_usd || 0.0); });
+        openKeys.forEach(k => { 
+            let pos = d_open[k];
+            let upnl = (pos.last_price || pos.entry_price || 0) * (pos.quantity || 0) - (pos.cost_basis || 0);
+            openPnlTotal += upnl; 
+        });
         const elOpenPnl = document.getElementById('valOpenPnl');
         elOpenPnl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
         elOpenPnl.className = openPnlTotal >= 0 ? "value good" : "value bad";
 
-        let total_pnl = data.realized_pnl || 0.0;
-        if(last_cycle && typeof last_cycle.closed_realized_pnl_usd === 'number' && total_pnl === 0) {
-           total_pnl = last_cycle.closed_realized_pnl_usd;
-        }
+        let total_pnl = 0.0;
+        d_closed.forEach(pos => { total_pnl += (pos.realized_pnl_usd || 0.0); });
         const pnlEl = document.getElementById('valPnl');
         pnlEl.innerHTML = `$${total_pnl.toFixed(4)}`;
         pnlEl.className = total_pnl >= 0 ? "value good" : "value bad";
@@ -174,14 +176,14 @@ async function fetchData() {
         } else {
             openKeys.forEach(k => {
                 const pos = d_open[k];
-                const unPnl = pos.unrealized_pnl_usd ? pos.unrealized_pnl_usd : 0.0;
+                const unPnl = ((pos.last_price || pos.entry_price || 0) * (pos.quantity || 0)) - (pos.cost_basis || 0);
                 const pnlCls = unPnl >= 0 ? "good" : "bad";
                 tPos.innerHTML += `
                     <tr>
-                        <td><strong>${pos.market_id || k}</strong></td>
+                        <td><strong>${pos.city || 'Token ' + pos.token_id.substring(0,8)}</strong></td>
                         <td>$${(pos.entry_price || 0).toFixed(4)}</td>
-                        <td>$${(pos.stake_usd || 0).toFixed(2)}</td>
-                        <td>$${pos.latest_price ? pos.latest_price.toFixed(4) : (pos.entry_price||0).toFixed(4)}</td>
+                        <td>$${(pos.cost_basis || 0).toFixed(2)}</td>
+                        <td>$${pos.last_price ? pos.last_price.toFixed(4) : (pos.entry_price||0).toFixed(4)}</td>
                         <td class="${pnlCls}"><strong>$${unPnl.toFixed(4)}</strong></td>
                         <td><span class="badge mode-auto">${pos.direction || 'LONG'}</span></td>
                         <td><button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679;">Close API</button></td>
