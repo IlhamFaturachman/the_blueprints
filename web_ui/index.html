@@ -397,79 +397,25 @@ function updatePositionLiveByToken(tokenId, bidPrice) {
 
     const pos = latestPositions[idx];
     const prevPrice = Number(pos.last_price || pos.entry_quote_best_bid || 0);
-    pos.last_price = Number(bidPrice);
-
     const bidCell = row.querySelector('.js-bid-price');
-    const pnlCell = row.querySelector('.js-upnl');
-    if (!bidCell || !pnlCell) {
-        return;
-    }
-
-    bidCell.textContent = `$${Number(bidPrice).toFixed(4)}`;
-
-    const unPnl = (Number(pos.last_price || 0) * Number(pos.quantity || 0)) - Number(pos.cost_basis || 0);
-    const pnlPct = Number(pos.cost_basis || 0) ? ((unPnl / Number(pos.cost_basis || 0)) * 100) : 0;
-    pnlCell.className = `js-upnl ${unPnl >= 0 ? 'good' : 'bad'}`;
-    pnlCell.innerHTML = `<strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong>`;
-
-    // 2. Aggregate Portfolio Sync (REAL-TIME)
-    let totalLiquidationValue = latestCash;
-    let openPnlTotal = 0;
-    
-    latestPositions.forEach(p => {
-        const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
-        const posValue = markBid * Number(p.quantity || 0);
-        const upnl = posValue - Number(p.cost_basis || 0);
-        
-        totalLiquidationValue += posValue;
-        openPnlTotal += upnl;
-    });
-
-    // Update Floating PnL Card
-    const openPnlEl = document.getElementById('valOpenPnl');
-    if (openPnlEl) {
-        openPnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
-        openPnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
-    }
-
-    // Update Portfolio Value Card
-    const walletEl = document.getElementById('valWallet');
-    if (walletEl) {
-        walletEl.innerHTML = `$${totalLiquidationValue.toFixed(4)}`;
-        // Subtle Pulse on portfolio value change
-        walletEl.classList.add('pulse-text');
-        setTimeout(() => walletEl.classList.remove('pulse-text'), 500);
-    }
-
-    // Update Daily Target Card
-    const dailyTargetEl = document.getElementById('valDailyTarget');
-    if (dailyTargetEl && latestDailyBaseline > 0) {
-        const targetGain = latestDailyTarget - latestDailyBaseline;
-        const currentGain = totalLiquidationValue - latestDailyBaseline;
-        
-        let dailyProgress = 0;
-        if (targetGain > 0) {
-            dailyProgress = (currentGain / targetGain) * 100;
-        } else {
-            // If target <= baseline, we've technically reached it
-            dailyProgress = currentGain >= 0 ? 100 : 0;
-        }
-
-        dailyTargetEl.innerHTML = `${dailyProgress.toFixed(2)}%`;
-        
-        const isReached = totalLiquidationValue >= latestDailyTarget;
-        dailyTargetEl.className = isReached ? 'value good' : 'value';
-    }
+    pos.last_price = Number(bidPrice);
 
     // Enterprise Pulse Effect
     const flashClass = Number(bidPrice) >= prevPrice ? 'flash-up' : 'flash-down';
     bidCell.classList.remove('flash-up', 'flash-down');
     void bidCell.offsetWidth;
     bidCell.classList.add(flashClass);
+
+    // Update Aggregates & Re-Sort Table
+    updateAggregateCards();
+    renderPositionsTable();
     
     // Pulse the parent row slightly
-    row.classList.add('pulse-row');
-    setTimeout(() => row.classList.remove('pulse-row'), 1000);
+    const newRow = document.querySelector(`#positionsTable tr[data-token-id="${tokenId}"]`);
+    if (newRow) {
+        newRow.classList.add('pulse-row');
+        setTimeout(() => newRow.classList.remove('pulse-row'), 1000);
+    }
 }
 
 function handlePositionClosed(msg) {
@@ -636,62 +582,40 @@ function cycleNextPage() {
     }
 }
 
-async function fetchData() {
-    try {
-        const res = await fetch('../logs/paper_positions_5usd.json', { cache: "no-store" });
-        if (!res.ok) throw new Error("File JSON tidak ditemukan. Pastikan bot sudah run pertama.");
-        const data = await res.json();
+function updateAggregateCards() {
+    let totalLiquidationValue = latestCash;
+    let openPnlTotal = 0;
+    
+    latestPositions.forEach(p => {
+        const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
+        const posValue = markBid * Number(p.quantity || 0);
+        const upnl = posValue - Number(p.cost_basis || 0);
         
-        const d_open = data.positions || [];
-        const d_closed = data.history || [];
-        const d_cycle = data.cycle_journal || [];
-        const last_cycle = d_cycle.length > 0 ? d_cycle[d_cycle.length - 1] : null;
-        latestPositions = d_open.map(p => ({ ...p }));
+        totalLiquidationValue += posValue;
+        openPnlTotal += upnl;
+    });
+
+    // 1. Update Floating PnL Card
+    const openPnlEl = document.getElementById('valOpenPnl');
+    if (openPnlEl) {
+        openPnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
+        openPnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
+    }
+
+    // 2. Update Portfolio Value Card
+    const walletEl = document.getElementById('valWallet');
+    if (walletEl) {
+        walletEl.innerHTML = `$${totalLiquidationValue.toFixed(4)}`;
+        walletEl.classList.add('pulse-text');
+        setTimeout(() => walletEl.classList.remove('pulse-text'), 500);
+    }
+
+    // 3. Update Daily Target Card
+    const dailyTargetEl = document.getElementById('valDailyTarget');
+    if (dailyTargetEl && latestDailyBaseline > 0) {
+        const targetGain = latestDailyTarget - latestDailyBaseline;
+        const currentGain = totalLiquidationValue - latestDailyBaseline;
         
-        const openKeys = Object.keys(d_open); // using as array indices
-        const closedKeys = Object.keys(d_closed);
-
-        document.getElementById('valOpenPositions').innerHTML = `Active deals: ${openKeys.length}`;
-        document.getElementById('valClosed').innerHTML = `Closed deals: ${closedKeys.length}`;
-        document.getElementById('posCountBadge').innerHTML = openKeys.length;
-        
-        let openPnlTotal = 0;
-        openKeys.forEach(k => { 
-            let pos = d_open[k];
-            const markBid = Number(pos.last_price || pos.entry_quote_best_bid || 0);
-            let upnl = (markBid * (pos.quantity || 0)) - (pos.cost_basis || 0);
-            openPnlTotal += upnl; 
-        });
-        const elOpenPnl = document.getElementById('valOpenPnl');
-        elOpenPnl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
-        elOpenPnl.className = openPnlTotal >= 0 ? "value good" : "value bad";
-
-        let total_pnl = 0.0;
-        d_closed.forEach(pos => { total_pnl += (pos.realized_pnl_usd || 0.0); });
-        const pnlEl = document.getElementById('valPnl');
-        pnlEl.innerHTML = `$${total_pnl.toFixed(4)}`;
-        pnlEl.className = total_pnl >= 0 ? "value good" : "value bad";
-
-        // Fetch Cash Data from Meta (Bot Engine direct injection)
-        const meta = data.meta || {};
-        const baseWallet = typeof meta.base_wallet === 'number' ? meta.base_wallet : 5.0;
-        let current_wallet = typeof meta.current_wallet === 'number' ? meta.current_wallet : (baseWallet + total_pnl);
-        let cash = typeof meta.cash === 'number' ? meta.cash : (current_wallet - (meta.open_cost_basis || 0));
-        let pos_limit = meta.open_positions_count || openKeys.length;
-        
-        let portfolio_value = current_wallet + openPnlTotal;
-        let sim_stake = typeof meta.recommended_stake_usd === 'number'
-            ? meta.recommended_stake_usd
-            : (current_wallet >= 10.0 ? Math.floor(current_wallet / 5.0) : 1.0);
-
-        document.getElementById('valWallet').innerHTML = `$${portfolio_value.toFixed(4)}`;
-        document.getElementById('valWalletMode').innerHTML = `Base: $${baseWallet.toFixed(4)} | Cash: $${cash.toFixed(4)} | Stake: $${Number(sim_stake).toFixed(2)}/trade`;
-
-        const daily = meta.daily_session || {};
-        const dailyBaseline = typeof daily.baseline_wallet === 'number' ? daily.baseline_wallet : current_wallet;
-        const dailyTarget = typeof daily.target_wallet === 'number' ? daily.target_wallet : (dailyBaseline * 2.0);
-        const targetGain = dailyTarget - dailyBaseline;
-        const currentGain = current_wallet - dailyBaseline;
         let dailyProgress = 0;
         if (targetGain > 0) {
             dailyProgress = (currentGain / targetGain) * 100;
@@ -699,17 +623,118 @@ async function fetchData() {
             dailyProgress = currentGain >= 0 ? 100 : 0;
         }
 
-        const dailyGateOpen = daily.entry_gate_open !== false;
-        const dailyTargetReached = daily.target_reached === true;
-        const dailyGateReason = daily.entry_gate_reason || 'active';
+        dailyTargetEl.innerHTML = `${dailyProgress.toFixed(2)}%`;
+        // We reuse the last logic for coloring
+        const isReached = totalLiquidationValue >= latestDailyTarget;
+        dailyTargetEl.className = isReached ? 'value good' : 'value';
+    }
+}
 
+function renderPositionsTable() {
+    const tPos = document.getElementById('positionsTable');
+    if (!tPos) return;
+    
+    tPos.innerHTML = "";
+    if (latestPositions.length === 0) {
+        tPos.innerHTML = "<tr><td colspan='7' style='text-align:center;'>Tidak ada posisi terbuka.</td></tr>";
+        return;
+    }
+
+    // Always sort by current_pnl before rendering
+    latestPositions.forEach(p => {
+        const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
+        p.current_pnl = (markBid * (p.quantity || 0)) - (p.cost_basis || 0);
+    });
+    latestPositions.sort((a, b) => (b.current_pnl || 0) - (a.current_pnl || 0));
+
+    latestPositions.forEach((pos, idx) => {
+        const markBid = Number(pos.last_price || pos.entry_quote_best_bid || 0);
+        const unPnl = (markBid * (pos.quantity || 0)) - (pos.cost_basis || 0);
+        const pnlCls = unPnl >= 0 ? "good" : "bad";
+        const pnlPct = pos.cost_basis ? ((unPnl / pos.cost_basis) * 100) : 0;
+        let directionLabel = pos.direction === 'above' ? '≥' : (pos.direction === 'below' ? '≤' : '=');
+        const targetText = `Posisi YES: Suhu ${directionLabel} ${pos.threshold || ''}°${pos.unit || ''}`;
+        const bucketText = pos.entry_bucket ? pos.entry_bucket.replace(/_/g, ' ') : '-';
+        const cityLabel = pos.city ? pos.city.toUpperCase() : `Token ${String(pos.token_id || '').substring(0, 8)}`;
+        const marketLabel = getMarketLabel(pos);
+        let rawSlug = pos.market_slug || "";
+        let cleanSlug = rawSlug.replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
+        const marketUrl = cleanSlug ? `https://polymarket.com/event/${cleanSlug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
+
+        tPos.innerHTML += `
+            <tr data-token-id="${pos.token_id}" data-index="${idx}">
+                <td>
+                    <strong>${escapeHtml(marketLabel)}</strong><br>
+                    <small style="color: #bbb">${escapeHtml(cityLabel)}</small>
+                </td>
+                <td>$${Number(pos.entry_price || 0).toFixed(4)}</td>
+                <td>${Number(pos.quantity || 0).toFixed(2)} ($${Number(pos.cost_basis || 0).toFixed(2)})</td>
+                <td class="js-bid-price">$${markBid.toFixed(4)}</td>
+                <td class="js-upnl ${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
+                <td>
+                    <div style="display:flex; flex-direction: column; gap: 4px;">
+                        <span class="badge mode-auto" style="display:inline-block; border-color: ${pos.target_strategy === 'hold_until_resolve' ? '#8b5cf6' : '#10b981'}; color: ${pos.target_strategy === 'hold_until_resolve' ? '#c4b5fd' : '#34d399'};">
+                            ${pos.target_strategy === 'hold_until_resolve' ? '🏰 FORTRESS (HOLD)' : '📉 SWING'}
+                        </span>
+                        <span class="badge mode-auto" style="display:inline-block;">${targetText}</span>
+                    </div>
+                    <small style="color: #bbb">${bucketText}</small>
+                </td>
+                <td>
+                    <div style="display:flex; gap: 6px; margin-bottom: 6px;">
+                        <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white;">Buka Market</a>
+                        <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679; border: none;">Close API</button>
+                    </div>
+                    <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: linear-gradient(135deg, #10b981, #059669); border: none; width: 100%; text-align: center;" 
+                        onclick="showReason('${escapeHtml(pos.city || '')}', '${escapeHtml(pos.date || '')}', '${escapeHtml(pos.threshold || '')}', '${escapeHtml(pos.unit || '')}', ${Number(pos.entry_model_prob || 0)}, ${Number(pos.entry_confidence_score || 0)}, '${escapeHtml(pos.entry_bucket_reason || '')}')">
+                        💡 Alasan Entry
+                    </button>
+                </td>
+            </tr>
+        `;
+    });
+}
+
+async function fetchData() {
+    try {
+        const res = await fetch('../logs/paper_positions_5usd.json', { cache: "no-store" });
+        if (!res.ok) throw new Error("File JSON tidak ditemukan. Pastikan bot sudah run pertama.");
+        const data = await res.json();
+        
+        latestPositions = (data.positions || []).map(p => {
+            const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
+            return { ...p, last_price: markBid };
+        });
+
+        const d_closed = data.history || [];
+        const d_cycle = data.cycle_journal || [];
+        const last_cycle = d_cycle.length > 0 ? d_cycle[d_cycle.length - 1] : null;
+        
+        document.getElementById('posCountBadge').innerHTML = latestPositions.length;
+        
+        // Fetch Cash Data from Meta (Bot Engine direct injection)
+        const meta = data.meta || {};
+        const baseWallet = typeof meta.base_wallet === 'number' ? meta.base_wallet : 5.0;
+        let total_pnl = 0.0;
+        d_closed.forEach(pos => { total_pnl += (pos.realized_pnl_usd || 0.0); });
+        
+        let current_wallet = typeof meta.current_wallet === 'number' ? meta.current_wallet : (baseWallet + total_pnl);
+        let cash = typeof meta.cash === 'number' ? meta.cash : (current_wallet - (meta.open_cost_basis || 0));
+        
+        let sim_stake = typeof meta.recommended_stake_usd === 'number'
+            ? meta.recommended_stake_usd
+            : (current_wallet >= 10.0 ? Math.floor(current_wallet / 5.0) : 1.0);
+
+        document.getElementById('valWalletMode').innerHTML = `Base: $${baseWallet.toFixed(4)} | Cash: $${cash.toFixed(4)} | Stake: $${Number(sim_stake).toFixed(2)}/trade`;
+
+        const daily = meta.daily_session || {};
         latestCash = cash;
-        latestDailyBaseline = dailyBaseline;
-        latestDailyTarget = dailyTarget;
+        latestDailyBaseline = typeof daily.baseline_wallet === 'number' ? daily.baseline_wallet : current_wallet;
+        latestDailyTarget = typeof daily.target_wallet === 'number' ? daily.target_wallet : (latestDailyBaseline * 2.0);
 
-        document.getElementById('valDailyTarget').innerHTML = `${dailyProgress.toFixed(2)}%`;
-        document.getElementById('valDailyTarget').className = dailyTargetReached ? 'value good' : 'value';
-        document.getElementById('valDailyGate').innerHTML = `Baseline: $${dailyBaseline.toFixed(4)} | Target: $${dailyTarget.toFixed(4)} | Gate: ${dailyGateOpen ? 'OPEN' : 'CLOSED'} (${dailyGateReason})`;
+        const dailyGateOpen = daily.entry_gate_open !== false;
+        const dailyGateReason = daily.entry_gate_reason || 'active';
+        document.getElementById('valDailyGate').innerHTML = `Baseline: $${latestDailyBaseline.toFixed(4)} | Target: $${latestDailyTarget.toFixed(4)} | Gate: ${dailyGateOpen ? 'OPEN' : 'CLOSED'} (${dailyGateReason})`;
 
         const tuner = meta.auto_tuner || {};
         const tunerSummary = tuner.summary || {};
@@ -733,27 +758,6 @@ async function fetchData() {
             document.getElementById('valCoverage').innerHTML = "-";
         }
 
-        const tPos = document.getElementById('positionsTable');
-        tPos.innerHTML = "";
-        if(openKeys.length === 0) {
-            tPos.innerHTML = "<tr><td colspan='7' style='text-align:center;'>Tidak ada posisi terbuka.</td></tr>";
-        } else {
-            openKeys.forEach(k => {
-                const pos = d_open[k];
-                const markBid = Number(pos.last_price || pos.entry_quote_best_bid || 0);
-                const unPnl = (markBid * (pos.quantity || 0)) - (pos.cost_basis || 0);
-                const pnlCls = unPnl >= 0 ? "good" : "bad";
-                const pnlPct = pos.cost_basis ? ((unPnl / pos.cost_basis) * 100) : 0;
-                let directionLabel = pos.direction === 'above' ? '≥' : (pos.direction === 'below' ? '≤' : '=');
-                const targetText = `Posisi YES: Suhu ${directionLabel} ${pos.threshold || ''}°${pos.unit || ''}`;
-                const bucketText = pos.entry_bucket ? pos.entry_bucket.replace(/_/g, ' ') : '-';
-                const cityLabel = pos.city ? pos.city.toUpperCase() : `Token ${String(pos.token_id || '').substring(0, 8)}`;
-                const marketLabel = getMarketLabel(pos);
-                
-                // Polymarket slugs sometimes have suffixes like -24corhigher, which return 404s. We strip them out.
-                let rawSlug = pos.market_slug || "";
-                let cleanSlug = rawSlug.replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
-                const marketUrl = cleanSlug ? `https://polymarket.com/event/${cleanSlug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
                 const tokenId = String(pos.token_id || '');
                 
                 tPos.innerHTML += `
