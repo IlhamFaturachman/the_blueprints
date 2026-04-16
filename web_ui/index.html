@@ -285,13 +285,16 @@
 
 <script>
 const CYCLE_PAGE_SIZE = 10;
-let cyclePage = 0;
-let cycleRowsCache = [];
-let latestPositions = [];
-let wsSocket = null;
-let wsReconnectAttempts = 0;
-let wsReconnectTimer = null;
-let lastReceivedAt = Date.now();
+    let latestPositions = [];
+    let latestCash = 0;
+    let latestDailyBaseline = 0;
+    let latestDailyTarget = 0;
+    let cyclePage = 0;
+    let cycleRowsCache = [];
+    let wsSocket = null;
+    let wsReconnectAttempts = 0;
+    let wsReconnectTimer = null;
+    let lastReceivedAt = Date.now();
 
 function showReason(city, date, threshold, unit, prob, conf, bucketReason) {
     const pProb = (Number(prob) * 100).toFixed(1);
@@ -409,16 +412,43 @@ function updatePositionLiveByToken(tokenId, bidPrice) {
     pnlCell.className = `js-upnl ${unPnl >= 0 ? 'good' : 'bad'}`;
     pnlCell.innerHTML = `<strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong>`;
 
+    // 2. Aggregate Portfolio Sync (REAL-TIME)
+    let totalLiquidationValue = latestCash;
+    let openPnlTotal = 0;
+    
+    latestPositions.forEach(p => {
+        const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
+        const posValue = markBid * Number(p.quantity || 0);
+        const upnl = posValue - Number(p.cost_basis || 0);
+        
+        totalLiquidationValue += posValue;
+        openPnlTotal += upnl;
+    });
+
+    // Update Floating PnL Card
     const openPnlEl = document.getElementById('valOpenPnl');
     if (openPnlEl) {
-        let openPnlTotal = 0;
-        latestPositions.forEach(p => {
-            const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
-            const upnl = (markBid * Number(p.quantity || 0)) - Number(p.cost_basis || 0);
-            openPnlTotal += upnl;
-        });
         openPnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
         openPnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
+    }
+
+    // Update Portfolio Value Card
+    const walletEl = document.getElementById('valWallet');
+    if (walletEl) {
+        walletEl.innerHTML = `$${totalLiquidationValue.toFixed(4)}`;
+        // Subtle Pulse on portfolio value change
+        walletEl.classList.add('pulse-text');
+        setTimeout(() => walletEl.classList.remove('pulse-text'), 500);
+    }
+
+    // Update Daily Target Card
+    const dailyTargetEl = document.getElementById('valDailyTarget');
+    if (dailyTargetEl && latestDailyBaseline > 0) {
+        const dailyProgress = (totalLiquidationValue / latestDailyBaseline) * 100;
+        dailyTargetEl.innerHTML = `${dailyProgress.toFixed(2)}%`;
+        
+        const isReached = totalLiquidationValue >= latestDailyTarget;
+        dailyTargetEl.className = isReached ? 'value good' : 'value';
     }
 
     // Enterprise Pulse Effect
@@ -656,6 +686,10 @@ async function fetchData() {
         const dailyGateOpen = daily.entry_gate_open !== false;
         const dailyTargetReached = daily.target_reached === true;
         const dailyGateReason = daily.entry_gate_reason || 'active';
+
+        latestCash = cash;
+        latestDailyBaseline = dailyBaseline;
+        latestDailyTarget = dailyTarget;
 
         document.getElementById('valDailyTarget').innerHTML = `${dailyProgress.toFixed(2)}%`;
         document.getElementById('valDailyTarget').className = dailyTargetReached ? 'value good' : 'value';
