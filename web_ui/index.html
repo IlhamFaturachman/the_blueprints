@@ -444,7 +444,17 @@ function updatePositionLiveByToken(tokenId, bidPrice) {
     // Update Daily Target Card
     const dailyTargetEl = document.getElementById('valDailyTarget');
     if (dailyTargetEl && latestDailyBaseline > 0) {
-        const dailyProgress = (totalLiquidationValue / latestDailyBaseline) * 100;
+        const targetGain = latestDailyTarget - latestDailyBaseline;
+        const currentGain = totalLiquidationValue - latestDailyBaseline;
+        
+        let dailyProgress = 0;
+        if (targetGain > 0) {
+            dailyProgress = (currentGain / targetGain) * 100;
+        } else {
+            // If target <= baseline, we've technically reached it
+            dailyProgress = currentGain >= 0 ? 100 : 0;
+        }
+
         dailyTargetEl.innerHTML = `${dailyProgress.toFixed(2)}%`;
         
         const isReached = totalLiquidationValue >= latestDailyTarget;
@@ -680,16 +690,14 @@ async function fetchData() {
         const daily = meta.daily_session || {};
         const dailyBaseline = typeof daily.baseline_wallet === 'number' ? daily.baseline_wallet : current_wallet;
         const dailyTarget = typeof daily.target_wallet === 'number' ? daily.target_wallet : (dailyBaseline * 2.0);
-        const dailyProgress = typeof daily.progress_pct === 'number'
-            ? daily.progress_pct
-            : (dailyBaseline > 0 ? (current_wallet / dailyBaseline) * 100 : 0);
-        const dailyGateOpen = daily.entry_gate_open !== false;
-        const dailyTargetReached = daily.target_reached === true;
-        const dailyGateReason = daily.entry_gate_reason || 'active';
-
-        latestCash = cash;
-        latestDailyBaseline = dailyBaseline;
-        latestDailyTarget = dailyTarget;
+        const targetGain = dailyTarget - dailyBaseline;
+        const currentGain = current_wallet - dailyBaseline;
+        let dailyProgress = 0;
+        if (targetGain > 0) {
+            dailyProgress = (currentGain / targetGain) * 100;
+        } else {
+            dailyProgress = currentGain >= 0 ? 100 : 0;
+        }
 
         document.getElementById('valDailyTarget').innerHTML = `${dailyProgress.toFixed(2)}%`;
         document.getElementById('valDailyTarget').className = dailyTargetReached ? 'value good' : 'value';
