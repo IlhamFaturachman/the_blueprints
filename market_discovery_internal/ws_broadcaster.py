@@ -137,34 +137,45 @@ class WsBroadcaster:
             self._loop = None
 
     async def _serve_forever(self, websockets_module) -> None:
-        try:
-            async with websockets_module.serve(
-                self._handle_client,
-                self._host,
-                self._port,
-                ping_interval=None,
-                ping_timeout=None,
-            ):
-                self._ready_event.set()
-                ping_task = asyncio.create_task(self._ping_loop())
+        max_attempts = 15
+        attempt = 0
+        while not self._stop_event.is_set() and attempt < max_attempts:
+            attempt += 1
+            try:
+                async with websockets_module.serve(
+                    self._handle_client,
+                    self._host,
+                    self._port,
+                    ping_interval=None,
+                    ping_timeout=None,
+                    # reuse_address is default in newer websockets, but we are explicit
+                ):
+                    self._ready_event.set()
+                    ping_task = asyncio.create_task(self._ping_loop())
 
-                while not self._stop_event.is_set():
-                    await asyncio.sleep(0.2)
+                    while not self._stop_event.is_set():
+                        await asyncio.sleep(0.5)
 
-                ping_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await ping_task
-                await self._close_all_clients()
+                    ping_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await ping_task
+                    await self._close_all_clients()
+                    return # Clean exit
 
-        except OSError as exc:
-            logger.warning(
-                "[WS-BROADCAST] Could not bind %s:%s (%s)",
-                self._host,
-                self._port,
-                exc,
-            )
-        finally:
-            self._ready_event.set()
+            except OSError as exc:
+                if attempt < max_attempts:
+                    logger.warning(
+                        "[WS-BROADCAST] Bind failed on %s:%s (Attempt %d/%d): %s. Retrying in 2s...",
+                        self._host, self._port, attempt, max_attempts, exc
+                    )
+                    await asyncio.sleep(2)
+                else:
+                    logger.error(
+                        "[WS-BROADCAST] FATAL: Could not bind %s:%s after %d attempts: %s",
+                        self._host, self._port, max_attempts, exc
+                    )
+        
+        self._ready_event.set()
 
     async def _handle_client(self, websocket):
         if len(self._clients) >= self._max_clients:

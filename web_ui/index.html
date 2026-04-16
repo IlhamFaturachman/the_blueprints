@@ -157,7 +157,11 @@
             <p>Enterprise Grade Weather Trading & Price Monitoring System.</p>
         </div>
         <div style="display:flex; align-items:center;">
-            <div id="wsStatus" class="ws-indicator"><span class="ws-dot ws-reconnecting"></span>Reconnecting...</div>
+            <div id="wsIndicator" class="ws-indicator">
+                <div class="ws-dot"></div>
+                <span id="wsStatus">Connecting...</span>
+                <span id="lastUpdateAt" class="data-age">--:--:--</span>
+            </div>
             <button class="refresh-btn" onclick="fetchData()">Refresh Data</button>
         </div>
     </header>
@@ -196,11 +200,7 @@
         <div class="card">
             <h3>🕒 UTC Real Time</h3>
             <div class="value" id="valUtcClock" style="font-size: 1.35rem;"><div class="skeleton"></div></div>
-            <div class="ws-indicator" id="wsIndicator">
-                <div class="ws-dot"></div>
-                <span id="wsStatus">Connecting...</span>
-                <span id="lastUpdateAt" class="data-age">--:--:--</span>
-            </div>
+            <div class="small-value" id="valUtcDate">UTC -</div>
         </div>
         <div class="card">
             <h3>🗽 ET Washington</h3>
