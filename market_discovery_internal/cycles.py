@@ -643,23 +643,35 @@ def run_paper_trading_cycle(
             entry_candidates=entry_candidates,
             next_open_positions=next_open_positions,
             open_token_ids=open_token_ids,
-            open_city_counts=open_city_counts,
-            available_slots=available_slots,
-            stake_usd=current_stake_usd,
-            min_bound=min_bound,
-            max_bound=max_bound,
-            fetch_orderbook_quote_fn=_get_orderbook_quote,
-        )
-        # [MODUL N] Telegram Notification for Entries
+                # [MODUL N] Telegram Notification for Entries
         for pos in opened_this_cycle:
+            # Brainstorming: Add Link, Reason, Forecast Context, and Resolution Time
+            slug = pos.get('market_slug')
+            link = f"https://polymarket.com/event/{slug}" if slug else "N/A"
+            reason = pos.get('entry_bucket_reason', 'Criteria met')
+            forecast = pos.get('forecast_temp_c', 'N/A')
+            
+            # Calculate hours until resolve for better context
+            from market_discovery_internal.reporting import parse_utc_datetime
+            now_utc = datetime.now(timezone.utc)
+            end_dt = parse_utc_datetime(pos.get('end_date'))
+            hours_left = round((end_dt - now_utc).total_seconds() / 3600, 1) if end_dt else "N/A"
+            
+            # Confidence Meter Visual
+            prob = float(pos.get('entry_model_prob', 0))
+            meter = "🟢" * int(prob * 5) + "⚪" * (5 - int(prob * 5))
+
             msg = (
                 f"🚀 **NEW ENTRY: OPENED** 🚀\n\n"
                 f"📍 *City*: {pos.get('city').upper()}\n"
                 f"⚖️ *Target*: {pos.get('threshold')}{pos.get('unit')} {pos.get('direction').upper()}\n"
+                f"🌡️ *Forecast*: {forecast}°C ({pos.get('direction').lower()} target)\n"
                 f"💵 *Stake*: USD {pos.get('cost_basis'):.2f}\n"
-                f"🏷️ *Entry Price*: USD {pos.get('entry_price'):.4f}\n"
-                f"🎯 *TP Target*: USD {pos.get('target_price'):.4f}\n"
-                f"🎯 *Model*: {float(pos.get('entry_model_prob', 0))*100:.1f}% | *Edge*: {float(pos.get('entry_edge', 0))*100:.1f}%"
+                f"🏷️ *Price*: USD {pos.get('entry_price'):.4f} (TP: {pos.get('target_price'):.4f})\n"
+                f"🎯 *Model*: {meter} ({prob*100:.1f}%)\n"
+                f"📝 *Reason*: {reason}\n"
+                f"⏳ *Resolves in*: {hours_left}h\n\n"
+                f"🔗 [View on Polymarket]({link})"
             )
             send_telegram_alert(msg)
     else:
@@ -869,6 +881,7 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "stop_loss_price": round(entry_price * HYBRID_STOP_LOSS_MULTIPLIER, 4),
         "entry_model_prob": opportunity.get("model_prob"),
         "entry_edge": opportunity.get("edge"),
+        "forecast_temp_c": opportunity.get("forecast_temp_c"),
         "opened_at": datetime.now(timezone.utc).isoformat(),
     }
 
