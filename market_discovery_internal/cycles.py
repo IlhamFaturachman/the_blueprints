@@ -554,7 +554,8 @@ def run_paper_trading_cycle(
     effective_entry_gate_reason = str(entry_gate_reason or "active")
     daily_session = state_meta.get("daily_session") if isinstance(state_meta.get("daily_session"), dict) else {}
     
-    state_base_wallet = float(state_meta.get("base_wallet", float(daily_session.get("baseline_wallet", 0.0) or 0.0)))
+    # Calculate current capital: Use state meta, then daily session, then config default
+    state_base_wallet = float(state_meta.get("base_wallet", float(daily_session.get("baseline_wallet", PAPER_BASE_WALLET) or PAPER_BASE_WALLET)))
     realized_after_position_management = sum(
         float(position.get("realized_pnl_usd", 0.0) or 0.0)
         for position in next_history
