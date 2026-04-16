@@ -391,14 +391,14 @@ def parse_market(
     unit = match.group(2).upper()
 
     # Step 3: Determine direction
-    # Check question text (most reliable) then fallback to full search text
+    # Use question text only — descriptions often contain "below/above" boilerplate
+    # that belongs to the resolution criteria, not the market direction.
     question_lower = question.lower()
-    direction_text = f"{question_lower} {search_text_lower}"
-    if EXACT_RE.search(direction_text):
+    if EXACT_RE.search(question_lower):
         direction = "exact"
-    elif ABOVE_RE.search(direction_text):
+    elif ABOVE_RE.search(question_lower):
         direction = "above"
-    elif BELOW_RE.search(direction_text):
+    elif BELOW_RE.search(question_lower):
         direction = "below"
     else:
         direction = "exact"  # Polymarket exact-temp markets: "be 17°C on date"
