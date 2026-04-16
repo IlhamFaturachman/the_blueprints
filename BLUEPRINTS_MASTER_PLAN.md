@@ -1,6 +1,6 @@
-# 🧬 JARVIS Z: ULTIMATE SURVIVAL MASTER PLAN (Phase 2)
+# 🧬 THE BLUEPRINTS: ULTIMATE SURVIVAL MASTER PLAN (Phase 2)
 
-Dokumen ini adalah hukum tertinggi dalam pembangunan bot trading cuaca JARVIS Z-Edition. Target utama: Compounding dana **$5 menuju $100+** dengan tingkat kegagalan teknis mendekati nol.
+Dokumen ini adalah hukum tertinggi dalam pembangunan bot trading cuaca THE BLUEPRINTS-Edition. Target utama: Compounding dana **$5 menuju $100+** dengan tingkat kegagalan teknis mendekati nol.
 
 ---
 

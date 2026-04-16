@@ -181,7 +181,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
 _price_update_queue = multiprocessing.Queue()
 _ws_watcher = None
 _ws_broadcaster = None
-_last_ws_update_at = 0.0
+_last_ws_update_at = multiprocessing.Value('d', 0.0)
 
 def _start_background_services():
     global _ws_watcher, _ws_broadcaster
@@ -189,7 +189,8 @@ def _start_background_services():
     from market_discovery_internal.ws_broadcaster import WsBroadcaster
     from market_discovery_internal.config import (
         WS_PRICE_WATCHER_URL, WS_WATCHDOG_TIMEOUT_SECONDS, 
-        WS_BROADCAST_HOST, WS_BROADCAST_PORT, WS_PING_INTERVAL_SECONDS
+        WS_BROADCAST_HOST, WS_BROADCAST_PORT, WS_PING_INTERVAL_SECONDS,
+        WS_RECONNECT_DELAY_SECONDS, WS_PING_INTERVAL_SECONDS as WS_FEED_PING_INTERVAL
     )
     import threading
 
@@ -205,6 +206,8 @@ def _start_background_services():
     _ws_watcher = PriceWatcher(
         url=WS_PRICE_WATCHER_URL,
         update_queue=_price_update_queue,
+        reconnect_delay=WS_RECONNECT_DELAY_SECONDS,
+        ping_interval=WS_FEED_PING_INTERVAL,
         watchdog_timeout=WS_WATCHDOG_TIMEOUT_SECONDS
     )
     _ws_watcher.start()
@@ -212,7 +215,7 @@ def _start_background_services():
     # 3. Queue Consumer (Main Process Sink)
     exit_callback = make_ws_exit_callback(
         state_path=PAPER_STATE_FILE,
-        lock=threading.Lock(), # Placeholder Lock, improved in actual wiring
+        lock=_state_lock, # Use the shared state lock
         broadcaster=_ws_broadcaster
     )
 
@@ -222,7 +225,7 @@ def _start_background_services():
             try:
                 # Blocks until update arrives
                 token_id, price = _price_update_queue.get()
-                _last_ws_update_at = time.time()
+                _last_ws_update_at.value = time.time()
                 
                 # Update UI
                 if _ws_broadcaster:
@@ -260,6 +263,7 @@ def main():
     if flags["paper_loop_mode"]:
         _start_background_services()
         try:
+            # Enterprise Logic: Monitor WS health and adjust polling interval
             run_main_paper_loop_mode(
                 aggressive_mode=flags["aggressive_mode"],
                 paper_loop_interval_seconds=PAPER_LOOP_INTERVAL_SECONDS,
@@ -268,7 +272,10 @@ def main():
                 sleep_fn=time.sleep,
                 continue_on_error=PAPER_LOOP_CONTINUE_ON_ERROR,
                 error_backoff_seconds=PAPER_LOOP_ERROR_BACKOFF_SECONDS,
-                max_error_backoff_seconds=PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS
+                max_error_backoff_seconds=PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS,
+                ws_watcher=_ws_watcher,
+                last_ws_update_at=_last_ws_update_at,
+                ws_stale_detection_minutes=WS_STALE_DETECTION_MINUTES
             )
         finally:
             _stop_background_services()

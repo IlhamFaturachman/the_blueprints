@@ -113,6 +113,11 @@
         .skeleton { background: linear-gradient(90deg, #2e3541 25%, #3f4756 50%, #2e3541 75%); background-size: 200% 100%; height: 36px; border-radius: 6px; animation: shine 2s infinite linear; }
         @keyframes shine { to { background-position: -200% 0; } }
 
+        .pulse-row { 
+            border-left: 2px solid var(--success); 
+            transition: all 0.3s;
+        }
+
         /* Modal Styles */
         .modal-overlay {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -144,10 +149,10 @@
 <body>
 
 <div class="container">
-    <header>
+        <header>
         <div>
-            <h1>📊 Bot Local UI </h1>
-            <p>Memantau aktivitas bot dari data JSON. Disiapkan untuk integrasi Live Trade.</p>
+            <h1>🔵 THE BLUEPRINTS UI</h1>
+            <p>Enterprise Grade Weather Trading & Price Monitoring System.</p>
         </div>
         <div style="display:flex; align-items:center;">
             <div id="wsStatus" class="ws-indicator"><span class="ws-dot ws-reconnecting"></span>Reconnecting...</div>
@@ -405,10 +410,15 @@ function updatePositionLiveByToken(tokenId, bidPrice) {
         openPnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
     }
 
+    // Enterprise Pulse Effect
     const flashClass = Number(bidPrice) >= prevPrice ? 'flash-up' : 'flash-down';
     bidCell.classList.remove('flash-up', 'flash-down');
     void bidCell.offsetWidth;
     bidCell.classList.add(flashClass);
+    
+    // Pulse the parent row slightly
+    row.classList.add('pulse-row');
+    setTimeout(() => row.classList.remove('pulse-row'), 1000);
 }
 
 function handlePositionClosed(msg) {

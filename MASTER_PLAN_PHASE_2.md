@@ -1,4 +1,4 @@
-# 🏆 OPERATIONAL MANUAL: JARVIS Z-EDITION (Phase 2)
+# 🏆 OPERATIONAL MANUAL: THE BLUEPRINTS-EDITION (Phase 2)
 
 Rencana ini adalah instruksi teknis tingkat akhir untuk pembangunan sistem trading otonom. Target: Zero-Flaw Execution & Ultimate Survival.
 
