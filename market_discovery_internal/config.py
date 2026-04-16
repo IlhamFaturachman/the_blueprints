@@ -82,6 +82,38 @@ AIRPORT_IATA_TO_ICAO = {
     "LAX": "KLAX", "SFO": "KSFO", "MIA": "KMIA", "DFW": "KDFW", "IAH": "KIAH",
 }
 
+# Semantic Station Aliases (Modul A Extension)
+# Maps keywords found in rules to specific precision ICAOs.
+STATION_NAME_TO_ICAO = {
+    "central park": "KNYC",
+    "la guardia": "KLGA",
+    "laguardia": "KLGA",
+    "kennedy": "KJFK",
+    "john f. kennedy": "KJFK",
+    "newark": "KEWR",
+    "o'hare": "KORD",
+    "ohare": "KORD",
+    "midway": "KMDW",
+    "heathrow": "EGLL",
+    "gatwick": "EGKK",
+    "stansted": "EGSS",
+    "london city": "EGLC",
+    "luton": "EGGW",
+    "pearson": "CYYZ",
+    "toronto city": "CYTZ", # Alternate Toronto station
+}
+
+# City-to-Station Mapping for Ambiguity Detection
+# If a city has >1 station in this list, the bot will REQUIRE an explicit match.
+CITY_STATIONS = {
+    "new york city": ["KJFK", "KLGA", "KNYC", "KEWR"],
+    "chicago": ["KORD", "KMDW"],
+    "london": ["EGLL", "EGKK", "EGSS", "EGLC", "EGGW"],
+    "toronto": ["CYYZ", "CYTZ"],
+    # Cities with single stations are NOT considered ambiguous.
+}
+
+
 
 # Regex patterns for matching city names (handles abbreviations/variants)
 CITY_PATTERNS = {

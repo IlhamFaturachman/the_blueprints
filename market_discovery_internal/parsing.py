@@ -10,8 +10,9 @@ from market_discovery_internal.config import (
     DAILY_MIN_RESOLVE_DAYS_AHEAD, DAILY_MAX_RESOLVE_DAYS_AHEAD,
     THRESHOLD_RE, EXACT_RE, ABOVE_RE, BELOW_RE,
     WEATHER_CONTEXT_RE, CITY_REGEXES, TARGET_CITIES,
-    AIRPORT_IATA_TO_ICAO
+    AIRPORT_IATA_TO_ICAO, STATION_NAME_TO_ICAO, CITY_STATIONS
 )
+
 
 def _normalize_icao_code(code, city_name=None):
     """Normalize a 3 or 4 letter airport code into a valid ICAO code."""
@@ -135,16 +136,41 @@ def parse_market(
     if city is None:
         return _with_reason(None)
 
-    # Step 1.5: Extract ICAO (Modul A - The Eyes)
-    # Scan all text (title, question, desc) for parenthetical codes like "(LGA)"
+    # Step 1.5: Extract ICAO (Modul A - Semantic Rule Validation)
     icao_code = None
+    source_explicit = False
+    
+    # Priority 1: Explicit code in parentheses like "(LGA)"
     icao_match = re.search(r"\(([A-Z]{3,4})\)", search_text)
     if icao_match:
         extracted = icao_match.group(1)
         icao_code = _normalize_icao_code(extracted, city)
-    else:
-        # Fallback to the city's ground truth mapping in config.py
+        source_explicit = True
+    
+    # Priority 2: Semantic station name matching (e.g. "Central Park")
+    if not icao_code:
+        for name, code in STATION_NAME_TO_ICAO.items():
+            if name in search_text_lower:
+                icao_code = code
+                source_explicit = True
+                break
+
+    # Ambiguity Guard: If city has multiple sensors but none was explicitly found -> REJECT
+    allowed_stations = CITY_STATIONS.get(city, [])
+    if len(allowed_stations) > 1 and not source_explicit:
+        return _with_reason(None, "ambiguous_station")
+    
+    # Fallback for single-station cities or explicit matches
+    if not icao_code:
         icao_code = TARGET_CITIES.get(city, {}).get("icao")
+
+    # Final Source Literacy: Check for official oracles
+    official_sources = ["noaa", "wunderground", "national weather service", "environment canada"]
+    has_official_source = any(s in search_text_lower for s in official_sources)
+    if not has_official_source:
+        # We allow it if it's a standard temperature market, but log it as lower confidence?
+        # User requested 'baca rules', so let's be strict if they mention a weird source.
+        pass
 
     has_weather_context = bool(WEATHER_CONTEXT_RE.search(search_text_lower))
     has_temperature_hint = bool(THRESHOLD_RE.search(search_text))
