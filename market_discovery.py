@@ -182,6 +182,7 @@ _price_update_queue = multiprocessing.Queue()
 _ws_watcher = None
 _ws_broadcaster = None
 _last_ws_update_at = multiprocessing.Value('d', 0.0)
+_state_lock = threading.Lock()
 
 def _start_background_services():
     global _ws_watcher, _ws_broadcaster
