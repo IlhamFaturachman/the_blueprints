@@ -1,4 +1,4 @@
-from market_discovery import (
+from market_discovery_internal.cycles import (
     build_paper_position,
     evaluate_hybrid_exit,
     update_paper_position,

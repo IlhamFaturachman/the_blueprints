@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch
-from market_discovery import fetch_markets, GAMMA_EVENTS_API
+from market_discovery_internal.discovery import fetch_markets, GAMMA_EVENTS_API
 
 
 SAMPLE_MARKETS = [
