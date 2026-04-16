@@ -211,6 +211,17 @@ def _start_background_services():
         ping_interval=WS_FEED_PING_INTERVAL,
         watchdog_timeout=WS_WATCHDOG_TIMEOUT_SECONDS
     )
+    # [WIRING] Initial subscription sync
+    try:
+        from market_discovery_internal.state_persistence import load_paper_state
+        from market_discovery_internal.config import PAPER_STATE_FILE
+        state = load_paper_state(PAPER_STATE_FILE)
+        token_ids = {p["token_id"] for p in state.get("positions", []) if p.get("status") == "open"}
+        _ws_watcher.update_subscriptions(token_ids)
+        print(f"[WS-WIRING] Initial sync: monitoring {len(token_ids)} active tokens")
+    except Exception as exc:
+        print(f"[WS-WIRING] Initial sync failed: {exc}")
+
     _ws_watcher.start()
 
     # 3. Queue Consumer (Main Process Sink)
