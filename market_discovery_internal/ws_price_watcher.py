@@ -231,12 +231,16 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                     if pos.get("token_id") != token_id: continue
                     if pos.get("status") != "open": continue
 
-                    # Evaluate Exit
+                    # Evaluate Exit (Strategy-Aware)
                     stop = float(pos.get("stop_loss_price", 0))
                     target = float(pos.get("target_price", 1))
+                    strategy = pos.get("target_strategy", "swing")
+                    
                     reason = None
-                    if bid_price <= stop: reason = "stop_loss"
-                    elif bid_price >= target: reason = "take_profit_100pct"
+                    if bid_price <= stop: 
+                        reason = "stop_loss"
+                    elif bid_price >= target and strategy == "swing":
+                        reason = "take_profit_100pct"
 
                     if reason:
                         closed = close_paper_position(pos, bid_price, reason, datetime.now(timezone.utc))
@@ -244,7 +248,7 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                         state["positions"] = positions
                         state.setdefault("history", []).append(closed)
                         changed = True
-                        print(f"[WS-EXIT] {pos.get('city','?').upper()} | {reason} @ {bid_price:.4f}")
+                        print(f"[WS-EXIT] {pos.get('city','?').upper()} | {reason} @ {bid_price:.4f} | Strategy: {strategy}")
                         if broadcaster:
                             broadcaster.broadcast_closed(token_id, pos.get('city',''), reason, bid_price)
                         break
