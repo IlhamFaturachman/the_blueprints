@@ -56,14 +56,29 @@ def _is_temperature_market_candidate(raw):
 
 def _extract_yes_token_id(raw_market):
     """Extract the token ID for the 'Yes' outcome from a raw market payload."""
+    # Method 1: Legacy tokens array
     tokens = raw_market.get("tokens", [])
-    for t in tokens:
-        outcome = str(t.get("outcome") or "").lower()
-        if outcome == "yes":
-            return t.get("token_id")
-    # Fallback to the first token if only 2 tokens exist
-    if not tokens or not isinstance(tokens, list): return None
-    return tokens[0].get("token_id")
+    if tokens and isinstance(tokens, list):
+        for t in tokens:
+            if isinstance(t, dict):
+                outcome = str(t.get("outcome") or "").lower()
+                if outcome == "yes":
+                    return t.get("token_id")
+        if len(tokens) > 0 and isinstance(tokens[0], dict):
+            return tokens[0].get("token_id")
+
+    # Method 2: Modern clobTokenIds array (Gamma API)
+    clob_ids = raw_market.get("clobTokenIds", [])
+    if clob_ids and isinstance(clob_ids, str):
+        try:
+            import json
+            clob_ids = json.loads(clob_ids)
+        except Exception:
+            pass
+    if clob_ids and isinstance(clob_ids, list) and len(clob_ids) > 0:
+        return clob_ids[0] # YES token is always index 0
+        
+    return None
 
 def _normalize_city_key(city):
     """Normalize city name for dictionary keys."""

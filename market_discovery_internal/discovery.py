@@ -79,11 +79,11 @@ def fetch_markets(inspect=False, aggressive_scan=False):
             break
 
     # Deduplicate by token_id
+    from market_discovery_internal.parsing import _extract_yes_token_id
     seen = set()
     deduped = []
     for m in candidates:
-        tokens = m.get("tokens", [])
-        tid = tokens[0].get("token_id") if tokens else None
+        tid = _extract_yes_token_id(m)
         if tid and tid not in seen:
             seen.add(tid)
             deduped.append(m)
