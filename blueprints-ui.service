@@ -1,0 +1,17 @@
+[Unit]
+Description=The Blueprints: Web Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/the_blueprints
+# Port 8080 for the dashboard
+ExecStart=/usr/bin/python3 -m http.server 8080
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/the_blueprints/logs/ui_server.log
+StandardError=append:/opt/the_blueprints/logs/ui_server.log
+
+[Install]
+WantedBy=multi-user.target

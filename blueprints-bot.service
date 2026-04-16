@@ -1,0 +1,19 @@
+[Unit]
+Description=The Blueprints: Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/the_blueprints
+Environment=PYTHONUNBUFFERED=1
+# Using our hardened PID lock location
+ExecStartPre=/bin/rm -f /opt/the_blueprints/the_blueprints.pid
+ExecStart=/opt/the_blueprints/venv/bin/python3 /opt/the_blueprints/market_discovery.py --paper-loop
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/the_blueprints/logs/paper_loop.out
+StandardError=append:/opt/the_blueprints/logs/paper_loop.out
+
+[Install]
+WantedBy=multi-user.target
