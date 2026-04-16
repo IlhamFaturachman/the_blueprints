@@ -170,8 +170,8 @@ def parse_market(
                 if ai_icao in allowed_stations:
                     icao_code = ai_icao
                     source_explicit = True
-        except Exception:
-            pass  # Sensing failure must never break market parsing
+        except Exception as _e:
+            _log_unmatched(question, f"haiku_sensing_error: {_e}")
 
     # Ambiguity Guard: If city has multiple known sensors but none was explicitly found -> REJECT
     # This prevents the flaw where a city has LGA and JFK but the market only says "New York"

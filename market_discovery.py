@@ -337,8 +337,7 @@ def _main_protected():
             def _on_kill():
                 send_telegram_alert(
                     "🛑 <b>[MODUL J] Emergency Kill-Switch Activated</b>\n"
-                    "Bot dihentikan via Dashboard. Semua posisi terbuka tetap di state.json.",
-                    parse_mode="HTML"
+                    "Bot dihentikan via Dashboard. Semua posisi terbuka tetap di state.json."
                 )
 
             # Enterprise Logic: Monitor WS health and adjust polling interval
