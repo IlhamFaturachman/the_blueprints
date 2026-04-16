@@ -1,7 +1,93 @@
-"""Forecast cache/prefetch helpers for market_discovery."""
-
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+import urllib.parse
 
+from market_discovery_internal.config import TARGET_CITIES, OPEN_METEO_API
+from market_discovery_internal.utils import fetch_with_retry
+
+class ForecastTemp(float):
+    """Float wrapper to store the oracle source."""
+    def __new__(cls, value, source):
+        obj = super().__new__(cls, value)
+        obj.source = source
+        return obj
+
+def fetch_forecast(city, date):
+    """Fetch the daily max temperature forecast from Open-Meteo and wttr.in.
+
+    For same-day forecasts (date == today UTC), uses hourly data to compute
+    the max of remaining daytime hours (06:00–22:00 local).
+    """
+    coords = TARGET_CITIES.get(city)
+    if not coords:
+        return None
+
+    def _fetch_open_meteo():
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        use_hourly = (date == today_utc)
+
+        if use_hourly:
+            params = {
+                "latitude": coords["lat"],
+                "longitude": coords["lon"],
+                "hourly": "temperature_2m",
+                "timezone": "auto",
+                "forecast_days": 2,
+            }
+            try:
+                data = fetch_with_retry(OPEN_METEO_API, params=params)
+                hourly = data.get("hourly", {})
+                times = hourly.get("time", [])
+                temps = hourly.get("temperature_2m", [])
+                # Take max over daytime hours (6–22) for the target date
+                day_temps = [
+                    t for ts, t in zip(times, temps)
+                    if ts.startswith(date) and 6 <= int(ts.split("T")[1].split(":")[0]) <= 22
+                ]
+                return max(day_temps) if day_temps else None
+            except Exception:
+                pass
+        else:
+            params = {
+                "latitude": coords["lat"], "longitude": coords["lon"],
+                "daily": "temperature_2m_max", "timezone": "auto", "forecast_days": 3
+            }
+            try:
+                data = fetch_with_retry(OPEN_METEO_API, params=params)
+                daily = data.get("daily", {})
+                times = daily.get("time", [])
+                temps = daily.get("temperature_2m_max", [])
+                if date in times:
+                    return temps[times.index(date)]
+            except Exception:
+                pass
+        return None
+
+    def _fetch_wttr():
+        try:
+            url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
+            data = fetch_with_retry(url)
+            for w in data.get("weather", []):
+                if w.get("date") == date:
+                    return float(w.get("maxtempC", 0))
+        except Exception:
+            pass
+        return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f_om = executor.submit(_fetch_open_meteo)
+        f_wt = executor.submit(_fetch_wttr)
+        t_om = f_om.result()
+        t_wt = f_wt.result()
+
+    if t_om is not None and t_wt is not None:
+        avg = round((t_om + t_wt) / 2.0, 1)
+        return ForecastTemp(avg, "dual-source")
+    elif t_om is not None:
+        return ForecastTemp(t_om, "open-meteo")
+    elif t_wt is not None:
+        return ForecastTemp(t_wt, "wttr.in")
+    return None
 
 def position_to_market(position, current_yes_price, hours_until_resolve):
     """Build calculate_edge-compatible market dict from an open position."""
