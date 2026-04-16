@@ -108,6 +108,26 @@ def fetch_orderbook_quote(token_id):
     except Exception:
         return None
 
+def check_liquidity_depth(token_id, target_stake_usd):
+    """
+    [MODUL E] Check if the orderbook volume at the Best Ask exceeds our stake.
+    Protects the bot from entering dry, illiquid markets.
+    """
+    if not token_id: return False
+    url = f"{CLOB_BOOK_API}?token_id={token_id}"
+    try:
+        data = fetch_with_retry(url)
+        asks = data.get("asks", [])
+        if not asks or len(asks) == 0: return False
+        
+        best_ask_price = float(asks[0][0])
+        best_ask_size = float(asks[0][1])
+        depth_usd = best_ask_price * best_ask_size
+        
+        return depth_usd > float(target_stake_usd)
+    except Exception:
+        return False
+
 def calculate_edge(market, forecast_temp):
     """
     Calculate the statistical edge of a market position compared to forecast.

@@ -464,6 +464,30 @@ def run_paper_trading_cycle(
             forecast_cache=position_forecast_cache,
             forecast_cache_stats=position_forecast_cache_stats,
         )
+        
+        # [MODUL G] Exit Sniper (Aggressive sweeps)
+        if current_yes_price >= 0.90:
+            forced_closed = close_paper_position_fn(
+                position=position,
+                exit_price=current_yes_price,
+                reason="sniper_take_profit",
+                now_utc=now,
+            )
+            closed_this_cycle.append(forced_closed)
+            next_history.append(forced_closed)
+            continue
+            
+        if not forecast_valid:
+            forced_closed = close_paper_position_fn(
+                position=position,
+                exit_price=current_yes_price,
+                reason="sniper_stop_loss_thesis_broken",
+                now_utc=now,
+            )
+            closed_this_cycle.append(forced_closed)
+            next_history.append(forced_closed)
+            continue
+
         confidence_score = position_confidence_score_fn(position, current_yes_price, forecast_valid)
 
         updated_position, decision = update_paper_position_fn(
@@ -703,6 +727,13 @@ def _ensure_take_profit_target(position):
 
 def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     """Create a paper position from an opportunity candidate."""
+    from market_discovery_internal.pricing import check_liquidity_depth
+    
+    # [MODUL E] Liquidity Depth Gate
+    token_id = opportunity.get("token_id")
+    if not check_liquidity_depth(token_id, stake_usd):
+        raise ValueError(f"Market {token_id} rejected due to insufficient liquidity depth at Best Ask.")
+        
     entry_price = _safe_float(opportunity.get("entry_price"), _safe_float(opportunity.get("yes_price"), 0.0))
     if entry_price <= 0:
         raise ValueError("entry_price must be > 0")
