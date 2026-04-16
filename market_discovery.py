@@ -11,6 +11,8 @@ Usage:
 import os
 import sys
 import time
+import threading
+import multiprocessing
 from datetime import datetime, timezone
 
 # Add parent directory to path to ensure internal package is importable
@@ -27,7 +29,7 @@ from market_discovery_internal.config import (
     DISCOVERY_FORECAST_PREFETCH_MIN_KEYS, DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS,
     PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS, PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS,
     HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT, THRESHOLD_RE, WEATHER_CONTEXT_RE,
-    DIRECTION_CANDIDATE_RE
+    DIRECTION_CANDIDATE_RE, WS_STALE_DETECTION_MINUTES
 )
 from market_discovery_internal.utils import (
     fetch_with_retry, _safe_float, _safe_div, _clamp, _parse_iso_utc,
@@ -167,7 +169,77 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         paper_journal_max_entries=PAPER_JOURNAL_MAX_ENTRIES,
         haiku_position_monitor_fn=_haiku_position_monitor,
         haiku_monitor_min_confidence=HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT,
+        ws_watcher=_ws_watcher,
+        last_ws_update_at=_last_ws_update_at,
+        ws_stale_detection_minutes=WS_STALE_DETECTION_MINUTES,
     )
+
+# ---------------------------------------------------------------------------
+# Global Background Components (WS & Monitoring)
+# ---------------------------------------------------------------------------
+
+_price_update_queue = multiprocessing.Queue()
+_ws_watcher = None
+_ws_broadcaster = None
+_last_ws_update_at = 0.0
+
+def _start_background_services():
+    global _ws_watcher, _ws_broadcaster
+    from market_discovery_internal.ws_price_watcher import PriceWatcher, make_ws_exit_callback
+    from market_discovery_internal.ws_broadcaster import WsBroadcaster
+    from market_discovery_internal.config import (
+        WS_PRICE_WATCHER_URL, WS_WATCHDOG_TIMEOUT_SECONDS, 
+        WS_BROADCAST_HOST, WS_BROADCAST_PORT, WS_PING_INTERVAL_SECONDS
+    )
+    import threading
+
+    # 1. Broadcaster (Web UI Relay)
+    _ws_broadcaster = WsBroadcaster(
+        host=WS_BROADCAST_HOST, 
+        port=WS_BROADCAST_PORT,
+        ping_interval_seconds=WS_PING_INTERVAL_SECONDS
+    )
+    _ws_broadcaster.start()
+
+    # 2. Price Watcher (Multiprocessing Source)
+    _ws_watcher = PriceWatcher(
+        url=WS_PRICE_WATCHER_URL,
+        update_queue=_price_update_queue,
+        watchdog_timeout=WS_WATCHDOG_TIMEOUT_SECONDS
+    )
+    _ws_watcher.start()
+
+    # 3. Queue Consumer (Main Process Sink)
+    exit_callback = make_ws_exit_callback(
+        state_path=PAPER_STATE_FILE,
+        lock=threading.Lock(), # Placeholder Lock, improved in actual wiring
+        broadcaster=_ws_broadcaster
+    )
+
+    def _consumer_loop():
+        global _last_ws_update_at
+        while True:
+            try:
+                # Blocks until update arrives
+                token_id, price = _price_update_queue.get()
+                _last_ws_update_at = time.time()
+                
+                # Update UI
+                if _ws_broadcaster:
+                    _ws_broadcaster.broadcast_price(token_id, price)
+                
+                # Check Exits (Atomic)
+                exit_callback(token_id, price)
+            except Exception as exc:
+                print(f"[WS-CONSUMER] Error: {exc}")
+
+    t = threading.Thread(target=_consumer_loop, daemon=True, name="WsQueueConsumer")
+    t.start()
+    print("[WS-WIRING] Background services initialized (Isolated Mode)")
+
+def _stop_background_services():
+    if _ws_watcher: _ws_watcher.stop()
+    if _ws_broadcaster: _ws_broadcaster.stop()
 
 # ---------------------------------------------------------------------------
 # Main Entry Point
@@ -186,16 +258,20 @@ def main():
         return
 
     if flags["paper_loop_mode"]:
-        run_main_paper_loop_mode(
-            aggressive_mode=flags["aggressive_mode"],
-            paper_loop_interval_seconds=PAPER_LOOP_INTERVAL_SECONDS,
-            run_paper_trading_cycle_fn=wired_run_paper_trading_cycle,
-            print_paper_cycle_summary_fn=print_paper_cycle_summary,
-            sleep_fn=time.sleep,
-            continue_on_error=PAPER_LOOP_CONTINUE_ON_ERROR,
-            error_backoff_seconds=PAPER_LOOP_ERROR_BACKOFF_SECONDS,
-            max_error_backoff_seconds=PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS
-        )
+        _start_background_services()
+        try:
+            run_main_paper_loop_mode(
+                aggressive_mode=flags["aggressive_mode"],
+                paper_loop_interval_seconds=PAPER_LOOP_INTERVAL_SECONDS,
+                run_paper_trading_cycle_fn=wired_run_paper_trading_cycle,
+                print_paper_cycle_summary_fn=print_paper_cycle_summary,
+                sleep_fn=time.sleep,
+                continue_on_error=PAPER_LOOP_CONTINUE_ON_ERROR,
+                error_backoff_seconds=PAPER_LOOP_ERROR_BACKOFF_SECONDS,
+                max_error_backoff_seconds=PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS
+            )
+        finally:
+            _stop_background_services()
         return
 
     if flags["paper_mode"]:

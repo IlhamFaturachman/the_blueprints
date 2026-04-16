@@ -34,6 +34,12 @@ class WsBroadcaster:
         self._clients = set()
         self._stop_event = threading.Event()
         self._ready_event = threading.Event()
+        self._stats = {
+            "start_time": 0,
+            "total_broadcasts": 0,
+            "last_broadcast_ts": 0,
+            "connected_clients": 0
+        }
 
     def start(self) -> bool:
         """Start broadcaster thread. Returns True if thread started."""
@@ -114,6 +120,7 @@ class WsBroadcaster:
         loop = asyncio.new_event_loop()
         self._loop = loop
         asyncio.set_event_loop(loop)
+        self._stats["start_time"] = int(time.time())
 
         try:
             loop.run_until_complete(self._serve_forever(websockets))
@@ -202,6 +209,10 @@ class WsBroadcaster:
                 await client.send(wire)
             except Exception:
                 stale.append(client)
+
+        self._stats["total_broadcasts"] += 1
+        self._stats["last_broadcast_ts"] = int(time.time())
+        self._stats["connected_clients"] = len(self._clients)
 
         for client in stale:
             self._clients.discard(client)

@@ -276,7 +276,9 @@ WS_PRICE_WATCHER_URL = os.getenv(
     "wss://ws-subscriptions-clob.polymarket.com/ws/market",
 )
 WS_RECONNECT_DELAY_SECONDS = max(1, int(os.getenv("WS_RECONNECT_DELAY_SECONDS", "5")))
-WS_PING_INTERVAL_SECONDS = max(5, int(os.getenv("WS_PING_INTERVAL_SECONDS", "10")))
+WS_PING_INTERVAL_SECONDS = max(5, int(os.getenv("WS_PING_INTERVAL_SECONDS", "30")))
+WS_WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WS_WATCHDOG_TIMEOUT_SECONDS", "60"))
+WS_STALE_DETECTION_MINUTES = int(os.getenv("WS_STALE_DETECTION_MINUTES", "15"))
 
 WS_BROADCAST_HOST = os.getenv("WS_BROADCAST_HOST", "127.0.0.1")
 WS_BROADCAST_PORT = max(1, int(os.getenv("WS_BROADCAST_PORT", "8081")))

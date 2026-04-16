@@ -251,6 +251,9 @@ def run_paper_trading_cycle(
     haiku_monitor_min_confidence=0.75,
     allow_new_entries=True,
     entry_gate_reason="active",
+    ws_watcher=None,
+    last_ws_update_at=None,
+    ws_stale_detection_minutes=15,
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
     cycle_started = perf_counter_fn()
@@ -270,6 +273,29 @@ def run_paper_trading_cycle(
     use_aggressive_scan = force_aggressive_scan or auto_aggressive
 
     discovery_started = perf_counter_fn()
+    
+    # --- HYBRID GUARD (FAILOVER) ---
+    ws_stale = False
+    if last_ws_update_at is not None and len(state.get("positions", [])) > 0:
+        elapsed_since_ws = (time.time() - last_ws_update_at) / 60.0
+        if elapsed_since_ws > ws_stale_detection_minutes:
+            ws_stale = True
+            logger.warning("[GUARD] WebSocket STALE (%.1fm). Switching to Aggressive Scan.", elapsed_since_ws)
+
+    # --- SUPERVISOR LOGIC ---
+    if ws_watcher and hasattr(ws_watcher, "_process") and ws_watcher._process:
+        if not ws_watcher._process.is_alive():
+            logger.warning("[SUPERVISOR] PriceWatcher process DIED. Restarting...")
+            ws_watcher.start()
+
+    # Sync subscriptions to MPC process
+    if ws_watcher and hasattr(ws_watcher, "update_subscriptions"):
+        open_ids = {p["token_id"] for p in state.get("positions", []) if p.get("status") == "open"}
+        ws_watcher.update_subscriptions(open_ids)
+
+    # Use aggressive scan if WS is stale or force_aggressive_scan is True
+    use_aggressive_scan = force_aggressive_scan or auto_aggressive or ws_stale
+    
     discovery = run_discovery_cycle_fn(inspect=False, aggressive_scan=use_aggressive_scan)
     discovery_ms = elapsed_ms_fn(discovery_started)
 
