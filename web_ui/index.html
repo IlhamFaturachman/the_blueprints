@@ -347,8 +347,8 @@ function getMarketLabel(pos) {
 function getWsUrl() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname || 'localhost';
-    const port = window.location.port || '8080';
-    return `${protocol}//${host}:${port}/ws`;
+    // The broadcaster runs on port 8082, while the UI is on 8080
+    return `${protocol}//${host}:8082/`;
 }
 
 function setWsStatus(state, text) {
