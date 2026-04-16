@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# API URLs
+OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_HISTORICAL_API = "https://archive-api.open-meteo.com/v1/archive"
 
 def _env_bool(name, default=False):
     """Parse boolean environment variables using common truthy values."""
@@ -335,6 +338,11 @@ STATION_KNOWLEDGE_TTL_DAYS = max(1, int(os.getenv("STATION_KNOWLEDGE_TTL_DAYS", 
 # Weather evidence quality controls (for hold-to-resolve safety)
 WEATHER_EVIDENCE_MAX_AGE_HOURS = float(os.getenv("WEATHER_EVIDENCE_MAX_AGE_HOURS", "3.0"))
 WEATHER_EVIDENCE_MIN_QUALITY_SCORE = float(os.getenv("WEATHER_EVIDENCE_MIN_QUALITY_SCORE", "0.65"))
+
+# [MODUL B & K] Zero-Flaw Logic (Consensus & Anomaly)
+CONSENSUS_MAX_ERROR_C = float(os.getenv("CONSENSUS_MAX_ERROR_C", "2.5"))
+HISTORICAL_DEVIATION_C = float(os.getenv("HISTORICAL_DEVIATION_C", "7.0"))
+ANOMALY_LOG_FILE = os.getenv("ANOMALY_LOG_FILE", "logs/anomalies.log")
 
 # WebSocket real-time position monitor
 WS_PRICE_WATCHER_ENABLED = _env_bool("WS_PRICE_WATCHER_ENABLED", True)

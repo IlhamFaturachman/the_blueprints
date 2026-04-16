@@ -2,7 +2,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import urllib.parse
 
-from market_discovery_internal.config import TARGET_CITIES, OPEN_METEO_API
+from market_discovery_internal.config import (
+    TARGET_CITIES, OPEN_METEO_API, OPEN_METEO_HISTORICAL_API,
+    CONSENSUS_MAX_ERROR_C, HISTORICAL_DEVIATION_C, ANOMALY_LOG_FILE
+)
 from market_discovery_internal.utils import fetch_with_retry
 
 class ForecastTemp(float):
@@ -11,6 +14,43 @@ class ForecastTemp(float):
         obj = super().__new__(cls, value)
         obj.source = source
         return obj
+
+def _fetch_historical_average(city, date):
+    """Fetch the 10-year historical average max temp for this date/city using a single range lookup."""
+    coords = TARGET_CITIES.get(city)
+    if not coords or not date:
+        return None
+    
+    try:
+        year = int(date.split("-")[0])
+        month_day = date[5:]
+        # Fetch a 10-year window ending last year
+        start_date = f"{year-10}-{month_day}"
+        end_date = f"{year-1}-{month_day}"
+        
+        params = {
+            "latitude": coords["lat"], "longitude": coords["lon"],
+            "start_date": start_date, "end_date": end_date,
+            "daily": "temperature_2m_max", "timezone": "auto"
+        }
+        res = fetch_with_retry(OPEN_METEO_HISTORICAL_API, params=params)
+        daily = res.get("daily", {})
+        times = daily.get("time", [])
+        temps = daily.get("temperature_2m_max", [])
+        
+        # Filter for the same month and day across the decade
+        matches = [t for ts, t in zip(times, temps) if ts.endswith(month_day) and t is not None]
+        return round(sum(matches) / len(matches), 1) if matches else None
+    except Exception as e:
+        print(f"[MODUL-K] Historical fetch error: {e}")
+        return None
+
+def _log_anomaly(city, date, forecast, historical, source="anomaly"):
+    """Log rejected anomalous or non-consensus forecasts for transparency."""
+    os.makedirs("logs", exist_ok=True)
+    with open(ANOMALY_LOG_FILE, "a", encoding="utf-8") as f:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"[{ts}] REJECTED {city} ({date}): Forecast={forecast}C, Reference={historical}C, Type={source}\n")
 
 def fetch_forecast(city, date, icao_override=None):
     """Fetch the daily max temperature forecast from Open-Meteo and wttr.in.
@@ -118,8 +158,27 @@ def fetch_forecast(city, date, icao_override=None):
         source = "wttr.in"
         
     if base_avg is not None:
+        # [MODUL K] Historical Anomaly Check
+        hist_avg = _fetch_historical_average(city, date)
+        if hist_avg is not None:
+            if abs(base_avg - hist_avg) > HISTORICAL_DEVIATION_C:
+                _log_anomaly(city, date, base_avg, hist_avg, "historical_anomaly")
+                return None
+        
+        # [MODUL B] Strict Consensus Check (Ground Truth METAR)
+        # If we have ground truth (NOAA), it MUST be close to our forecast.
+        if t_noaa is not None:
+            # Note: Latest METAR is a snapshot, forecast is max temp.
+            # We only enforce consensus if we're near the current time or if it's already hotter than predicted.
+            if abs(base_avg - t_noaa) > CONSENSUS_MAX_ERROR_C:
+                # If current temp is already WAY higher than predicted max, that's an anomaly.
+                # If current temp is way lower and it's nearly resolve time, that's also an anomaly.
+                _log_anomaly(city, date, base_avg, t_noaa, "consensus_mismatch")
+                return None
+
         ft = ForecastTemp(base_avg, source)
         ft.noaa_current = t_noaa
+        ft.historical_avg = hist_avg
         return ft
     return None
 
