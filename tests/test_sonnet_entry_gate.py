@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from market_discovery import _build_tuned_filter_opportunities
+from market_discovery import _build_tuned_filter_opportunities, _parse_sonnet_text_fallback
 
 
 def make_exact_market(token_id="0xexact"):
@@ -57,3 +57,21 @@ def test_tuned_filter_accepts_exact_market_when_sonnet_confident():
     assert len(result) == 1
     assert result[0]["sonnet_confidence"] == 0.91
     assert result[0]["sonnet_reasoning"] == "Signal is strong."
+
+
+def test_parse_sonnet_text_fallback_accepts_leading_enter():
+    text = "enter\n\nThis setup looks favorable based on weather trajectory."
+    parsed = _parse_sonnet_text_fallback(text)
+
+    assert parsed is not None
+    assert parsed["recommendation"] == "enter"
+    assert parsed["confidence"] > 0
+
+
+def test_parse_sonnet_text_fallback_accepts_leading_skip():
+    text = "skip\n\nConfidence is low due to uncertain trend."
+    parsed = _parse_sonnet_text_fallback(text)
+
+    assert parsed is not None
+    assert parsed["recommendation"] == "skip"
+    assert parsed["confidence"] == 0.0

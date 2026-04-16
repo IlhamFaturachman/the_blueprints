@@ -1412,6 +1412,54 @@ def _sonnet_failure_result(reason):
     }
 
 
+def _parse_sonnet_text_fallback(text):
+    """Best-effort parser when Sonnet returns plain text instead of JSON."""
+    if not text:
+        return None
+
+    raw_text = str(text).strip()
+    if not raw_text:
+        return None
+
+    lower_text = raw_text.lower()
+
+    recommendation = None
+    leading_match = re.match(r"^\s*(enter|skip)\b", lower_text)
+    if leading_match:
+        recommendation = leading_match.group(1)
+    else:
+        rec_match = re.search(r"recommendation[^a-z]*(enter|skip)\b", lower_text)
+        if rec_match:
+            recommendation = rec_match.group(1)
+        elif re.search(r"\benter\b", lower_text) and not re.search(r"\bskip\b", lower_text):
+            recommendation = "enter"
+        elif re.search(r"\bskip\b", lower_text) and not re.search(r"\benter\b", lower_text):
+            recommendation = "skip"
+
+    if recommendation not in {"enter", "skip"}:
+        return None
+
+    confidence = None
+    conf_match = re.search(r"confidence[^0-9]*(1(?:\.0+)?|0(?:\.\d+)?)", lower_text)
+    if conf_match:
+        try:
+            confidence = _clamp(float(conf_match.group(1)))
+        except (TypeError, ValueError):
+            confidence = None
+
+    if confidence is None:
+        confidence = SONNET_ENTRY_MIN_CONFIDENCE if recommendation == "enter" else 0.0
+
+    return {
+        "confidence": _clamp(_safe_float(confidence, 0.0)),
+        "recommendation": recommendation,
+        "sonnet_temp_c": None,
+        "metar_temp_c": None,
+        "nws_forecast_c": None,
+        "reasoning": raw_text[:500],
+    }
+
+
 def _sonnet_entry_analysis(opportunity):
     """Analyze candidate entry with Sonnet. Falls back to permissive path on failure."""
     if not SONNET_ENTRY_ENABLED or not ANTHROPIC_API_KEY:
@@ -1491,23 +1539,28 @@ def _sonnet_entry_analysis(opportunity):
         )
         _record_ai_usage_cost("sonnet_entry", SONNET_ENTRY_MODEL, response, now_utc=now_dt)
 
-        parsed = _extract_json_payload(_extract_text_from_anthropic_response(response))
-        if not isinstance(parsed, dict):
-            raise ValueError("sonnet_response_not_json")
+        response_text = _extract_text_from_anthropic_response(response)
+        parsed = _extract_json_payload(response_text)
 
-        confidence = _clamp(_safe_float(parsed.get("confidence"), 0.0))
-        recommendation = str(parsed.get("recommendation") or "skip").strip().lower()
-        if recommendation not in {"enter", "skip"}:
-            recommendation = "skip"
+        if isinstance(parsed, dict):
+            confidence = _clamp(_safe_float(parsed.get("confidence"), 0.0))
+            recommendation = str(parsed.get("recommendation") or "skip").strip().lower()
+            if recommendation not in {"enter", "skip"}:
+                recommendation = "skip"
 
-        result = {
-            "confidence": confidence,
-            "recommendation": recommendation,
-            "sonnet_temp_c": parsed.get("sonnet_temp_c"),
-            "metar_temp_c": parsed.get("metar_temp_c"),
-            "nws_forecast_c": parsed.get("nws_forecast_c"),
-            "reasoning": str(parsed.get("reasoning") or ""),
-        }
+            result = {
+                "confidence": confidence,
+                "recommendation": recommendation,
+                "sonnet_temp_c": parsed.get("sonnet_temp_c"),
+                "metar_temp_c": parsed.get("metar_temp_c"),
+                "nws_forecast_c": parsed.get("nws_forecast_c"),
+                "reasoning": str(parsed.get("reasoning") or ""),
+            }
+        else:
+            fallback_result = _parse_sonnet_text_fallback(response_text)
+            if not isinstance(fallback_result, dict):
+                raise ValueError("sonnet_response_not_json")
+            result = fallback_result
 
         cache[cache_key] = {
             "checked_at": now_dt.isoformat(),
