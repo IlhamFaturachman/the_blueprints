@@ -330,9 +330,78 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
     if not HAIKU_MONITOR_ENABLED or not ANTHROPIC_API_KEY:
         return {"action": "hold", "confidence": 1.0}
 
-    # Simplified: Haiku logic here would check news or updated trends.
-    # For now, return hold as default placeholder for WAVE 1 logic.
-    return {"action": "hold", "confidence": 1.0}
+    # Cache: only re-query Haiku every HAIKU_MONITOR_INTERVAL_HOURS per token
+    cache = _get_haiku_monitor_cache()
+    token_id = str(position.get("token_id", ""))
+    if token_id and token_id in cache:
+        entry = cache[token_id]
+        try:
+            prev = datetime.fromisoformat(entry["at"].replace("Z", "+00:00"))
+            age_hours = (datetime.now(timezone.utc) - prev).total_seconds() / 3600
+            from market_discovery_internal.config import HAIKU_MONITOR_INTERVAL_HOURS
+            if age_hours < HAIKU_MONITOR_INTERVAL_HOURS:
+                return entry["result"]
+        except Exception:
+            pass
+
+    if not _reserve_ai_call_slot("haiku_monitor"):
+        return {"action": "hold", "confidence": 1.0, "reasoning": "Budget or daily limit reached"}
+
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        payload = {
+            "city": position.get("city"),
+            "market_question": position.get("market_question"),
+            "direction": position.get("direction"),
+            "threshold": position.get("threshold"),
+            "unit": position.get("unit"),
+            "target_date": position.get("date"),
+            "entry_price": position.get("entry_price"),
+            "current_yes_price": round(float(current_yes_price), 4) if current_yes_price is not None else None,
+            "hours_until_resolve": round(float(hours_until_resolve), 1) if hours_until_resolve is not None else None,
+            "entry_model_prob": position.get("entry_model_prob"),
+            "forecast_temp_c": position.get("forecast_temp_c"),
+        }
+
+        prompt = (
+            "You are a risk monitor for a weather prediction market position.\n"
+            f"Position data: {json.dumps(payload)}\n\n"
+            "Based on the data above, should this position be closed early or held?\n"
+            "Consider: price movement vs entry, time remaining, forecast alignment.\n"
+            'Return JSON only: {"action": "hold"|"close", "confidence": 0.0-1.0, "reasoning": "brief string"}'
+        )
+
+        response = _anthropic_create_message(
+            client,
+            model=HAIKU_MONITOR_MODEL,
+            max_tokens=HAIKU_MONITOR_MAX_TOKENS,
+            prompt=prompt,
+        )
+        _record_ai_usage_cost("haiku_monitor", HAIKU_MONITOR_MODEL, response)
+
+        text = _extract_text_from_anthropic_response(response)
+        result = _extract_json_payload(text)
+
+        if not isinstance(result, dict) or "action" not in result:
+            result = {"action": "hold", "confidence": 1.0, "reasoning": "Parse failed"}
+
+        # Clamp confidence
+        try:
+            result["confidence"] = max(0.0, min(1.0, float(result.get("confidence", 1.0))))
+        except (TypeError, ValueError):
+            result["confidence"] = 1.0
+
+        # Cache the result
+        if token_id:
+            cache[token_id] = {"at": datetime.now(timezone.utc).isoformat(), "result": result}
+            _save_haiku_monitor_cache(cache)
+
+        return result
+
+    except Exception as e:
+        return {"action": "hold", "confidence": 1.0, "reasoning": f"Error: {e}"}
 
 def _get_ai_provider_config():
     """Read AI provider configuration from environment."""

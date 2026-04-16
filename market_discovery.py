@@ -187,7 +187,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
 _price_update_queue = multiprocessing.Queue()
 _ws_watcher = None
 _ws_broadcaster = None
-_last_ws_update_at = multiprocessing.Value('d', 0.0)
+_last_ws_update_at = multiprocessing.Value('d', time.time())
 _state_lock = threading.Lock()
 
 def _start_background_services():
@@ -259,8 +259,14 @@ def _start_background_services():
     print("[WS-WIRING] Background services initialized (Isolated Mode)")
 
 def _stop_background_services():
-    if _ws_watcher: _ws_watcher.stop()
-    if _ws_broadcaster: _ws_broadcaster.stop()
+    if _ws_watcher:
+        _ws_watcher.stop()
+        if hasattr(_ws_watcher, '_process') and _ws_watcher._process:
+            _ws_watcher._process.join(timeout=5)
+            if _ws_watcher._process.is_alive():
+                _ws_watcher._process.terminate()
+    if _ws_broadcaster:
+        _ws_broadcaster.stop()
 
 # ---------------------------------------------------------------------------
 # Main Entry Point & Hardening

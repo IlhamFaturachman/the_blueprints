@@ -20,7 +20,9 @@ def _env_bool(name, default=False):
 
 
 GAMMA_API = "https://gamma-api.polymarket.com/markets"
-GAMMA_EVENTS_API = "https://gamma-api.polymarket.com/events/pagination"
+# Use /events (public) — /events/pagination is x-excluded in the official OpenAPI spec
+# and silently ignores tag_slug/active/closed filters.
+GAMMA_EVENTS_API = "https://gamma-api.polymarket.com/events"
 CLOB_BOOK_API = os.getenv("CLOB_BOOK_API", "https://clob.polymarket.com/book")
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 LOG_FILE = "logs/unmatched_markets.log"
@@ -263,9 +265,13 @@ PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS = max(
     1,
     int(os.getenv("PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS", "4")),
 )
-STRATEGY_MAX_YES_PRICE = float(os.getenv("STRATEGY_MAX_YES_PRICE", "0.35"))
+# Discovery gate: aligned with PAPER_ENTRY_MAX_PRICE so no valid candidate is
+# discarded before it reaches the entry bucket stage.
+STRATEGY_MAX_YES_PRICE = float(os.getenv("STRATEGY_MAX_YES_PRICE", "0.65"))
 STRATEGY_MIN_MODEL_PROB = float(os.getenv("STRATEGY_MIN_MODEL_PROB", "0.70"))
-STRATEGY_MIN_EDGE = float(os.getenv("STRATEGY_MIN_EDGE", "0.35"))
+# Min edge lowered: binary model gives edge = 1.0 - price, so at $0.65 edge = 0.35.
+# 0.20 allows prices up to $0.80 through the gate without killing good setups.
+STRATEGY_MIN_EDGE = float(os.getenv("STRATEGY_MIN_EDGE", "0.20"))
 DAILY_TARGET_MULTIPLIER = max(1.0, float(os.getenv("DAILY_TARGET_MULTIPLIER", "2.0")))
 
 # History-driven self-learning tuner (pre-AI adaptive layer)

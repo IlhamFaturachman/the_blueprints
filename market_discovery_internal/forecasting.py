@@ -165,22 +165,28 @@ def fetch_forecast(city, date, icao_override=None):
             if abs(base_avg - hist_avg) > HISTORICAL_DEVIATION_C:
                 _log_anomaly(city, date, base_avg, hist_avg, "historical_anomaly")
                 return None
-        
+
         # [MODUL B] Strict Consensus Check (Ground Truth METAR)
         # If we have ground truth (NOAA), it MUST be close to our forecast.
-            # Note: Latest METAR is a snapshot, forecast is max temp.
-            # We ONLY enforce consensus mismatch if it's already hotter than predicted (High Confidence Error)
-            # OR if we are in the peak heat window (12-18 local) and the temp is way off.
-            current_hour = datetime.now().hour # VPS time check 
-            is_peak_heat = (12 <= current_hour <= 19)
-            
+        # Note: Latest METAR is a snapshot, forecast is max temp.
+        # We ONLY enforce consensus mismatch if it's already hotter than predicted (High Confidence Error)
+        # OR if we are in the peak heat window (12-18 local) and the temp is way off.
+        if t_noaa is not None:
+            # Use city longitude to estimate local hour (avoids pytz dependency)
+            # lon / 15 gives UTC offset in hours; clamp to [-12, 14]
+            lon = (coords or {}).get("lon", 0.0)
+            utc_offset_hours = round(lon / 15.0)
+            utc_offset_hours = max(-12, min(14, utc_offset_hours))
+            local_hour = (datetime.now(timezone.utc).hour + utc_offset_hours) % 24
+            is_peak_heat = (12 <= local_hour <= 19)
+
             error_margin = abs(base_avg - t_noaa)
-            
+
             # Scenario A: Current temp is already higher than our predicted MAX (Definitive error)
             if t_noaa > (base_avg + 1.0):
                 _log_anomaly(city, date, base_avg, t_noaa, "prediction_exceeded_by_ground_truth")
                 return None
-            
+
             # Scenario B: During peak heat, the discrepancy is too high
             if is_peak_heat and error_margin > CONSENSUS_MAX_ERROR_C:
                 _log_anomaly(city, date, base_avg, t_noaa, "consensus_mismatch_during_peak")

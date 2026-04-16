@@ -90,12 +90,14 @@ def _load_json_blob(path, default):
         return default
 
 def _save_json_blob(path, payload):
-    """Atomic-ish save of a JSON payload to a file."""
+    """Atomic save of a JSON payload to a file (fsync before replace)."""
     temp_path = f"{path}.tmp"
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(temp_path, path)
     except OSError:
         if os.path.exists(temp_path):

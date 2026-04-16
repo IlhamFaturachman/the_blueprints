@@ -307,6 +307,8 @@ def run_paper_trading_cycle(
                 daily_session["baseline_wallet"] = current_total
                 state_meta["daily_session"] = daily_session
                 logger.info(f"Daily session reset: new baseline is ${current_total:.2f}")
+            # Reset circuit breaker flag so a new day starts with a clean gate
+            state_meta["circuit_breaker_alert_sent"] = False
 
     empty_temperature_cycles = int(state_meta.get("empty_temperature_cycles", 0) or 0)
 
@@ -602,15 +604,18 @@ def run_paper_trading_cycle(
             effective_allow_new_entries = False
             effective_entry_gate_reason = "daily_target_reached"
 
-    # [MODUL L] Circuit Breaker
-    if effective_allow_new_entries and wallet_after_position_management <= 3.50:
+    # [MODUL L] Circuit Breaker — trigger on daily drawdown >= $1.50 (Master Plan spec)
+    _daily_baseline = float(daily_session.get("baseline_wallet", state_base_wallet) or state_base_wallet)
+    _daily_loss = _daily_baseline - wallet_after_position_management
+    if effective_allow_new_entries and _daily_loss >= 1.50:
         effective_allow_new_entries = False
         effective_entry_gate_reason = "circuit_breaker_tripped"
         if not state_meta.get("circuit_breaker_alert_sent"):
             send_telegram_alert(
                 f"⚡ <b>CIRCUIT BREAKER: HALTED</b> ⚡\n\n"
                 f"⚠️ <b>Reason</b>: Daily Loss Limit Reached\n"
-                f"📉 <b>Current Wallet</b>: USD {wallet_after_position_management:.2f}\n\n"
+                f"📊 <b>Baseline</b>: USD {_daily_baseline:.2f} → <b>Now</b>: USD {wallet_after_position_management:.2f}\n"
+                f"📉 <b>Daily Loss</b>: USD {_daily_loss:.2f} / $1.50 limit\n\n"
                 f"Protokol risiko aktif: bot berhenti buka posisi baru sampai reset harian."
             )
             state_meta["circuit_breaker_alert_sent"] = True
