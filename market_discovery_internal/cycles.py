@@ -1,11 +1,26 @@
 """Cycle orchestration helpers for market_discovery."""
 
 
-def parse_discovery_markets(markets_raw, *, parse_market_fn):
-    """Parse raw markets and collect skip metrics used by discovery diagnostics."""
+def parse_discovery_markets(
+    markets_raw,
+    *,
+    parse_market_fn,
+    max_spread=None,
+    min_volume_24hr=None,
+):
+    """Parse raw markets and collect skip metrics used by discovery diagnostics.
+
+    Exact-bracket markets are now included (previously V1-skipped).
+    Liquidity gate: markets with spread > max_spread or volume < min_volume_24hr
+    are skipped to avoid illiquid exact-bracket positions.
+    """
+    from market_discovery_internal.config import MARKET_MAX_SPREAD_GATE, MARKET_MIN_VOLUME_24HR
+    _max_spread = max_spread if max_spread is not None else MARKET_MAX_SPREAD_GATE
+    _min_vol = min_volume_24hr if min_volume_24hr is not None else MARKET_MIN_VOLUME_24HR
+
     parsed = []
     skipped_markets = 0
-    exact_skipped = 0
+    exact_skipped = 0  # kept for diagnostics compat — now counts liquidity-gated exact markets
     daily_skip_reasons = {
         "daily_date_mismatch": 0,
         "daily_min_hours_not_met": 0,
@@ -25,9 +40,25 @@ def parse_discovery_markets(markets_raw, *, parse_market_fn):
                 daily_skip_reasons[skip_reason] += 1
             continue
 
+        # Liquidity gate for exact-bracket markets: need tight spread + real volume
         if parsed_market["direction"] == "exact":
-            exact_skipped += 1
-            continue
+            spread = parsed_market.get("gamma_spread")
+            vol24 = parsed_market.get("volume_24hr", 0.0)
+            accepting = parsed_market.get("gamma_accepting_orders", True)
+            best_ask = parsed_market.get("best_ask")
+
+            if not accepting:
+                exact_skipped += 1
+                continue
+            if best_ask is None or best_ask <= 0:
+                exact_skipped += 1
+                continue
+            if spread is not None and float(spread) > _max_spread:
+                exact_skipped += 1
+                continue
+            if float(vol24) < _min_vol:
+                exact_skipped += 1
+                continue
 
         parsed.append(parsed_market)
 

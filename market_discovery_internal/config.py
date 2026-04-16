@@ -136,8 +136,17 @@ PAPER_BASE_WALLET = max(
     ),
 )
 PAPER_MIN_CITY_DIVERSITY = max(1, int(os.getenv("PAPER_MIN_CITY_DIVERSITY", "5")))
-PAPER_ENTRY_MIN_PRICE = float(os.getenv("PAPER_ENTRY_MIN_PRICE", "0.20"))
-PAPER_ENTRY_MAX_PRICE = float(os.getenv("PAPER_ENTRY_MAX_PRICE", "0.30"))
+PAPER_ENTRY_MIN_PRICE = float(os.getenv("PAPER_ENTRY_MIN_PRICE", "0.10"))
+PAPER_ENTRY_MAX_PRICE = float(os.getenv("PAPER_ENTRY_MAX_PRICE", "0.65"))
+
+# Exact-bracket market liquidity gate (uses Gamma bestAsk/spread fields)
+MARKET_MAX_SPREAD_GATE = float(os.getenv("MARKET_MAX_SPREAD_GATE", "0.12"))
+MARKET_MIN_VOLUME_24HR = float(os.getenv("MARKET_MIN_VOLUME_24HR", "500"))
+
+# Probability model for exact-bracket markets (Gaussian around forecast)
+MODEL_EXACT_SIGMA_C = float(os.getenv("MODEL_EXACT_SIGMA_C", "1.5"))
+STRATEGY_EXACT_MIN_EDGE = float(os.getenv("STRATEGY_EXACT_MIN_EDGE", "0.05"))
+STRATEGY_EXACT_MIN_MODEL_PROB = float(os.getenv("STRATEGY_EXACT_MIN_MODEL_PROB", "0.15"))
 PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"))
 PAPER_LOOP_CONTINUE_ON_ERROR = _env_bool("PAPER_LOOP_CONTINUE_ON_ERROR", True)
 PAPER_LOOP_ERROR_BACKOFF_SECONDS = max(

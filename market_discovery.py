@@ -465,7 +465,15 @@ def parse_market(
             return _with_reason(None, "daily_min_hours_not_met")
 
     market_slug = raw.get("slug") or raw.get("event_slug") or ""
-    return _with_reason({
+
+    # Carry Gamma CLOB prices through — avoids a separate per-market CLOB fetch.
+    gamma_best_bid = raw.get("bestBid")
+    gamma_best_ask = raw.get("bestAsk")
+    gamma_spread = raw.get("spread")
+    gamma_volume_24hr = raw.get("volume24hr")
+    gamma_accepting_orders = raw.get("acceptingOrders", True)
+
+    parsed = {
         "city": city,
         "date": date_str,
         "end_date": end_dt.isoformat(),
@@ -477,7 +485,17 @@ def parse_market(
         "yes_price": yes_price,
         "token_id": token_id,
         "hours_until_resolve": round(hours_until_resolve, 1),
-    })
+        "gamma_accepting_orders": bool(gamma_accepting_orders),
+    }
+    if gamma_best_bid is not None:
+        parsed["best_bid"] = float(gamma_best_bid)
+    if gamma_best_ask is not None:
+        parsed["best_ask"] = float(gamma_best_ask)
+    if gamma_spread is not None:
+        parsed["gamma_spread"] = float(gamma_spread)
+    if gamma_volume_24hr is not None:
+        parsed["volume_24hr"] = float(gamma_volume_24hr)
+    return _with_reason(parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -627,11 +645,11 @@ def calculate_edge(market, forecast_temp):
     """
     Calculate model probability and edge for a market.
 
-    V1 model is intentionally simple:
-    - above: 1.0 if forecast >= threshold else 0.0
-    - below: 1.0 if forecast < threshold else 0.0
-    - exact: unsupported in V1 (skip in main pipeline)
+    - above:  1.0 if forecast >= threshold else 0.0
+    - below:  1.0 if forecast < threshold else 0.0
+    - exact:  Gaussian probability within ±0.5°C bracket around threshold
     """
+    import math
     if forecast_temp is None:
         return None
 
@@ -649,6 +667,15 @@ def calculate_edge(market, forecast_temp):
         model_prob = 1.0 if forecast_converted >= threshold else 0.0
     elif direction == "below":
         model_prob = 1.0 if forecast_converted < threshold else 0.0
+    elif direction == "exact":
+        # Gaussian model: P(bracket) = integral of N(forecast, sigma) over [X-0.5, X+0.5]
+        # Use bracket width = 1°C (or 1°F). Convert sigma to same unit.
+        sigma = MODEL_EXACT_SIGMA_C if unit == "C" else (MODEL_EXACT_SIGMA_C * 9 / 5)
+        sigma = max(sigma, 0.1)
+        diff = abs(forecast_converted - threshold)
+        model_prob = round(math.exp(-0.5 * (diff / sigma) ** 2) / (sigma * math.sqrt(2 * math.pi)), 4)
+        # Clamp to reasonable range; a perfect match gives ~0.27 with sigma=1.5
+        model_prob = min(max(model_prob, 0.0), 0.99)
     else:
         return None
 
@@ -676,16 +703,31 @@ def filter_opportunities(
     """
     Keep markets where YES is cheap and model probability is high.
 
-    Default criteria (runtime-tunable via env):
-    yes_price < 0.35, model_prob >= 0.70, edge >= 0.35
+    Exact-bracket markets use lower thresholds (STRATEGY_EXACT_*) since
+    the Gaussian model probability is inherently lower than binary above/below.
     Returns opportunities sorted by edge descending.
     """
-    opportunities = [
-        market for market in markets
-        if market["yes_price"] < max_yes_price
-        and market["model_prob"] >= min_model_prob
-        and market["edge"] >= min_edge
-    ]
+    opportunities = []
+    for market in markets:
+        direction = market.get("direction", "above")
+        if direction == "exact":
+            _min_prob = STRATEGY_EXACT_MIN_MODEL_PROB
+            _min_edge = STRATEGY_EXACT_MIN_EDGE
+            _max_price = max_yes_price
+        else:
+            _min_prob = min_model_prob
+            _min_edge = min_edge
+            _max_price = max_yes_price
+
+        # For exact markets use CLOB best_ask as reference price if available
+        ref_price = market.get("best_ask") or market["yes_price"]
+
+        if (
+            ref_price < _max_price
+            and market["model_prob"] >= _min_prob
+            and market["edge"] >= _min_edge
+        ):
+            opportunities.append(market)
     return sorted(opportunities, key=lambda item: item["edge"], reverse=True)
 
 
@@ -1083,11 +1125,16 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
 
     AI override is optional and never bypasses hard entry guardrails.
     """
-    price = _safe_float(opportunity.get("yes_price"), -1.0)
+    # Use CLOB best_ask (from Gamma) as entry price reference when available.
+    # best_ask reflects the actual executable price; yes_price may be stale.
+    price = _safe_float(opportunity.get("best_ask") or opportunity.get("yes_price"), -1.0)
     model_prob = _safe_float(opportunity.get("model_prob"), 0.0)
     edge = _safe_float(opportunity.get("edge"), -1.0)
     confidence = _entry_confidence_score(opportunity)
-    min_edge_threshold = _safe_float(opportunity.get("effective_min_edge"), STRATEGY_MIN_EDGE)
+    direction = opportunity.get("direction", "above")
+    # Use lower thresholds for exact-bracket markets
+    default_min_edge = STRATEGY_EXACT_MIN_EDGE if direction == "exact" else STRATEGY_MIN_EDGE
+    min_edge_threshold = _safe_float(opportunity.get("effective_min_edge"), default_min_edge)
 
     if price < 0 or price > 1:
         decision = {
@@ -1095,7 +1142,7 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
             "reason": "invalid_price",
             "confidence": confidence,
         }
-    elif model_prob < STRATEGY_MIN_MODEL_PROB:
+    elif model_prob < (STRATEGY_EXACT_MIN_MODEL_PROB if direction == "exact" else STRATEGY_MIN_MODEL_PROB):
         decision = {
             "bucket": "reject",
             "reason": "low_model_prob",
@@ -2022,13 +2069,20 @@ def _append_opened_positions_from_candidates(
         if city_key and open_city_counts.get(city_key, 0) >= PAPER_MAX_OPEN_PER_CITY:
             continue
 
-        quote = fetch_orderbook_quote_fn(token_id) if callable(fetch_orderbook_quote_fn) else None
-        best_ask = _safe_float((quote or {}).get("best_ask"), 0.0)
-        best_bid = _safe_float((quote or {}).get("best_bid"), 0.0)
+        # Use Gamma-provided prices first (already in opportunity from parse_market).
+        # Only fall back to live CLOB fetch if Gamma data is absent.
+        best_ask = _safe_float(opportunity.get("best_ask"), 0.0)
+        best_bid = _safe_float(opportunity.get("best_bid"), 0.0)
         if best_ask <= 0:
-            best_ask = _safe_float(opportunity.get("best_ask"), 0.0)
-        if best_bid <= 0:
-            best_bid = _safe_float(opportunity.get("best_bid"), 0.0)
+            quote = fetch_orderbook_quote_fn(token_id) if callable(fetch_orderbook_quote_fn) else None
+            best_ask = _safe_float((quote or {}).get("best_ask"), 0.0)
+            best_bid = _safe_float((quote or {}).get("best_bid"), 0.0)
+
+        # Spread gate: skip illiquid markets at entry time
+        if best_ask > 0 and best_bid > 0:
+            live_spread = best_ask - best_bid
+            if live_spread > MARKET_MAX_SPREAD_GATE:
+                continue
 
         # Entry must use executable buy-side price (best ask).
         if best_ask <= 0:
