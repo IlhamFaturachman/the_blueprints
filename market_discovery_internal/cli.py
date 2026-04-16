@@ -45,6 +45,9 @@ def run_main_paper_loop_mode(
     error_backoff_seconds=30,
     max_error_backoff_seconds=None,
     report_error_fn=None,
+    ws_watcher=None,
+    last_ws_update_at=None,
+    ws_stale_detection_minutes=5
 ):
     """Handle paper loop mode in main()."""
     print(f"Starting paper loop every {paper_loop_interval_seconds}s. Press Ctrl+C to stop.")
@@ -61,12 +64,29 @@ def run_main_paper_loop_mode(
     )
 
     try:
+        import time
         while True:
+            # Dynamic Fallback: Check if WebSocket is healthy
+            current_interval = paper_loop_interval_seconds
+            is_stale = False
+            if last_ws_update_at is not None:
+                since_last = time.time() - last_ws_update_at.value
+                # If WS was active but hasn't updated in X minutes, it's stale
+                if since_last > (ws_stale_detection_minutes * 60):
+                    is_stale = True
+                    # Fallback to aggressive 15s polling
+                    current_interval = min(current_interval, 15)
+            
+            use_aggressive = aggressive_mode or is_stale
+            if is_stale:
+                timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                print(f"[{timestamp}] ⚠️ WS Stale ({int(since_last)}s). Using Hybrid Fallback ({current_interval}s).")
+
             try:
-                cycle = run_paper_trading_cycle_fn(force_aggressive_scan=aggressive_mode)
+                cycle = run_paper_trading_cycle_fn(force_aggressive_scan=use_aggressive)
                 print_paper_cycle_summary_fn(cycle)
                 consecutive_errors = 0
-                sleep_fn(paper_loop_interval_seconds)
+                sleep_fn(current_interval)
             except Exception as error:
                 if not continue_on_error:
                     raise
