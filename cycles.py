@@ -325,58 +325,16 @@ def run_paper_trading_cycle(
 
         quote = _get_orderbook_quote(token_id)
         raw_bid = (quote or {}).get("best_bid")
-        raw_ask = (quote or {}).get("best_ask")
         if raw_bid is None:
             raw_bid = live_market.get("best_bid")
-        if raw_ask is None:
-            raw_ask = live_market.get("best_ask")
+        if raw_bid is None:
+            raw_bid = position.get("last_price")
 
-        # Position evaluation uses best_bid (what you could actually sell for)
-        # because the CLOB best_ask can contain rogue/complement orders
-        # (e.g. best_ask=$0.99 for a 6-cent token, causing mid=(0.01+0.99)/2=0.50).
-        # Only use mid-price when ask is reasonably close to entry price.
         try:
-            bid_val = float(raw_bid) if raw_bid is not None else 0.0
-            ask_val = float(raw_ask) if raw_ask is not None else 0.0
+            current_yes_price = float(raw_bid)
         except (TypeError, ValueError):
-            bid_val = 0.0
-            ask_val = 0.0
-
-        entry_price = float(position.get("entry_price", 0))
-
-        # Reject completely empty orderbooks that only have extreme fallback limits
-        # (bid=0.01, ask=0.99) which cause false 1-cent stop losses.
-        if bid_val <= 0.01 and ask_val >= 0.98:
-            bid_val = 0.0
-            ask_val = 0.0
-            
-        # Ignore 1-cent bids as active market evaluation criteria if entry point was high.
-        # A 1-cent bid is a market maker placeholder, not a real sellable price.
-        if bid_val <= 0.01 and entry_price > 0.05:
-            bid_val = 0.0
-
-        ask_sane_limit = max(entry_price * 3.0, 0.60)  # ask above 3x entry or 60c is rogue
-
-        if bid_val > 0 and ask_val > 0 and ask_val <= ask_sane_limit:
-            # Both sides are reasonable — use mid-price
-            current_yes_price = (bid_val + ask_val) / 2.0
-        elif bid_val > 0:
-            # Use bid (conservative: what you could sell for)
-            current_yes_price = bid_val
-        elif ask_val > 0 and ask_val <= ask_sane_limit:
-            current_yes_price = ask_val
-        else:
-            last_price = position.get("last_price")
-            if last_price is not None:
-                try:
-                    current_yes_price = float(last_price)
-                except (TypeError, ValueError):
-                    next_open_positions.append(position)
-                    continue
-            else:
-                next_open_positions.append(position)
-                continue
-
+            next_open_positions.append(position)
+            continue
         if current_yes_price <= 0:
             next_open_positions.append(position)
             continue

@@ -225,6 +225,49 @@ def _dedupe_markets(markets):
     return unique
 
 
+def _enrich_markets_missing_prices(markets, max_workers=6):
+    """Fetch full market objects for candidates missing outcomePrices.
+
+    The Gamma /events endpoint sometimes returns nested market objects
+    without the outcomePrices field (intermittent API issue).  When that
+    happens, we fall back to fetching each market individually via
+    GET /markets/{id} which always returns the complete payload.
+    """
+    need_enrich = [
+        (i, m) for i, m in enumerate(markets)
+        if not m.get("outcomePrices") and m.get("id")
+    ]
+
+    if not need_enrich:
+        return markets
+
+    print(f"[ENRICH] {len(need_enrich)}/{len(markets)} markets missing outcomePrices — fetching individually")
+
+    def _fetch_single(idx_market):
+        idx, market = idx_market
+        market_id = market["id"]
+        try:
+            full = fetch_with_retry(f"{GAMMA_API}/{market_id}", max_retries=2)
+            if isinstance(full, dict) and full.get("outcomePrices"):
+                return idx, full
+        except Exception as e:
+            print(f"[ENRICH] Failed to fetch market {market_id}: {e}")
+        return idx, None
+
+    import concurrent.futures
+    enriched_count = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for idx, full in pool.map(_fetch_single, need_enrich):
+            if full is not None:
+                # Merge enriched fields into existing market dict (preserving
+                # any fields the events endpoint DID return like bestBid).
+                markets[idx].update(full)
+                enriched_count += 1
+
+    print(f"[ENRICH] Enriched {enriched_count}/{len(need_enrich)} markets with outcomePrices")
+    return markets
+
+
 def _extract_yes_token_id(raw_market):
     """Return YES token id from Gamma market payload when available."""
     clob_ids_raw = raw_market.get("clobTokenIds")
@@ -398,12 +441,9 @@ def fetch_markets(inspect=False, aggressive_scan=False):
 
     markets = _events_to_markets(events, reset_family_cache=True)
     candidates = [market for market in markets if _is_temperature_market_candidate(market)]
-    if candidates:
-        return _dedupe_markets(candidates)
 
-    # Fetch additional pages if first page had no candidates
+    # Always fetch additional pages — targets (e.g. Apr 17/18) may be on page 2+
     page_limit = base_params["limit"]
-    scanned = list(markets)
     offset = page_limit
 
     for _ in range(max(0, DISCOVERY_MAX_FETCH_PAGES)):
@@ -421,16 +461,13 @@ def fetch_markets(inspect=False, aggressive_scan=False):
             break
 
         page_markets = _events_to_markets(page_events)
-        scanned.extend(page_markets)
         page_candidates = [market for market in page_markets if _is_temperature_market_candidate(market)]
-        if page_candidates:
-            candidates.extend(page_candidates)
-            return _dedupe_markets(candidates)
+        candidates.extend(page_candidates)
 
         offset += page_limit
 
-    # Fallback: return everything so parser can still discover markets
-    return _dedupe_markets(scanned)
+    deduped = _dedupe_markets(candidates)
+    return _enrich_markets_missing_prices(deduped)
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +645,11 @@ def parse_market(
     gamma_best_bid = raw.get("bestBid")
     gamma_best_ask = raw.get("bestAsk")
     gamma_spread = raw.get("spread")
+    if gamma_spread is None and gamma_best_bid is not None and gamma_best_ask is not None:
+        try:
+            gamma_spread = float(gamma_best_ask) - float(gamma_best_bid)
+        except (TypeError, ValueError):
+            pass
     gamma_volume_24hr = raw.get("volume24hr")
     gamma_accepting_orders = raw.get("acceptingOrders", True)
 
@@ -824,42 +866,16 @@ def calculate_edge(market, forecast_temp):
     """
     Calculate model probability and edge for a market.
 
-    Priority:
-    1) market-implied probability when sibling family pricing is available
-    2) Gaussian fallback using weather forecast
+    Uses the Gaussian forecast model (independent weather signal) for
+    model_prob and edge.  Market-implied probability is preserved as
+    enrichment metadata but NOT used for edge calculation — using it
+    would be a tautology (edge = market_price - market_price ≈ 0).
     """
     import math
 
     threshold = market["threshold"]
     unit = market["unit"]
     direction = market["direction"]
-
-    implied_prob = market.get("market_implied_prob")
-    implied_temp_c = market.get("market_implied_expected_temp_c")
-    if implied_prob is not None:
-        try:
-            model_prob = float(implied_prob)
-        except (TypeError, ValueError):
-            model_prob = None
-
-        if model_prob is not None and model_prob > 0:
-            if implied_temp_c is None:
-                forecast_temp_c = ((threshold - 32) * 5.0 / 9.0) if unit == "F" else threshold
-            else:
-                forecast_temp_c = float(implied_temp_c)
-
-            forecast_converted = (forecast_temp_c * 9.0 / 5.0) + 32.0 if unit == "F" else forecast_temp_c
-            ref_price = market.get("best_ask") or market.get("yes_price", 1.0)
-            edge = round(model_prob - float(ref_price), 4)
-
-            return {
-                **market,
-                "model_prob": round(model_prob, 4),
-                "edge": edge,
-                "forecast_temp_c": round(float(forecast_temp_c), 1),
-                "forecast_temp_converted": round(float(forecast_converted), 1),
-                "prob_source": "market_implied",
-            }
 
     if forecast_temp is None:
         return None
@@ -895,7 +911,7 @@ def calculate_edge(market, forecast_temp):
         "edge": edge,
         "forecast_temp_c": round(float(forecast_temp), 1),
         "forecast_temp_converted": round(float(forecast_converted), 1),
-        "prob_source": "gaussian_openmeteo",
+        "prob_source": "gaussian_forecast",
     }
 
 
@@ -912,11 +928,15 @@ def filter_opportunities(
     """
     Keep markets where YES is cheap and model probability is high.
 
-    Exact-bracket markets use lower thresholds (STRATEGY_EXACT_*) since
-    the Gaussian model probability is inherently lower than binary above/below.
+    For exact-bracket markets: only keep the SINGLE BEST bracket per
+    city+date (the one closest to the forecast temperature / highest
+    model_prob).  This prevents entering low-probability long-shot
+    brackets and focuses on the bracket most likely to actually win.
+
     Returns opportunities sorted by edge descending.
     """
-    opportunities = []
+    # --- Step 1: basic edge/prob/price gate ---
+    passed = []
     for market in markets:
         direction = market.get("direction", "above")
         if direction == "exact":
@@ -936,7 +956,27 @@ def filter_opportunities(
             and market["model_prob"] >= _min_prob
             and market["edge"] >= _min_edge
         ):
-            opportunities.append(market)
+            passed.append(market)
+
+    # --- Step 2: for exact brackets, keep only the best bracket per city+date ---
+    best_per_city = {}
+    non_exact = []
+
+    for market in passed:
+        if market.get("direction") != "exact":
+            non_exact.append(market)
+            continue
+
+        city = market.get("city", "").lower()
+        date = market.get("date", "")
+        key = (city, date)
+
+        # Pick the bracket with the HIGHEST model_prob (closest to forecast).
+        existing = best_per_city.get(key)
+        if existing is None or market["model_prob"] > existing["model_prob"]:
+            best_per_city[key] = market
+
+    opportunities = non_exact + list(best_per_city.values())
     return sorted(opportunities, key=lambda item: item["edge"], reverse=True)
 
 
