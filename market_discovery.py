@@ -61,7 +61,9 @@ from market_discovery_internal.discovery import (
 from market_discovery_internal.cycles import (
     run_discovery_cycle, run_paper_trading_cycle, parse_discovery_markets,
     enrich_discovery_markets, _ensure_take_profit_target, evaluate_hybrid_exit,
-    _position_confidence_score, close_paper_position, build_paper_position
+    _position_confidence_score, close_paper_position, build_paper_position,
+    build_open_position_inventory, build_entry_candidates,
+    append_opened_positions_from_candidates
 )
 from market_discovery_internal.cli import (
     parse_cli_mode_flags, run_main_discovery_mode, run_main_paper_report_mode,
@@ -152,9 +154,9 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         update_paper_position_fn=evaluate_hybrid_exit, 
         close_paper_position_fn=close_paper_position,
         fetch_orderbook_quote_fn=fetch_orderbook_quote,
-        build_open_position_inventory_fn=lambda pos: ([], {}), # Placeholder
-        build_entry_candidates_fn=lambda **kwargs: ([], {}, set(), set()), # Placeholder
-        append_opened_positions_from_candidates_fn=lambda **kwargs: ([], set(), []), # Placeholder
+        build_open_position_inventory_fn=build_open_position_inventory,
+        build_entry_candidates_fn=build_entry_candidates,
+        append_opened_positions_from_candidates_fn=append_opened_positions_from_candidates,
         build_city_coverage_metrics_fn=build_city_coverage_metrics,
         build_cycle_acceptance_metrics_fn=build_cycle_acceptance_metrics,
         build_rolling_acceptance_metrics_fn=build_rolling_acceptance_metrics,

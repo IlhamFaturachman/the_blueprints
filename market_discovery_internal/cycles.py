@@ -6,8 +6,11 @@ from market_discovery_internal.config import (
     HYBRID_TAKE_PROFIT_MIN_PRICE, HYBRID_TAKE_PROFIT_MULTIPLIER,
     HYBRID_STOP_LOSS_MULTIPLIER, HYBRID_LATE_WINDOW_HOURS,
     HYBRID_MIN_CONFIDENCE_TO_HOLD, HYBRID_CONFIDENCE_EDGE_SCALE,
-    PAPER_STAKE_USD, PAPER_BASE_WALLET
+    PAPER_STAKE_USD, PAPER_BASE_WALLET, PAPER_MAX_OPEN_PER_CITY,
+    MARKET_MAX_SPREAD_GATE
 )
+from market_discovery_internal.parsing import _normalize_city_key
+from market_discovery_internal.analysis import decide_entry_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +278,22 @@ def run_paper_trading_cycle(
     state_load_ms = elapsed_ms_fn(state_load_started)
 
     state_meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+    
+    # [DAILY RESET] reset baseline_wallet at 00:00 UTC
+    last_cycle_at_raw = state_meta.get("last_cycle_at")
+    now_utc = datetime.now(timezone.utc)
+    if last_cycle_at_raw:
+        from market_discovery_internal.reporting import parse_utc_datetime
+        last_cycle_dt = parse_utc_datetime(last_cycle_at_raw)
+        if last_cycle_dt and last_cycle_dt.date() < now_utc.date():
+            # Reset daily session for the new day
+            daily_session = state_meta.get("daily_session", {})
+            if isinstance(daily_session, dict):
+                current_total = float(state_meta.get("current_wallet", PAPER_BASE_WALLET))
+                daily_session["baseline_wallet"] = current_total
+                state_meta["daily_session"] = daily_session
+                logger.info(f"Daily session reset: new baseline is ${current_total:.2f}")
+
     empty_temperature_cycles = int(state_meta.get("empty_temperature_cycles", 0) or 0)
 
     auto_aggressive = (
@@ -581,29 +600,37 @@ def run_paper_trading_cycle(
             )
             state_meta["circuit_breaker_alert_sent"] = True
 
-    # [MODUL D] Compounding & Slot Expansion (Tier 2/Tier 3)
+    # [MODUL D] Compounding & Slot Expansion (Updated Tiers)
     current_tier_max_slots = paper_max_open_positions
     current_stake_usd = float(stake_usd)
     new_tier = 1
     
-    if wallet_after_position_management >= 30.0:
-        current_stake_usd = 3.0
-        current_tier_max_slots = 20
-        new_tier = 3
-    elif wallet_after_position_management >= 10.0:
-        current_stake_usd = 2.0
-        current_tier_max_slots = 15
+    if wallet_after_position_management >= 20.0:
+        # TIER 2 ($20-$100): Stake 15% but capped by total exposure safety
         new_tier = 2
+        current_tier_max_slots = 15
+        current_stake_usd = round(wallet_after_position_management * 0.15, 2)
+    elif wallet_after_position_management >= 5.0:
+        # TIER 1 ($5-$20): Stake $1-$2, Slots 5-8
+        new_tier = 1
+        current_tier_max_slots = 8 if wallet_after_position_management >= 12.0 else 5
+        current_stake_usd = 2.0 if wallet_after_position_management >= 12.0 else 1.0
+
+    # [SAFE LEVERAGE CAP] Ensure Total Exposure <= 100% Wallet
+    # If Total Exposure (stake * total_slots) > Wallet, reduce stake.
+    max_total_exposure = wallet_after_position_management
+    if (current_stake_usd * current_tier_max_slots) > max_total_exposure:
+        current_stake_usd = round(max_total_exposure / current_tier_max_slots, 2)
 
     # Notify on Tier Change
     prev_tier = state_meta.get("current_tier", 1)
-    if new_tier > prev_tier:
+    if new_tier != prev_tier:
         send_telegram_alert(
-            f"🏰 *TIER UPGRADED: TIER {new_tier}* 🏰\n\n"
-            f"Vault reached **${wallet_after_position_management:.2f}**!\n"
-            f"⚔️ *Stake*: ${current_stake_usd:.2f}\n"
-            f"📦 *Slots*: {current_tier_max_slots}\n\n"
-            f"Leveling up the attack!"
+            f"🏰 *TIER STATUS: TIER {new_tier}* 🏰\n\n"
+            f"Vault: **${wallet_after_position_management:.2f}**\n"
+            f"⚔️ *Stake per position*: ${current_stake_usd:.2f}\n"
+            f"📦 *Max Slots*: {current_tier_max_slots}\n\n"
+            f"Strategi disesuaikan untuk pertumbuhan optimal!"
         )
     state_meta["current_tier"] = new_tier
 
@@ -1026,3 +1053,194 @@ def update_paper_position(
         )
 
     return updated, decision
+
+
+# ---------------------------------------------------------------------------
+# Recovered Trading Logic (from Archiv)
+# ---------------------------------------------------------------------------
+
+def build_open_position_inventory(open_positions):
+    """Build token and per-city occupancy maps for currently open positions."""
+    open_token_ids = {position.get("token_id") for position in open_positions if position.get("status") == "open"}
+    open_city_counts = {}
+
+    for position in open_positions:
+        if position.get("status") != "open":
+            continue
+
+        city_key = _normalize_city_key(position.get("city"))
+        if city_key:
+            open_city_counts[city_key] = open_city_counts.get(city_key, 0) + 1
+
+    return open_token_ids, open_city_counts
+
+
+def _city_candidate_rank(opportunity, bucket):
+    """Rank candidates by confidence, then edge, then cheaper YES price."""
+    confidence = _safe_float(bucket.get("confidence"), 0.0)
+    edge = _safe_float(opportunity.get("edge"), 0.0)
+    yes_price = _safe_float(opportunity.get("yes_price"), 1.0)
+    return (confidence, edge, -yes_price)
+
+
+def build_entry_candidates(opportunities, open_token_ids, open_city_counts, min_bound, max_bound):
+    """Build ranked entry candidates while enforcing one-best-candidate per city."""
+    bucket_counts = {
+        "reject": 0,
+        "watchlist": 0,
+        "enter_swing": 0,
+        "enter_hold_candidate": 0,
+    }
+
+    opportunity_city_keys = {
+        city_key
+        for city_key in (
+            _normalize_city_key(opportunity.get("city"))
+            for opportunity in opportunities
+        )
+        if city_key
+    }
+    candidate_city_keys = set()
+    best_candidate_by_city = {}
+    cityless_candidates = []
+
+    for index, opportunity in enumerate(opportunities):
+        bucket = decide_entry_bucket(opportunity, min_bound, max_bound)
+        bucket_name = bucket.get("bucket", "reject")
+        bucket_counts[bucket_name] = bucket_counts.get(bucket_name, 0) + 1
+
+        if bucket_name not in {"enter_swing", "enter_hold_candidate"}:
+            continue
+
+        token_id = opportunity.get("token_id")
+        price = _safe_float(opportunity.get("yes_price"), 0.0)
+
+        if str(token_id) in open_token_ids:
+            continue
+        if price < min_bound or price > max_bound:
+            continue
+
+        city_key = _normalize_city_key(opportunity.get("city"))
+        if city_key:
+            if open_city_counts.get(city_key, 0) >= PAPER_MAX_OPEN_PER_CITY:
+                continue
+            candidate_city_keys.add(city_key)
+
+        candidate = {
+            "index": index,
+            "city_key": city_key,
+            "opportunity": opportunity,
+            "bucket": bucket,
+            "bucket_name": bucket_name,
+            "rank": _city_candidate_rank(opportunity, bucket),
+        }
+
+        if city_key is None:
+            cityless_candidates.append(candidate)
+            continue
+
+        current_best = best_candidate_by_city.get(city_key)
+        if (
+            current_best is None
+            or candidate["rank"] > current_best["rank"]
+            or (candidate["rank"] == current_best["rank"] and candidate["index"] < current_best["index"])
+        ):
+            best_candidate_by_city[city_key] = candidate
+
+    entry_candidates = list(best_candidate_by_city.values()) + cityless_candidates
+    entry_candidates.sort(
+        key=lambda item: (
+            item["rank"][0],
+            item["rank"][1],
+            item["rank"][2],
+            -item["index"],
+        ),
+        reverse=True,
+    )
+
+    return entry_candidates, bucket_counts, opportunity_city_keys, candidate_city_keys
+
+
+def append_opened_positions_from_candidates(
+    entry_candidates,
+    next_open_positions,
+    open_token_ids,
+    open_city_counts,
+    available_slots,
+    stake_usd,
+    min_bound,
+    max_bound,
+    fetch_orderbook_quote_fn,
+):
+    """Open positions from ranked candidates while respecting city and slot limits."""
+    opened_this_cycle = []
+    opened_city_keys = set()
+
+    for candidate in entry_candidates:
+        if available_slots <= 0:
+            break
+
+        opportunity = candidate["opportunity"]
+        bucket = candidate["bucket"]
+        bucket_name = candidate["bucket_name"]
+        city_key = candidate["city_key"]
+        token_id = opportunity.get("token_id")
+
+        if str(token_id) in open_token_ids:
+            continue
+        if city_key and open_city_counts.get(city_key, 0) >= PAPER_MAX_OPEN_PER_CITY:
+            continue
+
+        # Use Gamma-provided prices first (already in opportunity from parse_market).
+        # Only fall back to live CLOB fetch if Gamma data is absent.
+        best_ask = _safe_float(opportunity.get("best_ask"), 0.0)
+        best_bid = _safe_float(opportunity.get("best_bid"), 0.0)
+        if best_ask <= 0:
+            quote = fetch_orderbook_quote_fn(token_id) if callable(fetch_orderbook_quote_fn) else None
+            best_ask = _safe_float((quote or {}).get("best_ask"), 0.0)
+            best_bid = _safe_float((quote or {}).get("best_bid"), 0.0)
+
+        # Spread gate: skip illiquid markets at entry time
+        if best_ask > 0 and best_bid > 0:
+            live_spread = best_ask - best_bid
+            if live_spread > MARKET_MAX_SPREAD_GATE:
+                continue
+
+        # Entry must use executable buy-side price (best ask).
+        if best_ask <= 0:
+            continue
+        if best_ask < min_bound or best_ask > max_bound:
+            continue
+
+        entry_opportunity = {
+            **opportunity,
+            "entry_price": round(best_ask, 4),
+            "entry_price_source": "buy_ask",
+            "entry_yes_reference": _safe_float(opportunity.get("yes_price"), best_ask),
+            "entry_quote_best_ask": round(best_ask, 4),
+        }
+        if best_bid > 0:
+            entry_opportunity["entry_quote_best_bid"] = round(best_bid, 4)
+
+        position = build_paper_position(entry_opportunity, stake_usd=stake_usd)
+        position["entry_bucket"] = bucket_name
+        position["entry_bucket_reason"] = bucket.get("reason")
+        position["entry_confidence_score"] = bucket.get("confidence")
+        position["entry_ai_status"] = opportunity.get("ai_status", "off")
+        
+        if opportunity.get("ai_bucket") is not None:
+            position["entry_ai_bucket"] = opportunity.get("ai_bucket")
+        if opportunity.get("ai_confidence") is not None:
+            position["entry_ai_confidence"] = opportunity.get("ai_confidence")
+        if bucket.get("ai_override_applied"):
+            position["entry_ai_override_applied"] = True
+
+        next_open_positions.append(position)
+        opened_this_cycle.append(position)
+        open_token_ids.add(str(token_id))
+        if city_key:
+            open_city_counts[city_key] = open_city_counts.get(city_key, 0) + 1
+            opened_city_keys.add(city_key)
+        available_slots -= 1
+
+    return opened_this_cycle, opened_city_keys, available_slots
