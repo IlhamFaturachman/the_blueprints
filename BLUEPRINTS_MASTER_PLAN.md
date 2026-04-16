@@ -12,6 +12,7 @@ Dokumen ini adalah hukum tertinggi dalam pembangunan bot trading cuaca THE BLUEP
 - **[MODUL B] Multi-API Consensus:** Validasi silang data antara Open-Meteo & NOAA Aviation (Ground Truth).
 - **[MODUL C] The Golden Window:** Pembatasan entry hanya pada jendela **8-14 jam** sebelum resolve (Zona Akurasi >90%).
 - **[MODUL K] Anomaly Check:** Blokir entry jika suhu melompat >7°C dari rata-rata harian (mencegah typo data API).
+- **[MODUL S] The Seven-Day Sempurna Sprint:** 3-7 hari verifikasi paper-trading ketat dengan laporan Telegram harian untuk memastikan stabilitas 100% sebelum live money.
 
 ### 🟡 WAVE 2: THE HANDS (Eksekusi & Refleks)
 *Fokus: Mengaktifkan perdagangan asli dan kecepatan keluar dari market.*
