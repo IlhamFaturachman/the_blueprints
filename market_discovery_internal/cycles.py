@@ -574,7 +574,7 @@ def run_paper_trading_cycle(
 
     rolling_city_coverage_metrics = build_rolling_city_coverage_metrics_fn(
         previous=state_meta.get("city_coverage_rolling"),
-        cycle_city_coverage=city_coverage_metrics,
+        city_coverage=city_coverage_metrics,
     )
 
     performance = {
@@ -681,9 +681,15 @@ def _compute_take_profit_price(entry_price):
 
 
 def _ensure_take_profit_target(position):
-    """Normalize legacy positions so all open positions follow +100% TP policy."""
+    """Normalize legacy positions so all open positions follow +100% TP policy if swing."""
     normalized = {**position}
     entry_price = _safe_float(normalized.get("entry_price"), 0.0)
+    
+    # Preserve or initialize strategy
+    if "target_strategy" not in normalized:
+        # Default legacy to swing
+        normalized["target_strategy"] = "swing"
+        
     if entry_price <= 0:
         return normalized
 
@@ -729,6 +735,7 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "target_price_low": target_price,
         "target_price_high": target_price,
         "target_policy": "take_profit_100pct",
+        "target_strategy": opportunity.get("strategy", "swing"),
         "stop_loss_price": round(entry_price * HYBRID_STOP_LOSS_MULTIPLIER, 4),
         "entry_model_prob": opportunity.get("model_prob"),
         "entry_edge": opportunity.get("edge"),
@@ -802,6 +809,11 @@ def evaluate_hybrid_exit(
     if confidence_score is None:
         confidence_score = 1.0 if forecast_still_valid else 0.0
     confidence_score = max(0.0, min(float(confidence_score), 1.0))
+    strategy = position.get("target_strategy", "swing")
+    
+    # [LOG] Crucial diagnostic to see why NYC might be closing
+    if "new york city" in str(position.get("city", "")).lower():
+        print(f"[STRATEGY-AUDIT] {position.get('city').upper()} | Strategy: {strategy} | Price: {price} | Target: {target_price}")
 
     if price <= stop_loss_price:
         return {
@@ -811,7 +823,8 @@ def evaluate_hybrid_exit(
             "confidence_score": confidence_score,
         }
 
-    if price >= target_price:
+    strategy = position.get("target_strategy", "swing")
+    if price >= target_price and strategy == "swing":
         return {
             "action": "sell",
             "reason": "take_profit_100pct",

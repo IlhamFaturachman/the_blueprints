@@ -308,6 +308,7 @@ def _validate_ai_decision_response(response):
     return {
         "ai_bucket": bucket,
         "ai_confidence": round(confidence, 4),
+        "ai_strategy": "hold_until_resolve" if bucket == "enter_hold_candidate" else "swing"
     }
 
 def _call_ai_provider(payload, config):
@@ -364,7 +365,19 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
     price = opportunity.get("yes_price", 1.0)
     
     if prob >= ENTRY_BUCKET_HOLD_MIN_PROB and edge >= ENTRY_BUCKET_HOLD_MIN_EDGE:
-        return {"bucket": "enter_hold_candidate", "reason": "high_edge_hold"}
+        return {
+            "bucket": "enter_hold_candidate", 
+            "strategy": "hold_until_resolve",
+            "reason": "high_edge_hold"
+        }
     if price <= ENTRY_BUCKET_WATCH_MAX_PRICE:
-        return {"bucket": "watchlist", "reason": "low_price_watch"}
-    return {"bucket": "reject", "reason": "low_edge_or_prob"}
+        return {
+            "bucket": "watchlist", 
+            "strategy": "swing",
+            "reason": "low_price_watch"
+        }
+    return {
+        "bucket": "reject", 
+        "strategy": "swing",
+        "reason": "low_edge_or_prob"
+    }

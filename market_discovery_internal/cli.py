@@ -47,7 +47,9 @@ def run_main_paper_loop_mode(
     report_error_fn=None,
     ws_watcher=None,
     last_ws_update_at=None,
-    ws_stale_detection_minutes=5
+    ws_stale_detection_minutes=5,
+    safe_float_fn=float,
+    paper_min_city_diversity=1
 ):
     """Handle paper loop mode in main()."""
     print(f"Starting paper loop every {paper_loop_interval_seconds}s. Press Ctrl+C to stop.")
@@ -84,7 +86,7 @@ def run_main_paper_loop_mode(
 
             try:
                 cycle = run_paper_trading_cycle_fn(force_aggressive_scan=use_aggressive)
-                print_paper_cycle_summary_fn(cycle)
+                print_paper_cycle_summary_fn(cycle, safe_float_fn, paper_min_city_diversity)
                 consecutive_errors = 0
                 sleep_fn(current_interval)
             except Exception as error:
@@ -122,10 +124,12 @@ def run_main_paper_single_mode(
     aggressive_mode,
     run_paper_trading_cycle_fn,
     print_paper_cycle_summary_fn,
+    safe_float_fn=float,
+    paper_min_city_diversity=1
 ):
     """Handle one-shot paper mode in main()."""
     cycle = run_paper_trading_cycle_fn(force_aggressive_scan=aggressive_mode)
-    print_paper_cycle_summary_fn(cycle)
+    print_paper_cycle_summary_fn(cycle, safe_float_fn, paper_min_city_diversity)
 
 
 def run_main_discovery_mode(

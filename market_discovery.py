@@ -60,7 +60,8 @@ from market_discovery_internal.discovery import (
 )
 from market_discovery_internal.cycles import (
     run_discovery_cycle, run_paper_trading_cycle, parse_discovery_markets,
-    enrich_discovery_markets
+    enrich_discovery_markets, _ensure_take_profit_target, evaluate_hybrid_exit,
+    _position_confidence_score
 )
 from market_discovery_internal.cli import (
     parse_cli_mode_flags, run_main_discovery_mode, run_main_paper_report_mode,
@@ -138,7 +139,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         load_paper_state_fn=load_paper_state,
         run_discovery_cycle_fn=wired_run_discovery_cycle,
         prefetch_forecasts_fn=lambda **kwargs: prefetch_forecasts(fetch_forecast_fn=fetch_forecast, **kwargs),
-        ensure_take_profit_target_fn=lambda p: p, # Placeholder for Modul G
+        ensure_take_profit_target_fn=_ensure_take_profit_target, 
         forecast_still_valid_fn=lambda **kwargs: forecast_still_valid(
             fetch_forecast_with_cache_fn=lambda **k: fetch_forecast_with_cache(fetch_forecast_fn=fetch_forecast, **k),
             build_weather_evidence_fn=build_weather_evidence,
@@ -147,8 +148,8 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
             calculate_edge_fn=calculate_edge,
             **kwargs
         ),
-        position_confidence_score_fn=lambda *args: 1.0, # Placeholder
-        update_paper_position_fn=lambda **kwargs: (kwargs["position"], {"action": "hold"}), # Placeholder
+        position_confidence_score_fn=_position_confidence_score, 
+        update_paper_position_fn=evaluate_hybrid_exit, 
         close_paper_position_fn=lambda **kwargs: kwargs["position"], # Placeholder
         fetch_orderbook_quote_fn=fetch_orderbook_quote,
         build_open_position_inventory_fn=lambda pos: ([], {}), # Placeholder
@@ -298,7 +299,7 @@ def main():
     signal.signal(signal.SIGTERM, handle_exit_signal)
 
     # 1. Process Protection (PID Lock)
-    lock_path = "/tmp/the_blueprints.pid"
+    lock_path = "/opt/the_blueprints/the_blueprints.pid"
     with PIDLock(lock_path):
         _main_protected()
 
@@ -319,17 +320,19 @@ def _main_protected():
         try:
             # Enterprise Logic: Monitor WS health and adjust polling interval
             run_main_paper_loop_mode(
-                aggressive_mode=flags["aggressive_mode"],
-                paper_loop_interval_seconds=PAPER_LOOP_INTERVAL_SECONDS,
-                run_paper_trading_cycle_fn=wired_run_paper_trading_cycle,
-                print_paper_cycle_summary_fn=print_paper_cycle_summary,
-                sleep_fn=time.sleep,
+                flags["aggressive_mode"],
+                PAPER_LOOP_INTERVAL_SECONDS,
+                wired_run_paper_trading_cycle,
+                print_paper_cycle_summary,
+                time.sleep,
                 continue_on_error=PAPER_LOOP_CONTINUE_ON_ERROR,
                 error_backoff_seconds=PAPER_LOOP_ERROR_BACKOFF_SECONDS,
                 max_error_backoff_seconds=PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS,
                 ws_watcher=_ws_watcher,
                 last_ws_update_at=_last_ws_update_at,
-                ws_stale_detection_minutes=WS_STALE_DETECTION_MINUTES
+                ws_stale_detection_minutes=WS_STALE_DETECTION_MINUTES,
+                safe_float_fn=_safe_float,
+                paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
             )
         finally:
             _stop_background_services()
@@ -339,7 +342,9 @@ def _main_protected():
         run_main_paper_single_mode(
             aggressive_mode=flags["aggressive_mode"],
             run_paper_trading_cycle_fn=wired_run_paper_trading_cycle,
-            print_paper_cycle_summary_fn=print_paper_cycle_summary
+            print_paper_cycle_summary_fn=print_paper_cycle_summary,
+            safe_float_fn=_safe_float,
+            paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
         )
         return
 

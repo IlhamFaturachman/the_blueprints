@@ -716,7 +716,15 @@ async function fetchData() {
                         <td>$${(pos.cost_basis || 0).toFixed(2)}</td>
                         <td class="js-bid-price">$${(Number(pos.last_price || pos.entry_quote_best_bid || 0)).toFixed(4)}</td>
                         <td class="js-upnl ${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
-                        <td><span class="badge mode-auto" style="margin-bottom:4px; display:inline-block;">${targetText}</span><br><small style="color: #bbb">${bucketText}</small></td>
+                        <td>
+                            <div style="display:flex; flex-direction: column; gap: 4px;">
+                                <span class="badge mode-auto" style="display:inline-block; border-color: ${pos.target_strategy === 'hold_until_resolve' ? '#8b5cf6' : '#10b981'}; color: ${pos.target_strategy === 'hold_until_resolve' ? '#c4b5fd' : '#34d399'};">
+                                    ${pos.target_strategy === 'hold_until_resolve' ? '🏰 FORTRESS (HOLD)' : '📉 SWING'}
+                                </span>
+                                <span class="badge mode-auto" style="display:inline-block;">${targetText}</span>
+                            </div>
+                            <small style="color: #bbb">${bucketText}</small>
+                        </td>
                         <td>
                             <div style="display:flex; gap: 6px; margin-bottom: 6px;">
                                 <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white;">Buka Market</a>
