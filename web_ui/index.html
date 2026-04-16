@@ -285,564 +285,274 @@
 
 <script>
 const CYCLE_PAGE_SIZE = 10;
-    let latestPositions = [];
-    let latestCash = 0;
-    let latestDailyBaseline = 0;
-    let latestDailyTarget = 0;
-    let cyclePage = 0;
-    let cycleRowsCache = [];
-    let wsSocket = null;
-    let wsReconnectAttempts = 0;
-    let wsReconnectTimer = null;
-    let lastReceivedAt = Date.now();
+let latestPositions = [];
+let latestCash = 0;
+let latestDailyBaseline = 0;
+let latestDailyTarget = 0;
+let cyclePage = 0;
+let cycleRowsCache = [];
+let wsSocket = null;
+let wsReconnectAttempts = 0;
+let wsReconnectTimer = null;
+let lastReceivedAt = Date.now();
 
 function showReason(city, date, threshold, unit, prob, conf, bucketReason) {
     const pProb = (Number(prob) * 100).toFixed(1);
     const pConf = (Number(conf) * 100).toFixed(1);
     const bucketFormatted = bucketReason ? String(bucketReason).replace(/_/g, ' ') : 'N/A';
-    
-    // Indonesian prompt based on user's exact wording:
     const text = `
         <div class="modal-reason-box">
-            <strong>Open-Meteo Ensemble</strong> (sistem probabilitas matematis dari 50 superkomputer) yakin sebesar <strong style="color: #4ade80;">${pProb}%</strong> bahwa pada tanggal <strong>${date}</strong>, puncak temperatur di <strong>${String(city).toUpperCase()}</strong> akan sesuai dengan target bracket yaitu <strong style="color: #38bdf8;">${threshold}°${unit}</strong>.
+            <strong>Open-Meteo Ensemble</strong> yakin sebesar <strong style="color: #4ade80;">${pProb}%</strong> bahwa pada tanggal <strong>${date}</strong>, puncak temperatur di <strong>${String(city).toUpperCase()}</strong> akan sesuai dengan target bracket yaitu <strong style="color: #38bdf8;">${threshold}°${unit}</strong>.
         </div>
-        <p style="margin-bottom: 10px; color: #a1a1aa;">Hal ini dikarenakan tren cuaca (historical & forecast) menunjukkan simpangan yang solid.</p>
-        <p style="color: #a1a1aa;"><strong>Alasan Spesifik Bot (Bucket):</strong> Jatuh ke kategori <em style="color: #fca5a5;">${bucketFormatted}</em> dengan kekuatan Compound Score <strong style="color: #fff;">${pConf}%</strong> melawan harga badar di Polymarket.</p>
+        <p style="margin-bottom: 10px; color: #a1a1aa;">Hal ini dikarenakan tren cuaca menunjukkan simpangan yang solid.</p>
+        <p style="color: #a1a1aa;"><strong>Alasan Spesifik Bot (Bucket):</strong> Jatuh ke kategori <em style="color: #fca5a5;">${bucketFormatted}</em> dengan kekuatan Compound Score <strong style="color: #fff;">${pConf}%</strong> melawan harga badar.</p>
     `;
-    
     document.getElementById('modalReasonText').innerHTML = text;
     document.getElementById('reasonModal').classList.add('active');
 }
 
 function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>'"]/g, (ch) => ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        "'": '&#39;',
-        '"': '&quot;',
-    }[ch]));
+    return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 }
 
 function truncateText(value, maxLen = 100) {
     const text = String(value ?? '').trim();
-    if (text.length <= maxLen) {
-        return text;
-    }
-    return `${text.slice(0, Math.max(1, maxLen - 3))}...`;
+    return text.length <= maxLen ? text : text.slice(0, maxLen - 3) + '...';
 }
 
 function getMarketLabel(pos) {
-    const question = String(pos?.market_question || '').trim();
-    if (question) {
-        return truncateText(question, 96);
-    }
-
-    const city = String(pos?.city || '').trim();
-    if (city) {
-        return `${city.toUpperCase()} market`;
-    }
-
-    const token = String(pos?.token_id || '').trim();
-    return token ? `Token ${token.slice(0, 8)}` : 'Unknown market';
+    const q = String(pos?.market_question || '').trim();
+    if (q) return truncateText(q, 96);
+    const c = String(pos?.city || '').trim();
+    if (c) return c.toUpperCase() + ' market';
+    return pos?.token_id ? 'Token ' + String(pos.token_id).slice(0, 8) : 'Unknown';
 }
 
 function getWsUrl() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname || 'localhost';
-    // The broadcaster runs on port 8082, while the UI is on 8080
     return `${protocol}//${host}:8082/`;
 }
 
 function setWsStatus(state, text) {
     const statusEl = document.getElementById('wsStatus');
     const lastUpdateAtEl = document.getElementById('lastUpdateAt');
-    if (!statusEl) {
-        return;
-    }
+    if (!statusEl) return;
     let cls = 'ws-disconnected';
     if (state === 'live') cls = 'ws-live';
     if (state === 'reconnecting') cls = 'ws-reconnecting';
     statusEl.innerHTML = `<span class="ws-dot ${cls}"></span>${text}`;
-    if (lastUpdateAtEl) {
-        lastUpdateAtEl.textContent = new Date().toLocaleTimeString();
-    }
+    if (lastUpdateAtEl) lastUpdateAtEl.textContent = new Date().toLocaleTimeString();
 }
 
 function scheduleWsReconnect() {
-    if (wsReconnectTimer) {
-        clearTimeout(wsReconnectTimer);
-    }
-
-    wsReconnectAttempts += 1;
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectAttempts++;
     const delayMs = Math.min(30000, 3000 * (2 ** Math.min(wsReconnectAttempts - 1, 4)));
     setWsStatus('reconnecting', `Reconnecting... (${Math.round(delayMs / 1000)}s)`);
-
-    wsReconnectTimer = setTimeout(() => {
-        connectBrowserWs();
-    }, delayMs);
-}
-
-function updatePositionLiveByToken(tokenId, bidPrice) {
-    const row = document.querySelector(`#positionsTable tr[data-token-id="${tokenId}"]`);
-    if (!row) {
-        return;
-    }
-
-    const idxRaw = row.getAttribute('data-index');
-    const idx = Number.parseInt(idxRaw || '', 10);
-    if (!Number.isFinite(idx) || idx < 0 || idx >= latestPositions.length) {
-        return;
-    }
-
-    const pos = latestPositions[idx];
-    const prevPrice = Number(pos.last_price || pos.entry_quote_best_bid || 0);
-    const bidCell = row.querySelector('.js-bid-price');
-    pos.last_price = Number(bidPrice);
-
-    // Enterprise Pulse Effect
-    const flashClass = Number(bidPrice) >= prevPrice ? 'flash-up' : 'flash-down';
-    bidCell.classList.remove('flash-up', 'flash-down');
-    void bidCell.offsetWidth;
-    bidCell.classList.add(flashClass);
-
-    // Update Aggregates & Re-Sort Table
-    updateAggregateCards();
-    renderPositionsTable();
-    
-    // Pulse the parent row slightly
-    const newRow = document.querySelector(`#positionsTable tr[data-token-id="${tokenId}"]`);
-    if (newRow) {
-        newRow.classList.add('pulse-row');
-        setTimeout(() => newRow.classList.remove('pulse-row'), 1000);
-    }
-}
-
-function handlePositionClosed(msg) {
-    const tokenId = String(msg.token_id || '');
-    if (!tokenId) {
-        return;
-    }
-    const row = document.querySelector(`#positionsTable tr[data-token-id="${tokenId}"]`);
-    if (row) {
-        row.classList.add('flash-close');
-    }
-    setTimeout(() => {
-        fetchData();
-    }, 2000);
-}
-
-function handleWsMessage(raw) {
-    let msg;
-    try {
-        msg = JSON.parse(raw);
-    } catch (_e) {
-        return;
-    }
-
-    if (msg.type === 'price_update') {
-        lastReceivedAt = Date.now();
-        updatePositionLiveByToken(String(msg.token_id || ''), Number(msg.bid_price || 0));
-        return;
-    }
-
-    if (msg.type === 'position_closed') {
-        lastReceivedAt = Date.now();
-        handlePositionClosed(msg);
-        return;
-    }
-}
-
-function connectBrowserWs() {
-    if (wsReconnectTimer) {
-        clearTimeout(wsReconnectTimer);
-        wsReconnectTimer = null;
-    }
-
-    const wsUrl = getWsUrl();
-
-    try {
-        wsSocket = new WebSocket(wsUrl);
-    } catch (_err) {
-        setWsStatus('reconnecting', 'Reconnecting...');
-        scheduleWsReconnect();
-        return;
-    }
-
-    wsSocket.onopen = () => {
-        wsReconnectAttempts = 0;
-        setWsStatus('live', 'Live');
-    };
-
-    wsSocket.onmessage = (event) => {
-        handleWsMessage(event.data);
-    };
-
-    wsSocket.onerror = () => {
-        setWsStatus('reconnecting', 'Reconnecting...');
-    };
-
-    wsSocket.onclose = () => {
-        setWsStatus('reconnecting', 'Reconnecting...');
-        scheduleWsReconnect();
-    };
-}
-
-function updateRealtimeClocks() {
-    const now = new Date();
-    const utcFmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'UTC',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: true,
-    });
-    const etFmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: true,
-    });
-
-    const utcText = utcFmt.format(now).replace(',', '');
-    const etText = etFmt.format(now).replace(',', '');
-
-    const utcEl = document.getElementById('valUtcClock');
-    const etEl = document.getElementById('valEtClock');
-    if (utcEl) utcEl.innerHTML = utcText;
-    if (etEl) etEl.innerHTML = etText;
-
-    const utcDateEl = document.getElementById('valUtcDate');
-    const etDateEl = document.getElementById('valEtDate');
-    if (utcDateEl) utcDateEl.innerHTML = 'Timezone: UTC (GMT+00:00) | 12-hour clock';
-    if (etDateEl) etDateEl.innerHTML = 'Timezone: ET Washington (America/New_York, GMT-04:00 / DST) | 12-hour clock';
-}
-
-function renderCycleTable() {
-    const tCyc = document.getElementById('cycleTable');
-    const pageInfo = document.getElementById('cyclePageInfo');
-    const prevBtn = document.getElementById('cyclePrevBtn');
-    const nextBtn = document.getElementById('cycleNextBtn');
-
-    tCyc.innerHTML = '';
-    if (!cycleRowsCache.length) {
-        tCyc.innerHTML = "<tr><td colspan='5' style='text-align:center;'>Log cycle kosong.</td></tr>";
-        pageInfo.innerHTML = 'Page 1 / 1';
-        prevBtn.disabled = true;
-        nextBtn.disabled = true;
-        return;
-    }
-
-    const totalPages = Math.max(1, Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE));
-    if (cyclePage > totalPages - 1) {
-        cyclePage = totalPages - 1;
-    }
-
-    const startIdx = cyclePage * CYCLE_PAGE_SIZE;
-    const pageRows = cycleRowsCache.slice(startIdx, startIdx + CYCLE_PAGE_SIZE);
-    pageRows.forEach(c => {
-        let ms = c.performance?.total_ms ? c.performance.total_ms.toFixed(1) : 0;
-        let modeBg = c.aggressive_scan ? 'mode-manual' : 'mode-auto';
-        let modeText = c.aggressive_scan ? 'Aggressive SCAN' : 'Standard Loop';
-        tCyc.innerHTML += `
-            <tr>
-                <td>${new Date(c.timestamp).toLocaleString()}</td>
-                <td><span class="badge ${modeBg}">${modeText}</span></td>
-                <td><span class="good" style="font-weight:bold;">${c.counts?.opportunities || 0}</span> events</td>
-                <td><span class="neutral" style="font-weight:bold;">${c.counts?.opened || 0}</span> trades</td>
-                <td>${ms} ms</td>
-            </tr>
-        `;
-    });
-
-    pageInfo.innerHTML = `Page ${cyclePage + 1} / ${totalPages} (max ${CYCLE_PAGE_SIZE} rows)`;
-    prevBtn.disabled = cyclePage <= 0;
-    nextBtn.disabled = cyclePage >= totalPages - 1;
-}
-
-function cyclePrevPage() {
-    if (cyclePage > 0) {
-        cyclePage -= 1;
-        renderCycleTable();
-    }
-}
-
-function cycleNextPage() {
-    const totalPages = Math.max(1, Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE));
-    if (cyclePage < totalPages - 1) {
-        cyclePage += 1;
-        renderCycleTable();
-    }
+    wsReconnectTimer = setTimeout(connectBrowserWs, delayMs);
 }
 
 function updateAggregateCards() {
     let totalLiquidationValue = latestCash;
     let openPnlTotal = 0;
-    
     latestPositions.forEach(p => {
         const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
         const posValue = markBid * Number(p.quantity || 0);
-        const upnl = posValue - Number(p.cost_basis || 0);
-        
         totalLiquidationValue += posValue;
-        openPnlTotal += upnl;
+        openPnlTotal += (posValue - Number(p.cost_basis || 0));
     });
-
-    // 1. Update Floating PnL Card
-    const openPnlEl = document.getElementById('valOpenPnl');
-    if (openPnlEl) {
-        openPnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
-        openPnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
+    const pnlEl = document.getElementById('valOpenPnl');
+    if (pnlEl) {
+        pnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
+        pnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
     }
-
-    // 2. Update Portfolio Value Card
     const walletEl = document.getElementById('valWallet');
     if (walletEl) {
         walletEl.innerHTML = `$${totalLiquidationValue.toFixed(4)}`;
         walletEl.classList.add('pulse-text');
         setTimeout(() => walletEl.classList.remove('pulse-text'), 500);
     }
-
-    // 3. Update Daily Target Card
-    const dailyTargetEl = document.getElementById('valDailyTarget');
-    if (dailyTargetEl && latestDailyBaseline > 0) {
+    const targetEl = document.getElementById('valDailyTarget');
+    if (targetEl && latestDailyBaseline > 0) {
+        const gain = totalLiquidationValue - latestDailyBaseline;
         const targetGain = latestDailyTarget - latestDailyBaseline;
-        const currentGain = totalLiquidationValue - latestDailyBaseline;
-        
-        let dailyProgress = 0;
-        if (targetGain > 0) {
-            dailyProgress = (currentGain / targetGain) * 100;
-        } else {
-            dailyProgress = currentGain >= 0 ? 100 : 0;
-        }
-
-        dailyTargetEl.innerHTML = `${dailyProgress.toFixed(2)}%`;
-        // We reuse the last logic for coloring
-        const isReached = totalLiquidationValue >= latestDailyTarget;
-        dailyTargetEl.className = isReached ? 'value good' : 'value';
+        const progress = targetGain > 0 ? (gain / targetGain) * 100 : (gain >= 0 ? 100 : 0);
+        targetEl.innerHTML = `${progress.toFixed(2)}%`;
+        targetEl.className = totalLiquidationValue >= latestDailyTarget ? 'value good' : 'value';
     }
 }
 
 function renderPositionsTable() {
     const tPos = document.getElementById('positionsTable');
     if (!tPos) return;
-    
     tPos.innerHTML = "";
     if (latestPositions.length === 0) {
-        tPos.innerHTML = "<tr><td colspan='7' style='text-align:center;'>Tidak ada posisi terbuka.</td></tr>";
+        tPos.innerHTML = "<tr><td colspan='7' style='text-align:center; padding: 40px;'>No active positions.</td></tr>";
         return;
     }
-
-    // Always sort by current_pnl before rendering
     latestPositions.forEach(p => {
         const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
         p.current_pnl = (markBid * (p.quantity || 0)) - (p.cost_basis || 0);
     });
-    latestPositions.sort((a, b) => (b.current_pnl || 0) - (a.current_pnl || 0));
-
+    latestPositions.sort((a,b) => (b.current_pnl || 0) - (a.current_pnl || 0));
     latestPositions.forEach((pos, idx) => {
         const markBid = Number(pos.last_price || pos.entry_quote_best_bid || 0);
-        const unPnl = (markBid * (pos.quantity || 0)) - (pos.cost_basis || 0);
+        const unPnl = pos.current_pnl || 0;
         const pnlCls = unPnl >= 0 ? "good" : "bad";
         const pnlPct = pos.cost_basis ? ((unPnl / pos.cost_basis) * 100) : 0;
-        let directionLabel = pos.direction === 'above' ? '≥' : (pos.direction === 'below' ? '≤' : '=');
-        const targetText = `Posisi YES: Suhu ${directionLabel} ${pos.threshold || ''}°${pos.unit || ''}`;
-        const bucketText = pos.entry_bucket ? pos.entry_bucket.replace(/_/g, ' ') : '-';
-        const cityLabel = pos.city ? pos.city.toUpperCase() : `Token ${String(pos.token_id || '').substring(0, 8)}`;
+        const dir = pos.direction === 'above' ? '≥' : (pos.direction === 'below' ? '≤' : '=');
+        const targetText = `Temp ${dir} ${pos.threshold || ''}°${pos.unit || ''}`;
         const marketLabel = getMarketLabel(pos);
-        let rawSlug = pos.market_slug || "";
-        let cleanSlug = rawSlug.replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
+        let cleanSlug = (pos.market_slug || "").replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
         const marketUrl = cleanSlug ? `https://polymarket.com/event/${cleanSlug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
-
+        
         tPos.innerHTML += `
             <tr data-token-id="${pos.token_id}" data-index="${idx}">
-                <td>
-                    <strong>${escapeHtml(marketLabel)}</strong><br>
-                    <small style="color: #bbb">${escapeHtml(cityLabel)}</small>
-                </td>
+                <td><strong>${escapeHtml(marketLabel)}</strong><br><small style="color: #bbb">${escapeHtml(pos.city || '').toUpperCase()}</small></td>
                 <td>$${Number(pos.entry_price || 0).toFixed(4)}</td>
                 <td>${Number(pos.quantity || 0).toFixed(2)} ($${Number(pos.cost_basis || 0).toFixed(2)})</td>
                 <td class="js-bid-price">$${markBid.toFixed(4)}</td>
                 <td class="js-upnl ${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
                 <td>
                     <div style="display:flex; flex-direction: column; gap: 4px;">
-                        <span class="badge mode-auto" style="display:inline-block; border-color: ${pos.target_strategy === 'hold_until_resolve' ? '#8b5cf6' : '#10b981'}; color: ${pos.target_strategy === 'hold_until_resolve' ? '#c4b5fd' : '#34d399'};">
-                            ${pos.target_strategy === 'hold_until_resolve' ? '🏰 FORTRESS (HOLD)' : '📉 SWING'}
+                        <span class="badge mode-auto" style="border-color: ${pos.target_strategy === 'hold_until_resolve' ? '#8b5cf6' : '#10b981'}; color: ${pos.target_strategy === 'hold_until_resolve' ? '#c4b5fd' : '#34d399'};">
+                            ${pos.target_strategy === 'hold_until_resolve' ? '🏰 FORTRESS' : '📉 SWING'}
                         </span>
-                        <span class="badge mode-auto" style="display:inline-block;">${targetText}</span>
+                        <span class="badge mode-auto">${targetText}</span>
                     </div>
-                    <small style="color: #bbb">${bucketText}</small>
                 </td>
                 <td>
                     <div style="display:flex; gap: 6px; margin-bottom: 6px;">
-                        <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white;">Buka Market</a>
-                        <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679; border: none;">Close API</button>
+                        <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white;">Market</a>
+                        <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679; border: none;">Close</button>
                     </div>
-                    <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: linear-gradient(135deg, #10b981, #059669); border: none; width: 100%; text-align: center;" 
+                    <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: linear-gradient(135deg, #10b981, #059669); border: none; width: 100%;" 
                         onclick="showReason('${escapeHtml(pos.city || '')}', '${escapeHtml(pos.date || '')}', '${escapeHtml(pos.threshold || '')}', '${escapeHtml(pos.unit || '')}', ${Number(pos.entry_model_prob || 0)}, ${Number(pos.entry_confidence_score || 0)}, '${escapeHtml(pos.entry_bucket_reason || '')}')">
-                        💡 Alasan Entry
+                        💡 Logic
                     </button>
                 </td>
-            </tr>
-        `;
+            </tr>`;
     });
 }
+
+function updatePositionLiveByToken(tokenId, bidPrice) {
+    const pos = latestPositions.find(p => String(p.token_id) === tokenId);
+    if (!pos) return;
+    pos.last_price = Number(bidPrice);
+    updateAggregateCards();
+    renderPositionsTable();
+    const row = document.querySelector(`#positionsTable tr[data-token-id="${tokenId}"]`);
+    if (row) {
+        row.classList.add('pulse-row');
+        setTimeout(() => row.classList.remove('pulse-row'), 1000);
+    }
+}
+
+function handleWsMessage(raw) {
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.type === 'price_update') {
+        lastReceivedAt = Date.now();
+        updatePositionLiveByToken(String(msg.token_id || ''), Number(msg.bid_price || 0));
+    } else if (msg.type === 'position_closed') {
+        lastReceivedAt = Date.now();
+        setTimeout(fetchData, 1000);
+    }
+}
+
+function connectBrowserWs() {
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    try {
+        wsSocket = new WebSocket(getWsUrl());
+        wsSocket.onopen = () => { wsReconnectAttempts = 0; setWsStatus('live', 'Live'); };
+        wsSocket.onmessage = e => handleWsMessage(e.data);
+        wsSocket.onclose = () => { setWsStatus('reconnecting', 'Reconnecting...'); scheduleWsReconnect(); };
+    } catch { scheduleWsReconnect(); }
+}
+
+function renderCycleTable() {
+    const tCyc = document.getElementById('cycleTable');
+    if (!tCyc) return;
+    tCyc.innerHTML = '';
+    if (!cycleRowsCache.length) {
+        tCyc.innerHTML = "<tr><td colspan='5' style='text-align:center;'>Empty.</td></tr>";
+        return;
+    }
+    const totalPages = Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE);
+    cyclePage = Math.min(cyclePage, totalPages - 1);
+    const pageRows = cycleRowsCache.slice(cyclePage * CYCLE_PAGE_SIZE, (cyclePage + 1) * CYCLE_PAGE_SIZE);
+    pageRows.forEach(c => {
+        tCyc.innerHTML += `<tr><td>${new Date(c.timestamp).toLocaleString()}</td><td><span class="badge ${c.aggressive_scan ? 'mode-manual' : 'mode-auto'}">${c.aggressive_scan ? 'SCAN' : 'Loop'}</span></td><td>${c.counts?.opportunities || 0} event</td><td>${c.counts?.opened || 0} trade</td><td>${c.performance?.total_ms?.toFixed(1) || 0}ms</td></tr>`;
+    });
+    document.getElementById('cyclePageInfo').innerHTML = `Page ${cyclePage + 1} / ${totalPages}`;
+    document.getElementById('cyclePrevBtn').disabled = cyclePage <= 0;
+    document.getElementById('cycleNextBtn').disabled = cyclePage >= totalPages - 1;
+}
+
+function cyclePrevPage() { if (cyclePage > 0) { cyclePage--; renderCycleTable(); } }
+function cycleNextPage() { if (cyclePage < Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE) - 1) { cyclePage++; renderCycleTable(); } }
 
 async function fetchData() {
     try {
         const res = await fetch('../logs/paper_positions_5usd.json', { cache: "no-store" });
-        if (!res.ok) throw new Error("File JSON tidak ditemukan. Pastikan bot sudah run pertama.");
         const data = await res.json();
-        
-        latestPositions = (data.positions || []).map(p => {
-            const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
-            return { ...p, last_price: markBid };
-        });
-
+        latestPositions = (data.positions || []).map(p => ({ ...p, last_price: Number(p.last_price || p.entry_quote_best_bid || 0) }));
         const d_closed = data.history || [];
-        const d_cycle = data.cycle_journal || [];
-        const last_cycle = d_cycle.length > 0 ? d_cycle[d_cycle.length - 1] : null;
-        
-        document.getElementById('posCountBadge').innerHTML = latestPositions.length;
-        
-        // Fetch Cash Data from Meta (Bot Engine direct injection)
         const meta = data.meta || {};
-        const baseWallet = typeof meta.base_wallet === 'number' ? meta.base_wallet : 5.0;
-        let total_pnl = 0.0;
-        d_closed.forEach(pos => { total_pnl += (pos.realized_pnl_usd || 0.0); });
+        const baseWallet = meta.base_wallet || 5.0;
+        let total_pnl = 0; d_closed.forEach(p => total_pnl += (p.realized_pnl_usd || 0));
+        let cash = meta.current_wallet !== undefined ? meta.current_wallet - (meta.open_cost_basis || 0) : (baseWallet + total_pnl - (meta.open_cost_basis || 0));
         
-        let current_wallet = typeof meta.current_wallet === 'number' ? meta.current_wallet : (baseWallet + total_pnl);
-        let cash = typeof meta.cash === 'number' ? meta.cash : (current_wallet - (meta.open_cost_basis || 0));
-        
-        let sim_stake = typeof meta.recommended_stake_usd === 'number'
-            ? meta.recommended_stake_usd
-            : (current_wallet >= 10.0 ? Math.floor(current_wallet / 5.0) : 1.0);
-
-        document.getElementById('valWalletMode').innerHTML = `Base: $${baseWallet.toFixed(4)} | Cash: $${cash.toFixed(4)} | Stake: $${Number(sim_stake).toFixed(2)}/trade`;
-
-        const daily = meta.daily_session || {};
         latestCash = cash;
-        latestDailyBaseline = typeof daily.baseline_wallet === 'number' ? daily.baseline_wallet : current_wallet;
-        latestDailyTarget = typeof daily.target_wallet === 'number' ? daily.target_wallet : (latestDailyBaseline * 2.0);
+        const daily = meta.daily_session || {};
+        latestDailyBaseline = daily.baseline_wallet || baseWallet;
+        latestDailyTarget = daily.target_wallet || (latestDailyBaseline * 2.0);
 
-        const dailyGateOpen = daily.entry_gate_open !== false;
-        const dailyGateReason = daily.entry_gate_reason || 'active';
-        document.getElementById('valDailyGate').innerHTML = `Baseline: $${latestDailyBaseline.toFixed(4)} | Target: $${latestDailyTarget.toFixed(4)} | Gate: ${dailyGateOpen ? 'OPEN' : 'CLOSED'} (${dailyGateReason})`;
-
+        document.getElementById('posCountBadge').innerHTML = latestPositions.length;
+        document.getElementById('valWalletMode').innerHTML = `Base: $${baseWallet.toFixed(4)} | Cash: $${cash.toFixed(4)}`;
+        document.getElementById('valDailyGate').innerHTML = `Baseline: $${latestDailyBaseline.toFixed(4)} | Gate: ${daily.entry_gate_open !== false ? 'OPEN' : 'CLOSED'}`;
+        
         const tuner = meta.auto_tuner || {};
-        const tunerSummary = tuner.summary || {};
-        const tunerAggressive = tunerSummary.aggressive || 0;
-        const tunerCautious = tunerSummary.cautious || 0;
-        const tunerBlacklist = tunerSummary.blacklist || 0;
-        const tunerCities = tunerSummary.cities_total || 0;
-        const tunerMinTrades = tuner.min_trades || 0;
-        document.getElementById('valTuner').innerHTML = `A:${tunerAggressive} | C:${tunerCautious} | B:${tunerBlacklist}`;
-        document.getElementById('valTunerMeta').innerHTML = `Cities tracked: ${tunerCities} | Min trades: ${tunerMinTrades}`;
+        const sum = tuner.summary || {};
+        document.getElementById('valTuner').innerHTML = `A:${sum.aggressive || 0} | C:${sum.cautious || 0} | B:${sum.blacklist || 0}`;
+        document.getElementById('valTunerMeta').innerHTML = `Tracked: ${sum.cities_total || 0} | Min: ${tuner.min_trades || 0}`;
 
-        updateRealtimeClocks();
-
-
-        if(last_cycle) {
+        const last_cycle = (data.cycle_journal || []).slice(-1)[0];
+        if (last_cycle) {
             document.getElementById('valLastRun').innerHTML = new Date(last_cycle.timestamp).toLocaleString();
             let cov = last_cycle.city_coverage || {};
-            document.getElementById('valCoverage').innerHTML = `Coverage met: ${cov.target_met ? 'Yes' : 'No'} (${cov.unique_opportunity_cities}/${cov.min_city_target})`;
-        } else {
-            document.getElementById('valLastRun').innerHTML = "Belum Berjalan";
-            document.getElementById('valCoverage').innerHTML = "-";
+            document.getElementById('valCoverage').innerHTML = `Coverage: ${cov.unique_opportunity_cities}/${cov.min_city_target}`;
         }
 
-                const tokenId = String(pos.token_id || '');
-                
-                tPos.innerHTML += `
-                    <tr data-token-id="${tokenId}" data-index="${k}">
-                        <td>
-                            <strong>${escapeHtml(marketLabel)}</strong><br>
-                            <small style="color: #bbb">${escapeHtml(cityLabel)}</small>
-                        </td>
-                        <td>$${(pos.entry_price || 0).toFixed(4)}</td>
-                        <td>$${(pos.cost_basis || 0).toFixed(2)}</td>
-                        <td class="js-bid-price">$${(Number(pos.last_price || pos.entry_quote_best_bid || 0)).toFixed(4)}</td>
-                        <td class="js-upnl ${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
-                        <td>
-                            <div style="display:flex; flex-direction: column; gap: 4px;">
-                                <span class="badge mode-auto" style="display:inline-block; border-color: ${pos.target_strategy === 'hold_until_resolve' ? '#8b5cf6' : '#10b981'}; color: ${pos.target_strategy === 'hold_until_resolve' ? '#c4b5fd' : '#34d399'};">
-                                    ${pos.target_strategy === 'hold_until_resolve' ? '🏰 FORTRESS (HOLD)' : '📉 SWING'}
-                                </span>
-                                <span class="badge mode-auto" style="display:inline-block;">${targetText}</span>
-                            </div>
-                            <small style="color: #bbb">${bucketText}</small>
-                        </td>
-                        <td>
-                            <div style="display:flex; gap: 6px; margin-bottom: 6px;">
-                                <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white;">Buka Market</a>
-                                <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679; border: none;">Close API</button>
-                            </div>
-                            <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: linear-gradient(135deg, #10b981, #059669); border: none; width: 100%; text-align: center;" 
-                                onclick="showReason('${escapeHtml(pos.city || '')}', '${escapeHtml(pos.date || '')}', '${escapeHtml(pos.threshold || '')}', '${escapeHtml(pos.unit || '')}', ${Number(pos.entry_model_prob || 0)}, ${Number(pos.entry_confidence_score || 0)}, '${escapeHtml(pos.entry_bucket_reason || '')}')">
-                                💡 Alasan Entry
-                            </button>
-                        </td>
-                    </tr>
-                `;
-            });
-        }
-
-        
         const tHist = document.getElementById('historyTable');
         tHist.innerHTML = "";
         document.getElementById('closedCountBadge').innerHTML = d_closed.length;
-        
-        if(d_closed.length === 0) {
-            tHist.innerHTML = "<tr><td colspan='6' style='text-align:center;'>Belum ada histori penutupan posisi.</td></tr>";
+        if (!d_closed.length) {
+            tHist.innerHTML = "<tr><td colspan='6' style='text-align:center;'>No history.</td></tr>";
         } else {
-            let sortedHistory = [...d_closed].sort((a, b) => new Date(b.closed_at || 0) - new Date(a.closed_at || 0)).slice(0, 50);
-            
-            sortedHistory.forEach(pos => {
-                const rPnl = pos.realized_pnl_usd || 0.0;
+            [...d_closed].sort((a,b) => new Date(b.closed_at) - new Date(a.closed_at)).slice(0, 50).forEach(pos => {
+                const rPnl = pos.realized_pnl_usd || 0;
                 const pnlCls = rPnl >= 0 ? "good" : "bad";
-                const pnlPct = pos.realized_roi_pct || 0;
-                
-                let directionLabel = pos.direction === 'above' ? '≥' : (pos.direction === 'below' ? '≤' : '=');
-                const targetText = `Posisi YES: Suhu ${directionLabel} ${pos.threshold || ''}°${pos.unit || ''}`;
-                const closeReason = pos.close_reason ? pos.close_reason.replace(/_/g, ' ') : '-';
-                const cityLabel = pos.city ? pos.city.toUpperCase() : `Token ${String(pos.token_id || '').substring(0, 8)}`;
-                const marketLabel = getMarketLabel(pos);
-                
-                let rawSlug = pos.market_slug || "";
-                let cleanSlug = rawSlug.replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
-                const marketUrl = cleanSlug ? `https://polymarket.com/event/${cleanSlug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
-                
-                let closedTime = pos.closed_at ? new Date(pos.closed_at).toLocaleString() : '-';
-
-                tHist.innerHTML += `
-                    <tr>
-                        <td>
-                            <strong><a href="${marketUrl}" target="_blank" style="color: #03a9f4; text-decoration: underline;">${escapeHtml(marketLabel)}</a></strong><br>
-                            <small style="color: #bbb">${escapeHtml(cityLabel)}</small>
-                        </td>
-                        <td>$${(pos.entry_price || 0).toFixed(4)}</td>
-                        <td>$${(pos.exit_price || pos.last_price || 0).toFixed(4)}</td>
-                        <td class="${pnlCls}"><strong>$${rPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
-                        <td><span class="badge mode-auto" style="margin-bottom:4px; display:inline-block; border-color: #888;">${targetText}</span></td>
-                        <td><small>${closedTime}</small><br><small style="color: #cf6679">${closeReason.toUpperCase()}</small></td>
-                    </tr>
-                `;
+                tHist.innerHTML += `<tr><td><strong>${escapeHtml(getMarketLabel(pos))}</strong><br><small>${escapeHtml(pos.city || '').toUpperCase()}</small></td><td>$${(pos.entry_price || 0).toFixed(4)}</td><td>$${(pos.exit_price || 0).toFixed(4)}</td><td class="${pnlCls}"><strong>$${rPnl.toFixed(4)}</strong></td><td><span class="badge mode-auto">Temp ${pos.direction==='above'?'≥':'≤'} ${pos.threshold || ''}</span></td><td><small>${new Date(pos.closed_at).toLocaleString()}</small><br><small style="color:#cf6679">${(pos.close_reason || '').toUpperCase()}</small></td></tr>`;
             });
         }
 
-        cycleRowsCache = [...d_cycle].reverse();
+        cycleRowsCache = [...(data.cycle_journal || [])].reverse();
+        updateAggregateCards();
+        renderPositionsTable();
         renderCycleTable();
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) { console.error(e); }
 }
+
+function updateRealtimeClocks() {
+    const now = new Date();
+    const fmt = (tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(now);
+    document.getElementById('valUtcClock').innerHTML = fmt('UTC');
+    document.getElementById('valEtClock').innerHTML = fmt('America/New_York');
+    document.getElementById('valUtcDate').innerHTML = 'UTC Timezone';
+    document.getElementById('valEtDate').innerHTML = 'ET Washington';
+}
+
 fetchData();
 connectBrowserWs();
 updateRealtimeClocks();
