@@ -977,15 +977,28 @@ def _build_tuned_filter_opportunities(tuner_snapshot):
         for market in markets:
             city_key = _normalize_city_key(market.get("city"))
             city_rule = city_scores.get(city_key, {}) if city_key else {}
-            tuned_min_edge = _safe_float(city_rule.get("min_edge"), base_min_edge)
             tuned_status = str(city_rule.get("status") or "neutral")
 
             if tuned_status == "blacklist":
                 continue
 
+            direction = market.get("direction", "above")
+            if direction == "exact":
+                _min_prob = STRATEGY_EXACT_MIN_MODEL_PROB
+                _min_edge = _safe_float(city_rule.get("min_edge"), STRATEGY_EXACT_MIN_EDGE)
+                ref_price = market.get("best_ask") or market["yes_price"]
+                price_ok = ref_price < PAPER_ENTRY_MAX_PRICE
+            else:
+                _min_edge = _safe_float(city_rule.get("min_edge"), base_min_edge)
+                _min_prob = STRATEGY_MIN_MODEL_PROB
+                ref_price = market["yes_price"]
+                price_ok = ref_price < STRATEGY_MAX_YES_PRICE
+
+            tuned_min_edge = _min_edge
+
             if (
-                market["yes_price"] < STRATEGY_MAX_YES_PRICE
-                and market["model_prob"] >= STRATEGY_MIN_MODEL_PROB
+                price_ok
+                and market["model_prob"] >= _min_prob
                 and market["edge"] >= tuned_min_edge
             ):
                 opportunities.append(
