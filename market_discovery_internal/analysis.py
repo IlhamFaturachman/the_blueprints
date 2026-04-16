@@ -13,6 +13,7 @@ from market_discovery_internal.config import (
     SONNET_ENTRY_MODEL, SONNET_ENTRY_MAX_TOKENS, SONNET_ENTRY_MIN_CONFIDENCE,
     HAIKU_MONITOR_ENABLED, HAIKU_MONITOR_CACHE_FILE, HAIKU_MONITOR_MODEL,
     HAIKU_MONITOR_MAX_TOKENS, HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT,
+    HAIKU_SENSING_ENABLED, STATION_KNOWLEDGE_FILE, STATION_KNOWLEDGE_TTL_DAYS,
     ENTRY_BUCKET_HOLD_MIN_PROB, ENTRY_BUCKET_HOLD_MIN_EDGE,
     ENTRY_BUCKET_WATCH_MAX_PRICE,
     ANTHROPIC_API_KEY, AI_AGENT_ENABLED, AI_AGENT_TIMEOUT_SECONDS,
@@ -241,6 +242,78 @@ def _sonnet_entry_analysis(opportunity):
         
     except Exception as e:
         return _sonnet_failure_result(str(e))
+
+# ---------------------------------------------------------------------------
+# [MODUL A] Station Knowledge & Haiku Sensing
+# ---------------------------------------------------------------------------
+
+def _get_station_knowledge_cache():
+    return _load_json_blob(STATION_KNOWLEDGE_FILE, {})
+
+def _save_station_knowledge_cache(cache):
+    _save_json_blob(STATION_KNOWLEDGE_FILE, cache)
+
+def resolve_station_with_ai(city, description):
+    """
+    Attempt to extract a specific ICAO code from human-readable rules using AI.
+    Includes a persistent cache to minimize costs.
+    """
+    if not HAIKU_SENSING_ENABLED or not ANTHROPIC_API_KEY or not description:
+        return None
+
+    # Normalization for cache key
+    cache_key = f"{city.lower()}:{description.strip()[:200]}" # Use first 200 chars for key
+    cache = _get_station_knowledge_cache()
+
+    if cache_key in cache:
+        entry = cache[cache_key]
+        # Check TTL
+        prev = datetime.fromisoformat(entry["at"].replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - prev).days
+        if age_days < STATION_KNOWLEDGE_TTL_DAYS:
+            return entry.get("icao")
+
+    # Reserve call slot
+    if not _reserve_ai_call_slot("haiku_sensing"):
+        return None
+
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        
+        prompt = (
+            f"Context: Polymarket weather market for {city}.\n"
+            f"Rules text: \"{description}\"\n\n"
+            "Task: Identify the official weather station or airport ICAO/IATA code required for resolution.\n"
+            "Return ONLY a JSON object: {\"station_name\": \"string\", \"icao\": \"4-letter-code-or-null\"}\n"
+            "Example: New York Central Park -> KNYC, London Heathrow -> EGLL."
+        )
+
+        response = client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=100,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        _record_ai_usage_cost("haiku_sensing", "claude-3-haiku-20240307", response)
+        
+        text = response.content[0].text
+        data = _extract_json_payload(text)
+        
+        if data and data.get("icao"):
+            icao = data["icao"].upper()
+            # Cache it
+            cache[cache_key] = {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "icao": icao,
+                "station_name": data.get("station_name")
+            }
+            _save_station_knowledge_cache(cache)
+            return icao
+            
+    except Exception as e:
+        print(f"[AI-SENSING] Error: {e}")
+        
+    return None
 
 # ---------------------------------------------------------------------------
 # Haiku Position Monitor

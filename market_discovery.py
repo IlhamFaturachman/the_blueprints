@@ -53,7 +53,7 @@ from market_discovery_internal.forecasting import (
 from market_discovery_internal.analysis import (
     build_weather_evidence, is_weather_evidence_valid, _sonnet_entry_analysis,
     _haiku_position_monitor, decide_entry_bucket, _maybe_apply_ai_decision,
-    _record_ai_usage_cost
+    _record_ai_usage_cost, resolve_station_with_ai
 )
 from market_discovery_internal.discovery import (
     fetch_markets, filter_opportunities
@@ -113,6 +113,7 @@ def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
             is_weather_evidence_valid_fn=is_weather_evidence_valid,
             calculate_edge_fn=calculate_edge,
             maybe_apply_ai_decision_fn=_maybe_apply_ai_decision,
+            resolve_station_with_ai_fn=resolve_station_with_ai,
             discovery_forecast_prefetch_min_keys=DISCOVERY_FORECAST_PREFETCH_MIN_KEYS,
             discovery_forecast_prefetch_max_workers=DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS,
         ),

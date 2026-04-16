@@ -91,6 +91,7 @@ def enrich_discovery_markets(
     is_weather_evidence_valid_fn,
     calculate_edge_fn,
     maybe_apply_ai_decision_fn,
+    resolve_station_with_ai_fn,
     discovery_forecast_prefetch_min_keys,
     discovery_forecast_prefetch_max_workers,
 ):
@@ -100,6 +101,18 @@ def enrich_discovery_markets(
     enriched = []
     forecast_cache = {}
     forecast_cache_stats = {"hits": 0, "misses": 0}
+
+    # [MODUL A] Precision Station Resolution (Pre-Enrichment)
+    # We resolve stations before prefetching so the cache hits the correct ICAO-specific forecast.
+    # Note: AI lookups are internally cached in resolve_station_with_ai_fn.
+    for market in parsed:
+        # If ICAO is already explicit via regex, we skip AI to save cost.
+        # Otherwise, if we have rules (description), we let AI attempt extraction.
+        if not market.get("icao_explicit"):
+            ai_icao = resolve_station_with_ai_fn(market.get("city"), market.get("description"))
+            if ai_icao:
+                market["icao_code"] = ai_icao
+                market["icao_explicit"] = True # Mark as explicit so we don't re-run AI
 
     prefetch_started = perf_counter_fn()
     forecast_prefetch = prefetch_forecasts_fn(

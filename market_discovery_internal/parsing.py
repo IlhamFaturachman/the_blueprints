@@ -136,18 +136,20 @@ def parse_market(
     if city is None:
         return _with_reason(None)
 
-    # Step 1.5: Extract ICAO (Modul A - Semantic Rule Validation)
+    # Step 1.5: [MODUL A] Precision Station Extraction
     icao_code = None
     source_explicit = False
     
-    # Priority 1: Explicit code in parentheses like "(LGA)"
-    icao_match = re.search(r"\(([A-Z]{3,4})\)", search_text)
+    # Priority 1: Explicit code in parentheses like "(LGA)" or "(KNYC)"
+    # We look for 3 uppercase letters (IATA) or 4 uppercase letters (ICAO)
+    icao_match = re.search(r"\b\(([A-Z]{3,4})\)\b", search_text)
     if icao_match:
         extracted = icao_match.group(1)
         icao_code = _normalize_icao_code(extracted, city)
-        source_explicit = True
+        if icao_code:
+            source_explicit = True
     
-    # Priority 2: Semantic station name matching (e.g. "Central Park")
+    # Priority 2: Semantic station name matching (e.g. "Central Park", "O'Hare")
     if not icao_code:
         for name, code in STATION_NAME_TO_ICAO.items():
             if name in search_text_lower:
@@ -155,7 +157,8 @@ def parse_market(
                 source_explicit = True
                 break
 
-    # Ambiguity Guard: If city has multiple sensors but none was explicitly found -> REJECT
+    # Ambiguity Guard: If city has multiple known sensors but none was explicitly found -> REJECT
+    # This prevents the flaw where a city has LGA and JFK but the market only says "New York"
     allowed_stations = CITY_STATIONS.get(city, [])
     if len(allowed_stations) > 1 and not source_explicit:
         return _with_reason(None, "ambiguous_station")
@@ -258,9 +261,11 @@ def parse_market(
     return _with_reason({
         "city": city,
         "icao_code": icao_code,
+        "icao_explicit": source_explicit,
         "date": date_str,
         "end_date": end_dt.isoformat(),
         "market_question": question,
+        "description": raw.get("description", ""),
         "threshold": threshold,
         "unit": unit,
         "direction": direction,

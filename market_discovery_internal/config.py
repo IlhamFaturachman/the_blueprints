@@ -302,7 +302,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AI_ENABLE_WEB_SEARCH = _env_bool("AI_ENABLE_WEB_SEARCH", False)
 
 # Hard budget and usage controls (keeps monthly cost <= configured budget)
-AI_MONTHLY_BUDGET_USD = max(0.0, float(os.getenv("AI_MONTHLY_BUDGET_USD", "5.0")))
+AI_MONTHLY_BUDGET_USD = max(0.0, float(os.getenv("AI_MONTHLY_BUDGET_USD", "3.0")))
 AI_USAGE_LEDGER_FILE = os.getenv("AI_USAGE_LEDGER_FILE", "logs/ai_usage_ledger.json")
 
 # Sonnet entry gate
@@ -326,6 +326,11 @@ HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT = min(
     max(0.0, float(os.getenv("HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT", "0.75"))),
 )
 HAIKU_MONITOR_CACHE_FILE = os.getenv("HAIKU_MONITOR_CACHE_FILE", "logs/haiku_monitor_cache.json")
+
+# [MODUL A] Economy Sensing
+HAIKU_SENSING_ENABLED = _env_bool("HAIKU_SENSING_ENABLED", True)
+STATION_KNOWLEDGE_FILE = os.getenv("STATION_KNOWLEDGE_FILE", "logs/station_knowledge.json")
+STATION_KNOWLEDGE_TTL_DAYS = max(1, int(os.getenv("STATION_KNOWLEDGE_TTL_DAYS", "30")))
 
 # Weather evidence quality controls (for hold-to-resolve safety)
 WEATHER_EVIDENCE_MAX_AGE_HOURS = float(os.getenv("WEATHER_EVIDENCE_MAX_AGE_HOURS", "3.0"))

@@ -8,7 +8,7 @@ Rencana ini adalah instruksi teknis tingkat akhir untuk pembangunan sistem tradi
 
 ### 🌊 WAVE 1: THE EYES (Akurasi & Filter)
 **Tujuan:** Memastikan data input 99.9% akurat.
-- **[MODUL A] ICAO Detection:** Regex parser untuk Gamma API `description`. Mapping ke koordinat sensor bandara di `config.py`.
+- **[MODUL A] Precision Semantic Sensing:** Hybrid extraction (Regex + Haiku) untuk membaca resolusi market di level stasiun spesifik (misal: Midway Airport, Central Park). Menggunakan **Learning Cache** untuk menjamin efisiensi biaya.
 - **[MODUL B] Multi-API Consensus:** Integrasi NOAA METAR via `api.weather.gov`. 
 - **[MODUL C] Golden Window (8-14h):** Gatekeeper waktu berdasarkan `hours_to_resolve`.
 - **[MODUL K] Anomaly Check:** Cek deviasi suhu (max 7°C dari rata-rata 24 jam).
@@ -33,6 +33,14 @@ Rencana ini adalah instruksi teknis tingkat akhir untuk pembangunan sistem tradi
 - **[MODUL I] Self-Healing:** Rekonsiliasi state lokal vs L2 order history Polymarket setiap jam.
 - **[MODUL J] Emergency Kill-Switch:** Dashboard button pemicu `sys.exit(0)` & `close_all_positions`.
 - **[MODUL N] Mobile Alerts:** Notifikasi Telegram via `requests.post`.
+
+---
+
+## 💰 THE $3 ECONOMY (Budget Management)
+**Target:** Menjalankan bot full-cycle dengan biaya AI < $3.00/bulan.
+- **Model:** Wajib menggunakan **Claude 3 Haiku** untuk sensing & monitoring. **Sonnet** hanya diaktifkan untuk high-alpha confirmation cycle.
+- **Persistence:** Semua discovery stasiun akan disimpan di `station_knowledge.json`. Discovery bersifat permanen (Hukum sekali bayar).
+- **Hard Limit:** Bot akan otomatis berhenti menggunakan AI jika `monthly_cost` mendekati $2.80.
 
 ---
 
