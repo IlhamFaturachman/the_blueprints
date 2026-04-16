@@ -175,19 +175,51 @@ def _print_paper_cycle_rolling_block(rolling, rolling_city, safe_float_fn):
         )
 
 
+def _position_market_label(position):
+    """Return a human-readable market label for opened/closed token prints."""
+    question = str(position.get("market_question") or "").strip()
+    if question:
+        return question
+
+    city = str(position.get("city") or "").strip()
+    if city:
+        return city.title()
+
+    token_id = str(position.get("token_id") or "").strip()
+    return token_id or "unknown-market"
+
+
+def _safe_position_float(position, key):
+    """Best-effort numeric extraction for cycle summary prints."""
+    try:
+        return float(position.get(key, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _print_paper_cycle_token_changes(cycle):
     """Print opened/closed token lines for paper cycle summary."""
     if cycle["opened"]:
         print("  Opened tokens      :")
         for position in cycle["opened"]:
-            print(f"    - {position['token_id']} @ {position['entry_price']:.4f}")
+            token_id = str(position.get("token_id") or "unknown")
+            entry_price = _safe_position_float(position, "entry_price")
+            print(
+                f"    - {_position_market_label(position)} "
+                f"[{token_id}] @ {entry_price:.4f}"
+            )
 
     if cycle["closed"]:
         print("  Closed tokens      :")
         for position in cycle["closed"]:
+            token_id = str(position.get("token_id") or "unknown")
+            exit_price = _safe_position_float(position, "exit_price")
+            realized_pnl = _safe_position_float(position, "realized_pnl_usd")
+            close_reason = str(position.get("close_reason") or "unknown")
             print(
-                f"    - {position['token_id']} @ {position['exit_price']:.4f} "
-                f"({position['close_reason']}, PnL {position['realized_pnl_usd']:+.4f})"
+                f"    - {_position_market_label(position)} "
+                f"[{token_id}] @ {exit_price:.4f} "
+                f"({close_reason}, PnL {realized_pnl:+.4f})"
             )
 
 
