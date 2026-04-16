@@ -343,9 +343,6 @@ def _main_protected():
         )
         return
 
-        target_cities_len=len(TARGET_CITIES)
-    )
-
     # Default: Discovery Mode
     run_main_discovery_mode(
         inspect_mode=flags["inspect_mode"],

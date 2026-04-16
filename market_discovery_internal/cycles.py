@@ -288,7 +288,7 @@ def run_paper_trading_cycle(
     # --- HYBRID GUARD (FAILOVER) ---
     ws_stale = False
     if last_ws_update_at is not None and len(state.get("positions", [])) > 0:
-        elapsed_since_ws = (time.time() - last_ws_update_at) / 60.0
+        elapsed_since_ws = (time.time() - last_ws_update_at.value) / 60.0
         if elapsed_since_ws > ws_stale_detection_minutes:
             ws_stale = True
             logger.warning("[GUARD] WebSocket STALE (%.1fm). Switching to Aggressive Scan.", elapsed_since_ws)
