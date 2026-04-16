@@ -668,18 +668,23 @@ def run_paper_trading_cycle(
             prob = float(pos.get('entry_model_prob', 0))
             meter = "🟢" * int(prob * 5) + "⚪" * (5 - int(prob * 5))
 
+            # Natural language reason similar to Web UI
+            prob_pct = f"{prob*100:.1f}%"
+            side = pos.get('direction').upper()
+            target_desc = f"<b>{side} {pos.get('threshold')}{pos.get('unit')}</b>"
+            city_upper = pos.get('city', 'N/A').upper()
+            
             msg = (
-                f"🚀 <b>NEW ENTRY: OPENED</b> 🚀\n\n"
-                f"📊 <b>Bucket</b>: <b>{pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper()}</b>\n"
-                f"📍 <b>City</b>: {pos.get('city', 'N/A').upper()}\n"
-                f"⚖️ <b>Target</b>: {pos.get('threshold')}{pos.get('unit')} {pos.get('direction', 'N/A').upper()}\n"
-                f"🌡️ <b>Forecast</b>: {forecast}°C (<i>{pos.get('direction', 'N/A').lower()} target</i>)\n\n"
+                f"🚀 <b>NEW ENTRY: {city_upper}</b> 🚀\n\n"
+                f"Bot mengambil posisi <b>YES</b> pada target {target_desc}.\n\n"
+                f"📊 <b>Analisis Terintegrasi:</b>\n"
+                f"Open-Meteo Ensemble yakin sebesar <b>{prob_pct}</b> bahwa target ini akan tercapai. Tren cuaca menunjukkan simpangan yang solid.\n\n"
+                f"📝 <b>Alasan Bot (Bucket):</b>\n"
+                f"Masuk kategori <b>{pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper()}</b> karena {reason}\n\n"
                 f"💵 <b>Stake</b>: USD {pos.get('cost_basis'):.2f}\n"
                 f"🏷️ <b>Price</b>: USD {pos.get('entry_price'):.4f} (TP: {pos.get('target_price', 0):.4f})\n"
-                f"🎯 <b>Model</b>: {meter} ({prob*100:.1f}%)\n"
-                f"📝 <b>Reason</b>: {reason}\n"
-                f"⏳ <b>Resolves in</b>: {hours_left}h\n\n"
-                f"🔗 <a href='{link}'>View on Polymarket</a>"
+                f"⏳ <b>Resolves</b>: {hours_left}h lagi\n\n"
+                f"🔗 <a href='{link}'>Lihat di Polymarket</a>"
             )
             send_telegram_alert(msg)
     else:
