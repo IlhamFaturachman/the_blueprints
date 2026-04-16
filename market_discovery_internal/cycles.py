@@ -691,6 +691,7 @@ def run_paper_trading_cycle(
         "acceptance_metrics_rolling": rolling_metrics,
         "city_coverage_rolling": rolling_city_coverage_metrics,
         "last_cycle_performance": performance,
+        "current_wallet": float(wallet_after_position_management),
     }
 
     next_state = {
