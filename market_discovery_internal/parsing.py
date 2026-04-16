@@ -9,7 +9,7 @@ from market_discovery_internal.config import (
     LOG_FILE, DAILY_RESOLVE_ONLY, DAILY_MIN_HOURS_TO_RESOLVE,
     DAILY_MIN_RESOLVE_DAYS_AHEAD, DAILY_MAX_RESOLVE_DAYS_AHEAD,
     THRESHOLD_RE, EXACT_RE, ABOVE_RE, BELOW_RE,
-    WEATHER_CONTEXT_RE, CITY_REGEXES
+    WEATHER_CONTEXT_RE, CITY_REGEXES, TARGET_CITIES
 )
 
 def _log_unmatched(title, reason):
@@ -94,6 +94,17 @@ def parse_market(
     if city is None:
         return _with_reason(None)
 
+    # Step 1.5: Extract ICAO (Modul A - The Eyes)
+    # Look for explicit ICAO code in description like "(KORD)" or "(EGLL)"
+    icao_code = None
+    description = str(raw.get("description") or "")
+    icao_match = re.search(r"\(([A-Z]{3,4})\)", description)
+    if icao_match:
+        icao_code = icao_match.group(1)
+    else:
+        # Fallback to the ground truth mapping in config.py
+        icao_code = TARGET_CITIES.get(city, {}).get("icao")
+
     has_weather_context = bool(WEATHER_CONTEXT_RE.search(search_text_lower))
     has_temperature_hint = bool(THRESHOLD_RE.search(search_text))
 
@@ -168,20 +179,22 @@ def parse_market(
         return _with_reason(None)
 
     if daily_resolve_only:
-        min_hours = float(daily_min_hours_to_resolve)
         min_days = int(daily_min_resolve_days_ahead)
         max_days = int(daily_max_resolve_days_ahead)
 
         if resolve_days_ahead < min_days or resolve_days_ahead > max_days:
             return _with_reason(None, "daily_date_mismatch")
-        if hours_until_resolve < 6.0:
+        
+        # [MODUL C] The Golden Window (Strict 8 - 14 hour enforcement)
+        if hours_until_resolve > 14.0:
+            return _with_reason(None, "too_early_to_enter")
+        if hours_until_resolve < 8.0:
             return _with_reason(None, "too_close_to_resolve")
-        if hours_until_resolve < min_hours:
-            return _with_reason(None, "daily_min_hours_not_met")
 
     market_slug = raw.get("slug") or raw.get("event_slug") or ""
     return _with_reason({
         "city": city,
+        "icao_code": icao_code,
         "date": date_str,
         "end_date": end_dt.isoformat(),
         "market_question": question,

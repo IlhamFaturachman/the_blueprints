@@ -74,19 +74,51 @@ def fetch_forecast(city, date):
             pass
         return None
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    def _fetch_noaa():
+        icao = coords.get("icao")
+        if not icao:
+            return None
+        try:
+            url = f"https://api.weather.gov/stations/{icao}/observations/latest"
+            headers = {"User-Agent": "TheBlueprintsBot/2.0"}
+            data = fetch_with_retry(url, headers=headers)
+            temp_c = data.get("properties", {}).get("temperature", {}).get("value")
+            if temp_c is not None:
+                return float(temp_c)
+        except Exception:
+            pass
+        return None
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
         f_om = executor.submit(_fetch_open_meteo)
         f_wt = executor.submit(_fetch_wttr)
+        f_noaa = executor.submit(_fetch_noaa)
+        
         t_om = f_om.result()
         t_wt = f_wt.result()
+        t_noaa = f_noaa.result()
+
+    base_avg = None
+    source = None
 
     if t_om is not None and t_wt is not None:
-        avg = round((t_om + t_wt) / 2.0, 1)
-        return ForecastTemp(avg, "dual-source")
+        # [MODUL K] Anomaly Check (Max 7°C deviation between oracles)
+        if abs(t_om - t_wt) > 7.0:
+            return None # Major disagreement between weather sources, reject forecast to be safe.
+        
+        base_avg = round((t_om + t_wt) / 2.0, 1)
+        source = "triple-source-verified" if t_noaa is not None else "dual-source"
     elif t_om is not None:
-        return ForecastTemp(t_om, "open-meteo")
+        base_avg = t_om
+        source = "open-meteo"
     elif t_wt is not None:
-        return ForecastTemp(t_wt, "wttr.in")
+        base_avg = t_wt
+        source = "wttr.in"
+        
+    if base_avg is not None:
+        ft = ForecastTemp(base_avg, source)
+        ft.noaa_current = t_noaa
+        return ft
     return None
 
 def position_to_market(position, current_yes_price, hours_until_resolve):

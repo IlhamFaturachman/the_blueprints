@@ -8,7 +8,7 @@ import requests
 
 from market_discovery_internal.config import LOG_FILE
 
-def fetch_with_retry(url, params=None, max_retries=3):
+def fetch_with_retry(url, params=None, headers=None, max_retries=3):
     """
     GET a URL and return parsed JSON. Retries up to max_retries times
     with exponential backoff (1s, 2s, 4s) on any request error.
@@ -17,7 +17,7 @@ def fetch_with_retry(url, params=None, max_retries=3):
     last_error = None
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, headers=headers, timeout=10)
             response.raise_for_status()
             return response.json()
         except (requests.RequestException, ValueError) as e:
