@@ -49,7 +49,9 @@ def run_main_paper_loop_mode(
     last_ws_update_at=None,
     ws_stale_detection_minutes=5,
     safe_float_fn=float,
-    paper_min_city_diversity=1
+    paper_min_city_diversity=1,
+    kill_flag_check_fn=None,
+    on_kill_fn=None,
 ):
     """Handle paper loop mode in main()."""
     print(f"Starting paper loop every {paper_loop_interval_seconds}s. Press Ctrl+C to stop.")
@@ -68,6 +70,16 @@ def run_main_paper_loop_mode(
     try:
         import time
         while True:
+            # [MODUL J] Kill-Switch check — runs before every cycle
+            if callable(kill_flag_check_fn) and kill_flag_check_fn():
+                print("[MODUL J] Kill flag detected. Shutting down bot...")
+                if callable(on_kill_fn):
+                    try:
+                        on_kill_fn()
+                    except Exception:
+                        pass
+                return
+
             # Dynamic Fallback: Check if WebSocket is healthy
             current_interval = paper_loop_interval_seconds
             is_stale = False

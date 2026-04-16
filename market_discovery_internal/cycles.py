@@ -301,7 +301,7 @@ def run_paper_trading_cycle(
         last_cycle_dt = parse_utc_datetime(last_cycle_at_raw)
         if last_cycle_dt and last_cycle_dt.date() < now_utc.date():
             # Reset daily session for the new day
-            daily_session = state_meta.get("daily_session", {})
+            daily_session = state_meta.get("daily_session") or {}
             if isinstance(daily_session, dict):
                 current_total = float(state_meta.get("current_wallet", PAPER_BASE_WALLET))
                 daily_session["baseline_wallet"] = current_total

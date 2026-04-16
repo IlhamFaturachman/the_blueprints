@@ -163,6 +163,7 @@
                 <span id="lastUpdateAt" class="data-age">--:--:--</span>
             </div>
             <button class="refresh-btn" onclick="fetchData()">Refresh Data</button>
+            <button class="refresh-btn action-btn-red" onclick="triggerKillSwitch()" style="margin-left:10px;" title="[MODUL J] Hentikan bot secara darurat">🛑 Kill Bot</button>
         </div>
     </header>
 
@@ -557,6 +558,23 @@ function updateRealtimeClocks() {
     document.getElementById('valEtClock').innerHTML = fmt('America/New_York');
     document.getElementById('valUtcDate').innerHTML = 'UTC Timezone';
     document.getElementById('valEtDate').innerHTML = 'ET Washington';
+}
+
+// [MODUL J] Emergency Kill-Switch
+function triggerKillSwitch() {
+    if (!confirm('⚠️ EMERGENCY KILL-SWITCH\n\nBot akan dihentikan setelah cycle berikutnya selesai.\nSemua posisi terbuka tetap tersimpan di state.\n\nLanjutkan?')) return;
+    const btn = document.querySelector('button[onclick="triggerKillSwitch()"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending kill signal...'; }
+    fetch('/api/kill', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            alert('✅ Kill signal sent.\nBot akan berhenti setelah cycle selesai.\n\n' + (data.message || ''));
+            if (btn) { btn.textContent = '🛑 Kill Sent'; }
+        })
+        .catch(err => {
+            alert('❌ Failed to send kill signal: ' + err);
+            if (btn) { btn.disabled = false; btn.textContent = '🛑 Kill Bot'; }
+        });
 }
 
 fetchData();

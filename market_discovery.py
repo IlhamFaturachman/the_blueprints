@@ -190,10 +190,14 @@ _ws_broadcaster = None
 _last_ws_update_at = multiprocessing.Value('d', time.time())
 _state_lock = threading.Lock()
 
+_command_server = None
+
 def _start_background_services():
-    global _ws_watcher, _ws_broadcaster
+    global _ws_watcher, _ws_broadcaster, _command_server
     from market_discovery_internal.ws_price_watcher import PriceWatcher, make_ws_exit_callback
     from market_discovery_internal.ws_broadcaster import WsBroadcaster
+    from market_discovery_internal.command_server import start_command_server
+    _command_server = start_command_server()
     from market_discovery_internal.config import (
         WS_PRICE_WATCHER_URL, WS_WATCHDOG_TIMEOUT_SECONDS, 
         WS_BROADCAST_HOST, WS_BROADCAST_PORT, WS_PING_INTERVAL_SECONDS,
@@ -327,6 +331,16 @@ def _main_protected():
     if flags["paper_loop_mode"]:
         _start_background_services()
         try:
+            from market_discovery_internal.command_server import check_kill_flag
+            from market_discovery_internal.utils import send_telegram_alert
+
+            def _on_kill():
+                send_telegram_alert(
+                    "🛑 <b>[MODUL J] Emergency Kill-Switch Activated</b>\n"
+                    "Bot dihentikan via Dashboard. Semua posisi terbuka tetap di state.json.",
+                    parse_mode="HTML"
+                )
+
             # Enterprise Logic: Monitor WS health and adjust polling interval
             run_main_paper_loop_mode(
                 flags["aggressive_mode"],
@@ -342,6 +356,8 @@ def _main_protected():
                 ws_stale_detection_minutes=WS_STALE_DETECTION_MINUTES,
                 safe_float_fn=_safe_float,
                 paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
+                kill_flag_check_fn=check_kill_flag,
+                on_kill_fn=_on_kill,
             )
         finally:
             _stop_background_services()

@@ -138,16 +138,20 @@ def _extract_response_usage(response):
             "output_tokens": getattr(response.usage, 'output_tokens', 0)}
 
 def _estimate_ai_usage_cost_usd(model, usage_counts):
-    # Rough Anthropic pricing (Oct 2024)
-    # Sonnet 3.5: $3/MTok input, $15/MTok output
-    # Haiku 3.5: $0.25/MTok input, $1.25/MTok output
+    # Anthropic pricing (2025)
+    # Claude 4 Sonnet: $3/MTok input, $15/MTok output
+    # Claude Haiku 4.5: $0.80/MTok input, $4.00/MTok output
+    # Claude Haiku 3.x: $0.25/MTok input, $1.25/MTok output
     m = str(model).lower()
     in_t = usage_counts.get("input_tokens", 0)
     out_t = usage_counts.get("output_tokens", 0)
-    
+
     if "sonnet" in m:
         return (in_t * (3.0/1_000_000)) + (out_t * (15.0/1_000_000))
     if "haiku" in m:
+        # haiku-4-5 is more expensive than haiku-3.x
+        if "4-5" in m or "4_5" in m:
+            return (in_t * (0.80/1_000_000)) + (out_t * (4.00/1_000_000))
         return (in_t * (0.25/1_000_000)) + (out_t * (1.25/1_000_000))
     return 0.0
 
