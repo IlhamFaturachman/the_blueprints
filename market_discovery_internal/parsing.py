@@ -157,9 +157,24 @@ def parse_market(
                 source_explicit = True
                 break
 
+    # Priority 3: [MODUL A] Haiku AI Sensing — for ambiguous cities that passed regex and
+    # name-dict but still lack an explicit station. Only triggered when the city has multiple
+    # known stations (i.e. would otherwise hit the ambiguity guard).
+    allowed_stations = CITY_STATIONS.get(city, [])
+    if not source_explicit and len(allowed_stations) > 1:
+        try:
+            from market_discovery_internal.analysis import resolve_station_with_ai
+            ai_icao = resolve_station_with_ai(city, search_text)
+            if ai_icao:
+                # Validate: AI-returned ICAO must belong to the city's known station list
+                if ai_icao in allowed_stations:
+                    icao_code = ai_icao
+                    source_explicit = True
+        except Exception:
+            pass  # Sensing failure must never break market parsing
+
     # Ambiguity Guard: If city has multiple known sensors but none was explicitly found -> REJECT
     # This prevents the flaw where a city has LGA and JFK but the market only says "New York"
-    allowed_stations = CITY_STATIONS.get(city, [])
     if len(allowed_stations) > 1 and not source_explicit:
         return _with_reason(None, "ambiguous_station")
     

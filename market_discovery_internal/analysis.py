@@ -13,7 +13,8 @@ from market_discovery_internal.config import (
     SONNET_ENTRY_MODEL, SONNET_ENTRY_MAX_TOKENS, SONNET_ENTRY_MIN_CONFIDENCE,
     HAIKU_MONITOR_ENABLED, HAIKU_MONITOR_CACHE_FILE, HAIKU_MONITOR_MODEL,
     HAIKU_MONITOR_MAX_TOKENS, HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT,
-    HAIKU_SENSING_ENABLED, STATION_KNOWLEDGE_FILE, STATION_KNOWLEDGE_TTL_DAYS,
+    HAIKU_SENSING_ENABLED, HAIKU_SENSING_MODEL, HAIKU_SENSING_MAX_TOKENS,
+    STATION_KNOWLEDGE_FILE, STATION_KNOWLEDGE_TTL_DAYS,
     ENTRY_BUCKET_HOLD_MIN_PROB, ENTRY_BUCKET_HOLD_MIN_EDGE,
     ENTRY_BUCKET_WATCH_MAX_PRICE,
     ANTHROPIC_API_KEY, AI_AGENT_ENABLED, AI_AGENT_TIMEOUT_SECONDS,
@@ -101,8 +102,15 @@ def _reserve_ai_call_slot(call_kind, now_utc=None):
     if current_month_cost >= AI_MONTHLY_BUDGET_USD:
         return False
 
-    from market_discovery_internal.config import SONNET_ENTRY_MAX_CALLS_PER_DAY, HAIKU_MONITOR_MAX_CALLS_PER_DAY
-    limit = SONNET_ENTRY_MAX_CALLS_PER_DAY if call_kind == "sonnet_entry" else HAIKU_MONITOR_MAX_CALLS_PER_DAY
+    from market_discovery_internal.config import (
+        SONNET_ENTRY_MAX_CALLS_PER_DAY, HAIKU_MONITOR_MAX_CALLS_PER_DAY, HAIKU_SENSING_MAX_CALLS_PER_DAY
+    )
+    if call_kind == "sonnet_entry":
+        limit = SONNET_ENTRY_MAX_CALLS_PER_DAY
+    elif call_kind == "haiku_sensing":
+        limit = HAIKU_SENSING_MAX_CALLS_PER_DAY
+    else:
+        limit = HAIKU_MONITOR_MAX_CALLS_PER_DAY
     
     d_key = f"{_ai_day_key(now_utc)}:{call_kind}"
     current_calls = ledger["daily_calls"].get(d_key, 0)
@@ -290,11 +298,11 @@ def resolve_station_with_ai(city, description):
         )
 
         response = client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=100,
+            model=HAIKU_SENSING_MODEL,
+            max_tokens=HAIKU_SENSING_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
         )
-        _record_ai_usage_cost("haiku_sensing", "claude-3-haiku-20240307", response)
+        _record_ai_usage_cost("haiku_sensing", HAIKU_SENSING_MODEL, response)
         
         text = response.content[0].text
         data = _extract_json_payload(text)
