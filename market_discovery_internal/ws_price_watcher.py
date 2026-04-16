@@ -304,9 +304,11 @@ def make_ws_exit_callback(state_path: str, lock: "threading.Lock", broadcaster=N
     """
     (Main Process) Callback that handles price updates from the queue.
     """
-    from market_discovery import (
-        close_paper_position, load_paper_state, save_paper_state,
+    from market_discovery_internal.state_persistence import (
+        load_paper_state,
+        save_paper_state,
     )
+    from market_discovery_internal.cycles import close_paper_position
     from datetime import datetime, timezone
 
     def callback(token_id: str, bid_price: float) -> None:

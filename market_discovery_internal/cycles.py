@@ -1,4 +1,15 @@
-"""Cycle orchestration helpers for market_discovery."""
+import logging
+import time
+from datetime import datetime, timezone
+from market_discovery_internal.utils import _safe_float, _safe_div, _clamp
+from market_discovery_internal.config import (
+    HYBRID_TAKE_PROFIT_MIN_PRICE, HYBRID_TAKE_PROFIT_MULTIPLIER,
+    HYBRID_STOP_LOSS_MULTIPLIER, HYBRID_LATE_WINDOW_HOURS,
+    HYBRID_MIN_CONFIDENCE_TO_HOLD, HYBRID_CONFIDENCE_EDGE_SCALE,
+    PAPER_STAKE_USD, PAPER_BASE_WALLET
+)
+
+logger = logging.getLogger(__name__)
 
 
 def parse_discovery_markets(
@@ -655,3 +666,250 @@ def run_paper_trading_cycle(
         "rolling_city_coverage_metrics": rolling_city_coverage_metrics,
         "journal_entry": cycle_entry,
     }
+
+
+# ---------------------------------------------------------------------------
+# Trading Logic & Position Management (Restored from Backup)
+# ---------------------------------------------------------------------------
+
+def _compute_take_profit_price(entry_price):
+    """Compute take-profit target price for +100% policy (2x entry by default)."""
+    entry = _safe_float(entry_price, 0.0)
+    if entry <= 0:
+        return HYBRID_TAKE_PROFIT_MIN_PRICE
+    return round(min(entry * HYBRID_TAKE_PROFIT_MULTIPLIER, 1.0), 4)
+
+
+def _ensure_take_profit_target(position):
+    """Normalize legacy positions so all open positions follow +100% TP policy."""
+    normalized = {**position}
+    entry_price = _safe_float(normalized.get("entry_price"), 0.0)
+    if entry_price <= 0:
+        return normalized
+
+    target_price = _compute_take_profit_price(entry_price)
+    normalized["target_price"] = target_price
+    normalized["target_price_low"] = target_price
+    normalized["target_price_high"] = target_price
+    normalized["target_policy"] = "take_profit_100pct"
+    return normalized
+
+
+def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
+    """Create a paper position from an opportunity candidate."""
+    entry_price = _safe_float(opportunity.get("entry_price"), _safe_float(opportunity.get("yes_price"), 0.0))
+    if entry_price <= 0:
+        raise ValueError("entry_price must be > 0")
+
+    quantity = round(float(stake_usd) / entry_price, 6)
+    cost_basis = round(quantity * entry_price, 4)
+    target_price = _compute_take_profit_price(entry_price)
+    entry_yes_reference = _safe_float(opportunity.get("yes_price"), entry_price)
+    entry_price_source = str(opportunity.get("entry_price_source") or "yes_price")
+    entry_quote_best_bid = _safe_float(opportunity.get("entry_quote_best_bid"), 0.0)
+    entry_quote_best_ask = _safe_float(opportunity.get("entry_quote_best_ask"), 0.0)
+
+    position = {
+        "status": "open",
+        "city": opportunity["city"],
+        "token_id": opportunity["token_id"],
+        "market_question": opportunity.get("market_question", ""),
+        "direction": opportunity["direction"],
+        "threshold": opportunity["threshold"],
+        "unit": opportunity["unit"],
+        "date": opportunity["date"],
+        "end_date": opportunity.get("end_date"),
+        "market_slug": opportunity.get("market_slug", ""),
+        "entry_price": entry_price,
+        "entry_price_source": entry_price_source,
+        "entry_yes_reference": entry_yes_reference,
+        "quantity": quantity,
+        "cost_basis": cost_basis,
+        "target_price": target_price,
+        "target_price_low": target_price,
+        "target_price_high": target_price,
+        "target_policy": "take_profit_100pct",
+        "stop_loss_price": round(entry_price * HYBRID_STOP_LOSS_MULTIPLIER, 4),
+        "entry_model_prob": opportunity.get("model_prob"),
+        "entry_edge": opportunity.get("edge"),
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if entry_quote_best_bid > 0:
+        position["entry_quote_best_bid"] = round(entry_quote_best_bid, 4)
+        position["last_price"] = round(entry_quote_best_bid, 4)
+    if entry_quote_best_ask > 0:
+        position["entry_quote_best_ask"] = round(entry_quote_best_ask, 4)
+
+    return position
+
+
+def _position_confidence_score(position, current_yes_price, forecast_still_valid):
+    """Estimate confidence (0-1) that holding remains favorable."""
+    if not forecast_still_valid:
+        return 0.0
+
+    base_prob = position.get("entry_model_prob")
+    if base_prob is None:
+        base_prob = 1.0
+    base_prob = max(0.0, min(float(base_prob), 1.0))
+
+    current_price = max(0.0, min(float(current_yes_price), 1.0))
+    edge_now = max(base_prob - current_price, 0.0)
+    edge_scale = HYBRID_CONFIDENCE_EDGE_SCALE if HYBRID_CONFIDENCE_EDGE_SCALE > 0 else 1.0
+    edge_component = min(edge_now / edge_scale, 1.0)
+    price_component = 1.0 - min(abs(current_price - 0.50) / 0.50, 1.0)
+
+    score = (0.70 * base_prob) + (0.20 * edge_component) + (0.10 * price_component)
+    return round(max(0.0, min(score, 1.0)), 4)
+
+
+def _hours_until_resolve_from_end_date(end_date, now_utc=None):
+    """Compute hours until resolve from ISO datetime string."""
+    if not end_date:
+        return None
+
+    try:
+        end_dt = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    now_dt = now_utc or datetime.now(timezone.utc)
+    return (end_dt - now_dt).total_seconds() / 3600
+
+
+def evaluate_hybrid_exit(
+    position,
+    current_yes_price,
+    forecast_still_valid,
+    hours_until_resolve=None,
+    now_utc=None,
+    confidence_score=None,
+):
+    """
+    Hybrid exit strategy:
+     1) Take-profit at +100% from entry (2x by default).
+    2) Stop-loss when current price <= configured stop-loss price.
+    3) If within late window (H-2 by default):
+       - forecast valid + confidence >= min threshold -> hold to resolve
+       - otherwise -> sell
+    4) Otherwise hold and wait.
+    """
+    price = float(current_yes_price)
+    target_price = float(position.get("target_price", _compute_take_profit_price(position.get("entry_price"))))
+    stop_loss_price = float(position["stop_loss_price"])
+
+    if confidence_score is None:
+        confidence_score = 1.0 if forecast_still_valid else 0.0
+    confidence_score = max(0.0, min(float(confidence_score), 1.0))
+
+    if price <= stop_loss_price:
+        return {
+            "action": "sell",
+            "reason": "stop_loss",
+            "target_price": target_price,
+            "confidence_score": confidence_score,
+        }
+
+    if price >= target_price:
+        return {
+            "action": "sell",
+            "reason": "take_profit_100pct",
+            "target_price": target_price,
+            "confidence_score": confidence_score,
+        }
+
+    hours = hours_until_resolve
+    if hours is None:
+        hours = _hours_until_resolve_from_end_date(position.get("end_date"), now_utc=now_utc)
+
+    if hours is not None and hours <= HYBRID_LATE_WINDOW_HOURS:
+        if not forecast_still_valid:
+            return {
+                "action": "sell",
+                "reason": "late_window_forecast_invalid",
+                "target_price": target_price,
+                "confidence_score": confidence_score,
+            }
+
+        if confidence_score >= HYBRID_MIN_CONFIDENCE_TO_HOLD:
+            return {
+                "action": "hold_to_resolve",
+                "reason": "late_window_confidence_pass",
+                "target_price": target_price,
+                "confidence_score": confidence_score,
+            }
+
+        return {
+            "action": "sell",
+            "reason": "late_window_confidence_below_min",
+            "target_price": target_price,
+            "confidence_score": confidence_score,
+        }
+
+    return {
+        "action": "hold",
+        "reason": "await_target",
+        "target_price": target_price,
+        "confidence_score": confidence_score,
+    }
+
+
+def close_paper_position(position, exit_price, reason, now_utc=None):
+    """Close an open paper position and compute realized PnL metrics."""
+    closed = {**position}
+    resolved_at = now_utc or datetime.now(timezone.utc)
+    price = float(exit_price)
+    exit_value = round(price * float(closed["quantity"]), 4)
+    pnl_usd = round(exit_value - float(closed["cost_basis"]), 4)
+    roi_pct = round((pnl_usd / float(closed["cost_basis"])) * 100, 4) if closed["cost_basis"] else 0.0
+
+    closed.update(
+        {
+            "status": "closed",
+            "last_price": price,
+            "exit_price": price,
+            "exit_value": exit_value,
+            "realized_pnl_usd": pnl_usd,
+            "realized_roi_pct": roi_pct,
+            "closed_at": resolved_at.isoformat(),
+            "close_reason": reason,
+        }
+    )
+
+    return closed
+
+
+def update_paper_position(
+    position,
+    current_yes_price,
+    forecast_still_valid,
+    hours_until_resolve=None,
+    now_utc=None,
+    confidence_score=None,
+):
+    """Apply hybrid exit decision and return updated position plus decision."""
+    decision = evaluate_hybrid_exit(
+        position=position,
+        current_yes_price=current_yes_price,
+        forecast_still_valid=forecast_still_valid,
+        hours_until_resolve=hours_until_resolve,
+        now_utc=now_utc,
+        confidence_score=confidence_score,
+    )
+
+    updated = {
+        **position,
+        "last_price": float(current_yes_price),
+        "last_confidence_score": decision.get("confidence_score"),
+    }
+
+    if decision["action"] == "sell":
+        updated = close_paper_position(
+            position=updated,
+            exit_price=float(current_yes_price),
+            reason=decision["reason"],
+            now_utc=now_utc,
+        )
+
+    return updated, decision
