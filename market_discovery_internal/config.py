@@ -59,6 +59,30 @@ TARGET_CITIES = {
 }
 
 
+# IATA to ICAO Mapping for high-accuracy weather sensing (Modul A)
+# Used to convert 3-letter codes in Polymarket titles to 4-letter codes for NOAA/API.
+AIRPORT_IATA_TO_ICAO = {
+    "LHR": "EGLL", "LGW": "EGKK", "STN": "EGSS", "LCY": "EGLC", "LTN": "EGGW", # London
+    "CDG": "LFPG", "ORY": "LFPO", "BVA": "LFOB", # Paris
+    "FRA": "EDDF", "MUC": "EDDM", # Germany
+    "HND": "RJTT", "NRT": "RJAA", # Tokyo
+    "ICN": "RKSI", "GMP": "RKSS", # Seoul
+    "SIN": "WSSS", # Singapore
+    "HKG": "VHHH", # Hong Kong
+    "MAD": "LEMD", "BCN": "LEBL", # Spain
+    "MXP": "LIMC", "LIN": "LIML", "BGY": "LIME", # Milan
+    "YYZ": "CYYZ", "YUL": "CYUL", "YVR": "CYVR", # Canada
+    "SYD": "YSSY", "MEL": "YMML", # Australia
+    "GRU": "SBGR", "GIG": "SBGL", # Brazil
+    "EZE": "SAEZ", "AEP": "SABE", # Argentina
+    "TLV": "LLBG", # Israel
+    # US cities often use IATA as suffix to K (e.g. JFK -> KJFK), 
+    # but we store them explicitly here if we want absolute safety.
+    "JFK": "KJFK", "LGA": "KLGA", "EWR": "KEWR", "ORD": "KORD", "MDW": "KMDW",
+    "LAX": "KLAX", "SFO": "KSFO", "MIA": "KMIA", "DFW": "KDFW", "IAH": "KIAH",
+}
+
+
 # Regex patterns for matching city names (handles abbreviations/variants)
 CITY_PATTERNS = {
     "new york city": r"\bnew york(?:\s+city)?\b|\bnyc\b",

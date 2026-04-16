@@ -113,7 +113,7 @@ def filter_opportunities(
         # Initial price filter
         if parsed["yes_price"] > max_yes_price: continue
         
-        forecast_temp = fetch_forecast_fn(parsed["city"], parsed["date"])
+        forecast_temp = fetch_forecast_fn(parsed["city"], parsed["date"], parsed.get("icao_code"))
         if forecast_temp is None: continue
         
         edge_data = calculate_edge(parsed, forecast_temp)

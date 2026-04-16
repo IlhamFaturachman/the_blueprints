@@ -12,7 +12,7 @@ class ForecastTemp(float):
         obj.source = source
         return obj
 
-def fetch_forecast(city, date):
+def fetch_forecast(city, date, icao_override=None):
     """Fetch the daily max temperature forecast from Open-Meteo and wttr.in.
 
     For same-day forecasts (date == today UTC), uses hourly data to compute
@@ -75,7 +75,7 @@ def fetch_forecast(city, date):
         return None
 
     def _fetch_noaa():
-        icao = coords.get("icao")
+        icao = icao_override or coords.get("icao")
         if not icao:
             return None
         try:
@@ -107,7 +107,9 @@ def fetch_forecast(city, date):
             return None # Major disagreement between weather sources, reject forecast to be safe.
         
         base_avg = round((t_om + t_wt) / 2.0, 1)
-        source = "triple-source-verified" if t_noaa is not None else "dual-source"
+        source = "verified-triple-source" if t_noaa is not None else "verified-dual-source"
+        if t_noaa is not None and icao_override:
+            source += " (METAR)"
     elif t_om is not None:
         base_avg = t_om
         source = "open-meteo"
@@ -137,12 +139,12 @@ def position_to_market(position, current_yes_price, hours_until_resolve):
     }
 
 
-def fetch_forecast_with_cache(city, date, cache, stats=None, *, fetch_forecast_fn):
-    """Fetch forecast with per-cycle cache for successful city/date lookups."""
+def fetch_forecast_with_cache(city, date, cache, stats=None, *, fetch_forecast_fn, icao_override=None):
+    """Fetch forecast with per-cycle cache for successful city/date/icao lookups."""
     if not isinstance(cache, dict):
-        return fetch_forecast_fn(city, date)
+        return fetch_forecast_fn(city, date, icao_override=icao_override)
 
-    cache_key = (city, date)
+    cache_key = (city, date, icao_override)
     cached = cache.get(cache_key)
     if cached is not None:
         if isinstance(stats, dict):
@@ -152,7 +154,7 @@ def fetch_forecast_with_cache(city, date, cache, stats=None, *, fetch_forecast_f
     if isinstance(stats, dict):
         stats["misses"] = int(stats.get("misses", 0)) + 1
 
-    forecast_temp = fetch_forecast_fn(city, date)
+    forecast_temp = fetch_forecast_fn(city, date, icao_override=icao_override)
     # Keep behavior close to legacy flow: only cache successful results.
     if forecast_temp is not None:
         cache[cache_key] = forecast_temp
@@ -173,10 +175,17 @@ def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_fo
 
     unique_keys = []
     seen = set()
-    for city, date in cache_keys:
+    for item in cache_keys:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        
+        city = item[0]
+        date = item[1]
+        icao = item[2] if len(item) > 2 else None
+        
         if not city or not date:
             continue
-        key = (city, date)
+        key = (city, date, icao)
         if key in cache or key in seen:
             continue
         seen.add(key)
@@ -207,8 +216,8 @@ def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_fo
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_key = {
-            executor.submit(fetch_forecast_fn, city, date): (city, date)
-            for city, date in unique_keys
+            executor.submit(fetch_forecast_fn, city, date, icao_override=icao): (city, date, icao)
+            for city, date, icao in unique_keys
         }
         for future in as_completed(future_to_key):
             key = future_to_key[future]
@@ -246,6 +255,7 @@ def forecast_still_valid(
         position["date"],
         forecast_cache,
         stats=forecast_cache_stats,
+        icao_override=position.get("icao_code")
     )
     evidence = build_weather_evidence_fn(position["city"], position["date"], forecast_temp)
 

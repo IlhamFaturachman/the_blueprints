@@ -9,8 +9,34 @@ from market_discovery_internal.config import (
     LOG_FILE, DAILY_RESOLVE_ONLY, DAILY_MIN_HOURS_TO_RESOLVE,
     DAILY_MIN_RESOLVE_DAYS_AHEAD, DAILY_MAX_RESOLVE_DAYS_AHEAD,
     THRESHOLD_RE, EXACT_RE, ABOVE_RE, BELOW_RE,
-    WEATHER_CONTEXT_RE, CITY_REGEXES, TARGET_CITIES
+    WEATHER_CONTEXT_RE, CITY_REGEXES, TARGET_CITIES,
+    AIRPORT_IATA_TO_ICAO
 )
+
+def _normalize_icao_code(code, city_name=None):
+    """Normalize a 3 or 4 letter airport code into a valid ICAO code."""
+    if not code:
+        return None
+    code = code.upper().strip()
+    
+    # Priority 1: Direct hit in our mapping
+    if code in AIRPORT_IATA_TO_ICAO:
+        return AIRPORT_IATA_TO_ICAO[code]
+    
+    # Priority 2: 4-letter codes usually don't need change
+    if len(code) == 4:
+        return code
+        
+    # Priority 3: 3-letter codes
+    if len(code) == 3:
+        # If it's a known city in our TARGET_CITIES and it's US-based, prefix with K
+        # We can detect US-based by looking at the hardcoded ICAO in config if it starts with K
+        default_icao = TARGET_CITIES.get(city_name, {}).get("icao", "")
+        if default_icao.startswith("K"):
+            return f"K{code}"
+            
+    return code # Fallback to original if we can't be sure
+
 
 def _log_unmatched(title, reason):
     """Append an unparseable market title to the log file."""
@@ -110,14 +136,14 @@ def parse_market(
         return _with_reason(None)
 
     # Step 1.5: Extract ICAO (Modul A - The Eyes)
-    # Look for explicit ICAO code in description like "(KORD)" or "(EGLL)"
+    # Scan all text (title, question, desc) for parenthetical codes like "(LGA)"
     icao_code = None
-    description = str(raw.get("description") or "")
-    icao_match = re.search(r"\(([A-Z]{3,4})\)", description)
+    icao_match = re.search(r"\(([A-Z]{3,4})\)", search_text)
     if icao_match:
-        icao_code = icao_match.group(1)
+        extracted = icao_match.group(1)
+        icao_code = _normalize_icao_code(extracted, city)
     else:
-        # Fallback to the ground truth mapping in config.py
+        # Fallback to the city's ground truth mapping in config.py
         icao_code = TARGET_CITIES.get(city, {}).get("icao")
 
     has_weather_context = bool(WEATHER_CONTEXT_RE.search(search_text_lower))

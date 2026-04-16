@@ -103,7 +103,7 @@ def enrich_discovery_markets(
 
     prefetch_started = perf_counter_fn()
     forecast_prefetch = prefetch_forecasts_fn(
-        cache_keys=[(market.get("city"), market.get("date")) for market in parsed],
+        cache_keys=[(market.get("city"), market.get("date"), market.get("icao_code")) for market in parsed],
         cache=forecast_cache,
         min_keys=discovery_forecast_prefetch_min_keys,
         max_workers=discovery_forecast_prefetch_max_workers,
@@ -119,6 +119,7 @@ def enrich_discovery_markets(
             date,
             forecast_cache,
             stats=forecast_cache_stats,
+            icao_override=market.get("icao_code"),
         )
         evidence = build_weather_evidence_fn(city, date, forecast_temp)
         evidence_valid = is_weather_evidence_valid_fn(evidence)
@@ -352,7 +353,7 @@ def run_paper_trading_cycle(
     position_prefetch_started = perf_counter_fn()
     position_forecast_prefetch = prefetch_forecasts_fn(
         cache_keys=[
-            (position.get("city"), position.get("date"))
+            (position.get("city"), position.get("date"), position.get("icao_code"))
             for position in state.get("positions", [])
             if position.get("status") == "open"
         ],
@@ -674,11 +675,12 @@ def run_paper_trading_cycle(
             target_desc = f"<b>{side} {pos.get('threshold')}{pos.get('unit')}</b>"
             city_upper = pos.get('city', 'N/A').upper()
             
+            sensor_label = f" ({pos.get('icao_code')})" if pos.get('icao_code') else ""
             msg = (
-                f"🚀 <b>NEW ENTRY: {city_upper}</b> 🚀\n\n"
+                f"🚀 <b>NEW ENTRY: {city_upper}{sensor_label}</b> 🚀\n\n"
                 f"Bot mengambil posisi <b>YES</b> pada target {target_desc}.\n\n"
                 f"📊 <b>Analisis Terintegrasi:</b>\n"
-                f"Open-Meteo Ensemble yakin sebesar <b>{prob_pct}</b> bahwa target ini akan tercapai. Tren cuaca menunjukkan simpangan yang solid.\n\n"
+                f"Open-Meteo Ensemble yakin sebesar <b>{prob_pct}</b> bahwa target ini akan tercapai. <b>Sensor: {pos.get('icao_code', 'City Default')}</b>.\n\n"
                 f"📝 <b>Alasan Bot (Bucket):</b>\n"
                 f"Masuk kategori <b>{pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper()}</b> karena {reason}\n\n"
                 f"💵 <b>Stake</b>: USD {pos.get('cost_basis'):.2f}\n"
