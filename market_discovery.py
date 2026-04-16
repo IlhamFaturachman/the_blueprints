@@ -510,12 +510,45 @@ class ForecastTemp(float):
         return obj
 
 def fetch_forecast(city, date):
-    """Fetch the daily max temperature forecast from Open-Meteo and wttr.in."""
+    """Fetch the daily max temperature forecast from Open-Meteo and wttr.in.
+
+    For same-day forecasts (date == today UTC), uses hourly data to compute
+    the max of remaining daytime hours (06:00–22:00 local), which is more
+    accurate than the daily-max estimate that may be stale for same-day markets.
+    """
     coords = TARGET_CITIES.get(city)
     if not coords:
         return None
 
     def _fetch_open_meteo():
+        from datetime import datetime, timezone
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        use_hourly = (date == today_utc)
+
+        if use_hourly:
+            params = {
+                "latitude": coords["lat"],
+                "longitude": coords["lon"],
+                "hourly": "temperature_2m",
+                "timezone": "auto",
+                "forecast_days": 2,
+            }
+            try:
+                data = fetch_with_retry(OPEN_METEO_API, params=params)
+                hourly = data.get("hourly", {})
+                times = hourly.get("time", [])
+                temps = hourly.get("temperature_2m", [])
+                # Take max over daytime hours (6–22) for the target date
+                day_temps = [
+                    t for ts, t in zip(times, temps)
+                    if ts.startswith(date) and t is not None
+                    and 6 <= int(ts[11:13]) <= 22
+                ]
+                return max(day_temps) if day_temps else None
+            except Exception:
+                pass
+            return None
+
         params = {"latitude": coords["lat"], "longitude": coords["lon"], "daily": "temperature_2m_max", "timezone": "auto", "forecast_days": 3}
         try:
             data = fetch_with_retry(OPEN_METEO_API, params=params)

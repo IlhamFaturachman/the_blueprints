@@ -47,9 +47,20 @@ def test_edge_is_model_prob_minus_yes_price():
     assert result["edge"] == pytest.approx(0.72, abs=0.0001)
 
 
-def test_returns_none_for_exact_direction_in_v1():
+def test_exact_direction_uses_gaussian_model():
+    # forecast=75F exactly matches threshold → Gaussian peak probability, edge > 0
+    market = make_market(75.0, "F", "exact", 0.05)
+    result = calculate_edge(market, (75.0 - 32) * 5 / 9)  # 75F in Celsius
+    assert result is not None
+    assert result["model_prob"] > 0
+    assert result["edge"] > 0  # market underpriced vs Gaussian peak
+
+def test_exact_direction_far_forecast_low_prob():
+    # forecast far from threshold → very low model_prob
     market = make_market(75.0, "F", "exact", 0.28)
-    assert calculate_edge(market, 25.0) is None
+    result = calculate_edge(market, 25.0)  # 25°C → 77°F, 2°F away from 75°F threshold
+    assert result is not None
+    assert result["model_prob"] < 0.15
 
 
 def test_returns_none_when_forecast_is_missing():
