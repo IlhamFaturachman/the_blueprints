@@ -112,18 +112,31 @@ def check_liquidity_depth(token_id, target_stake_usd):
     """
     [MODUL E] Check if the orderbook volume at the Best Ask exceeds our stake.
     Protects the bot from entering dry, illiquid markets.
+    Returns True if liquid enough, False if dry or API failure.
     """
     if not token_id: return False
     url = f"{CLOB_BOOK_API}?token_id={token_id}"
     try:
         data = fetch_with_retry(url)
         asks = data.get("asks", [])
-        if not asks or len(asks) == 0: return False
-        
-        best_ask_price = float(asks[0][0])
-        best_ask_size = float(asks[0][1])
-        depth_usd = best_ask_price * best_ask_size
-        
+        if not asks or not isinstance(asks, list):
+            return False
+
+        best = asks[0]
+        # Handle both list format [price, size] and dict format {"price":..., "size":...}
+        if isinstance(best, (list, tuple)) and len(best) >= 2:
+            price = float(best[0])
+            size = float(best[1])
+        elif isinstance(best, dict):
+            price = float(best.get("price") or best.get("p") or 0)
+            size = float(best.get("size") or best.get("s") or 0)
+        else:
+            return False
+
+        if price <= 0 or size <= 0:
+            return False
+
+        depth_usd = price * size
         return depth_usd > float(target_stake_usd)
     except Exception:
         return False

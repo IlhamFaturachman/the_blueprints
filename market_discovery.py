@@ -61,7 +61,7 @@ from market_discovery_internal.discovery import (
 from market_discovery_internal.cycles import (
     run_discovery_cycle, run_paper_trading_cycle, parse_discovery_markets,
     enrich_discovery_markets, _ensure_take_profit_target, evaluate_hybrid_exit,
-    _position_confidence_score
+    _position_confidence_score, close_paper_position, build_paper_position
 )
 from market_discovery_internal.cli import (
     parse_cli_mode_flags, run_main_discovery_mode, run_main_paper_report_mode,
@@ -150,7 +150,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         ),
         position_confidence_score_fn=_position_confidence_score, 
         update_paper_position_fn=evaluate_hybrid_exit, 
-        close_paper_position_fn=lambda **kwargs: kwargs["position"], # Placeholder
+        close_paper_position_fn=close_paper_position,
         fetch_orderbook_quote_fn=fetch_orderbook_quote,
         build_open_position_inventory_fn=lambda pos: ([], {}), # Placeholder
         build_entry_candidates_fn=lambda **kwargs: ([], {}, set(), set()), # Placeholder
