@@ -34,7 +34,7 @@ fi
 
 PAPER_STAKE_USD=1 \
 PAPER_MAX_OPEN_POSITIONS=5 \
-PAPER_ENTRY_MIN_PRICE=0.20 \
-PAPER_ENTRY_MAX_PRICE=0.30 \
+PAPER_ENTRY_MIN_PRICE=0.10 \
+PAPER_ENTRY_MAX_PRICE=0.65 \
 PAPER_STATE_FILE="logs/paper_positions_5usd.json" \
 "$python_bin" "$script_dir/market_discovery.py" "$mode" "$@" < /dev/null
