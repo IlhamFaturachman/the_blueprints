@@ -13,7 +13,12 @@ def send_telegram_alert(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": str(TELEGRAM_CHAT_ID),
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
+    }
     try:
         requests.post(url, json=payload, timeout=5)
         return True

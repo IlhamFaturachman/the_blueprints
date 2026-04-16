@@ -537,12 +537,12 @@ def run_paper_trading_cycle(
             emoji = "✅" if pnl > 0 else "❌"
             result_text = "CUAN" if pnl > 0 else "LOSS"
             msg = (
-                f"{emoji} **POSITION CLOSED: {result_text}** {emoji}\n\n"
-                f"📍 *City*: {updated_position.get('city')}\n"
-                f"❓ *Market*: {updated_position.get('market_question')}\n"
-                f"💰 *PnL*: **USD {pnl:+.2f} ({roi:+.1f}%)**\n"
-                f"📉 *Exit Price*: USD {updated_position.get('exit_price'):.4f}\n"
-                f"🏁 *Reason*: {updated_position.get('close_reason', 'unknown')}"
+                f"{emoji} <b>POSITION CLOSED: {result_text}</b> {emoji}\n\n"
+                f"📍 <b>City</b>: {updated_position.get('city')}\n"
+                f"❓ <b>Market</b>: {updated_position.get('market_question')}\n"
+                f"💰 <b>PnL</b>: <b>USD {pnl:+.2f} ({roi:+.1f}%)</b>\n"
+                f"📉 <b>Exit Price</b>: USD {updated_position.get('exit_price'):.4f}\n"
+                f"🏁 <b>Reason</b>: {updated_position.get('close_reason', 'unknown')}"
             )
             send_telegram_alert(msg)
         else:
@@ -594,9 +594,9 @@ def run_paper_trading_cycle(
         effective_entry_gate_reason = "circuit_breaker_tripped"
         if not state_meta.get("circuit_breaker_alert_sent"):
             send_telegram_alert(
-                f"⚡ **CIRCUIT BREAKER: HALTED** ⚡\n\n"
-                f"⚠️ *Reason*: Daily Loss Limit Reached\n"
-                f"📉 *Current Wallet*: USD {wallet_after_position_management:.2f}\n\n"
+                f"⚡ <b>CIRCUIT BREAKER: HALTED</b> ⚡\n\n"
+                f"⚠️ <b>Reason</b>: Daily Loss Limit Reached\n"
+                f"📉 <b>Current Wallet</b>: USD {wallet_after_position_management:.2f}\n\n"
                 f"Protokol risiko aktif: bot berhenti buka posisi baru sampai reset harian."
             )
             state_meta["circuit_breaker_alert_sent"] = True
@@ -627,11 +627,11 @@ def run_paper_trading_cycle(
     prev_tier = state_meta.get("current_tier", 1)
     if new_tier != prev_tier:
         send_telegram_alert(
-            f"📊 **SYSTEM TIER: UPDATE** 📊\n\n"
-            f"📈 *New Level*: **TIER {new_tier}**\n"
-            f"💰 *Vault Balance*: USD {wallet_after_position_management:.2f}\n"
-            f"⚔️ *Stake per Pos*: USD {current_stake_usd:.2f}\n"
-            f"📦 *Max Slots*: {current_tier_max_slots}\n\n"
+            f"📊 <b>SYSTEM TIER: UPDATE</b> 📊\n\n"
+            f"📈 <b>New Level</b>: <b>TIER {new_tier}</b>\n"
+            f"💰 <b>Vault Balance</b>: USD {wallet_after_position_management:.2f}\n"
+            f"⚔️ <b>Stake per Pos</b>: USD {current_stake_usd:.2f}\n"
+            f"📦 <b>Max Slots</b>: {current_tier_max_slots}\n\n"
             f"Strategi penempatan disesuaikan otomatis."
         )
     state_meta["current_tier"] = new_tier
@@ -669,17 +669,17 @@ def run_paper_trading_cycle(
             meter = "🟢" * int(prob * 5) + "⚪" * (5 - int(prob * 5))
 
             msg = (
-                f"🚀 **NEW ENTRY: OPENED** 🚀\n\n"
-                f"📊 *Bucket*: **{pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper()}**\n"
-                f"📍 *City*: {pos.get('city').upper()}\n"
-                f"⚖️ *Target*: {pos.get('threshold')}{pos.get('unit')} {pos.get('direction').upper()}\n"
-                f"🌡️ *Forecast*: {forecast}°C ({pos.get('direction').lower()} target)\n\n"
-                f"💵 *Stake*: USD {pos.get('cost_basis'):.2f}\n"
-                f"🏷️ *Price*: USD {pos.get('entry_price'):.4f} (TP: {pos.get('target_price'):.4f})\n"
-                f"🎯 *Model*: {meter} ({prob*100:.1f}%)\n"
-                f"📝 *Reason*: {reason}\n"
-                f"⏳ *Resolves in*: {hours_left}h\n\n"
-                f"🔗 [View on Polymarket]({link})"
+                f"🚀 <b>NEW ENTRY: OPENED</b> 🚀\n\n"
+                f"📊 <b>Bucket</b>: <b>{pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper()}</b>\n"
+                f"📍 <b>City</b>: {pos.get('city', 'N/A').upper()}\n"
+                f"⚖️ <b>Target</b>: {pos.get('threshold')}{pos.get('unit')} {pos.get('direction', 'N/A').upper()}\n"
+                f"🌡️ <b>Forecast</b>: {forecast}°C (<i>{pos.get('direction', 'N/A').lower()} target</i>)\n\n"
+                f"💵 <b>Stake</b>: USD {pos.get('cost_basis'):.2f}\n"
+                f"🏷️ <b>Price</b>: USD {pos.get('entry_price'):.4f} (TP: {pos.get('target_price', 0):.4f})\n"
+                f"🎯 <b>Model</b>: {meter} ({prob*100:.1f}%)\n"
+                f"📝 <b>Reason</b>: {reason}\n"
+                f"⏳ <b>Resolves in</b>: {hours_left}h\n\n"
+                f"🔗 <a href='{link}'>View on Polymarket</a>"
             )
             send_telegram_alert(msg)
     else:
