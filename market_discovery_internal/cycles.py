@@ -643,7 +643,14 @@ def run_paper_trading_cycle(
             entry_candidates=entry_candidates,
             next_open_positions=next_open_positions,
             open_token_ids=open_token_ids,
-                # [MODUL N] Telegram Notification for Entries
+            open_city_counts=open_city_counts,
+            available_slots=available_slots,
+            stake_usd=current_stake_usd,
+            min_bound=min_bound,
+            max_bound=max_bound,
+            fetch_orderbook_quote_fn=_get_orderbook_quote,
+        )
+        # [MODUL N] Telegram Notification for Entries
         for pos in opened_this_cycle:
             # Brainstorming: Add Link, Reason, Forecast Context, and Resolution Time
             slug = pos.get('market_slug')
@@ -663,9 +670,10 @@ def run_paper_trading_cycle(
 
             msg = (
                 f"🚀 **NEW ENTRY: OPENED** 🚀\n\n"
+                f"📊 *Bucket*: **{pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper()}**\n"
                 f"📍 *City*: {pos.get('city').upper()}\n"
                 f"⚖️ *Target*: {pos.get('threshold')}{pos.get('unit')} {pos.get('direction').upper()}\n"
-                f"🌡️ *Forecast*: {forecast}°C ({pos.get('direction').lower()} target)\n"
+                f"🌡️ *Forecast*: {forecast}°C ({pos.get('direction').lower()} target)\n\n"
                 f"💵 *Stake*: USD {pos.get('cost_basis'):.2f}\n"
                 f"🏷️ *Price*: USD {pos.get('entry_price'):.4f} (TP: {pos.get('target_price'):.4f})\n"
                 f"🎯 *Model*: {meter} ({prob*100:.1f}%)\n"

@@ -364,20 +364,24 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
     edge = opportunity.get("edge", 0.0)
     price = opportunity.get("yes_price", 1.0)
     
+    prob_pct = f"{prob*100:.1f}%"
+    edge_pct = f"{edge*100:.1f}%"
+    
     if prob >= ENTRY_BUCKET_HOLD_MIN_PROB and edge >= ENTRY_BUCKET_HOLD_MIN_EDGE:
         return {
             "bucket": "enter_hold_candidate", 
             "strategy": "hold_until_resolve",
-            "reason": "high_edge_hold"
+            "reason": f"Prob {prob_pct} & Edge {edge_pct} meet HOLD criteria (Min {ENTRY_BUCKET_HOLD_MIN_PROB*100}%/{ENTRY_BUCKET_HOLD_MIN_EDGE*100}%)."
         }
     if price <= ENTRY_BUCKET_WATCH_MAX_PRICE:
         return {
             "bucket": "watchlist", 
             "strategy": "swing",
-            "reason": "low_price_watch"
+            "reason": f"Price USD {price:.2f} fits WATCHLIST (Max USD {ENTRY_BUCKET_WATCH_MAX_PRICE:.2f})."
         }
+    
     return {
         "bucket": "reject", 
         "strategy": "swing",
-        "reason": "low_edge_or_prob"
+        "reason": f"Prob {prob_pct} or Edge {edge_pct} below entry thresholds."
     }
