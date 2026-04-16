@@ -1328,34 +1328,18 @@ def _extract_json_payload(text):
     if not text:
         return None
 
-    raw_text = str(text)
-
-    # Handle fenced JSON blocks (```json ... ```).
-    fenced = re.search(r"```(?:json)?\s*(\{(?:.|\n)*?\})\s*```", raw_text, re.IGNORECASE)
-    if fenced:
+    match = re.search(r"\{(?:.|\n)*?\}", str(text), re.DOTALL)
+    if match:
         try:
-            payload = json.loads(fenced.group(1))
-            if isinstance(payload, dict):
-                return payload
+            return json.loads(match.group(0))
         except json.JSONDecodeError:
             pass
 
-    decoder = json.JSONDecoder()
-    for match in re.finditer(r"\{", raw_text):
-        try:
-            payload, _ = decoder.raw_decode(raw_text[match.start() :])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-
-    start = raw_text.find("{")
-    end = raw_text.rfind("}")
+    start = str(text).find("{")
+    end = str(text).rfind("}")
     if start != -1 and end != -1 and end > start:
         try:
-            payload = json.loads(raw_text[start : end + 1])
-            if isinstance(payload, dict):
-                return payload
+            return json.loads(str(text)[start : end + 1])
         except json.JSONDecodeError:
             return None
     return None
@@ -1398,20 +1382,6 @@ def _save_sonnet_entry_cache(cache):
     _save_json_blob(SONNET_ENTRY_CACHE_FILE, _SONNET_ENTRY_CACHE)
 
 
-def _sonnet_failure_result(reason):
-    if SONNET_FAIL_OPEN:
-        return {
-            "confidence": 1.0,
-            "recommendation": "enter",
-            "reasoning": str(reason),
-        }
-    return {
-        "confidence": 0.0,
-        "recommendation": "skip",
-        "reasoning": str(reason),
-    }
-
-
 def _sonnet_entry_analysis(opportunity):
     """Analyze candidate entry with Sonnet. Falls back to permissive path on failure."""
     if not SONNET_ENTRY_ENABLED or not ANTHROPIC_API_KEY:
@@ -1442,14 +1412,22 @@ def _sonnet_entry_analysis(opportunity):
 
     allowed, reason = _reserve_ai_call_slot("sonnet_entry", now_utc=now_dt)
     if not allowed:
-        return _sonnet_failure_result(reason)
+        return {
+            "confidence": 1.0,
+            "recommendation": "enter",
+            "reasoning": reason,
+        }
 
     try:
         import importlib
 
         anthropic = importlib.import_module("anthropic")
     except Exception:
-        return _sonnet_failure_result("anthropic_not_installed")
+        return {
+            "confidence": 1.0,
+            "recommendation": "enter",
+            "reasoning": "anthropic_not_installed",
+        }
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -1462,14 +1440,14 @@ def _sonnet_entry_analysis(opportunity):
 
         dist_text = "\n".join(
             f"  - {item.get('threshold_c')}C => p={_safe_float(item.get('prob'), 0.0):.2%}, mid={_safe_float(item.get('mid_price'), 0.0):.3f}"
-            for item in distribution[:4]
+            for item in distribution[:8]
             if isinstance(item, dict)
         )
         if not dist_text:
             dist_text = "  - no bracket distribution available"
 
         prompt = (
-            "Analyze this weather market entry candidate.\n"
+            "Analyze this temperature-bracket entry candidate for a weather prediction market.\n"
             f"City: {city}\n"
             f"Date: {date}\n"
             f"Bracket threshold: {threshold:.1f}{unit}\n"
@@ -1479,8 +1457,8 @@ def _sonnet_entry_analysis(opportunity):
             "Bracket distribution:\n"
             f"{dist_text}\n\n"
             "Use web search for METAR/airport weather and NWS forecast when available. "
-            "Return a single-line JSON object only with keys: confidence, recommendation, sonnet_temp_c, metar_temp_c, nws_forecast_c, reasoning. "
-            "Do not include markdown, code fences, or extra text. recommendation must be enter or skip."
+            "Return JSON only with keys: confidence, recommendation, sonnet_temp_c, metar_temp_c, nws_forecast_c, reasoning. "
+            "recommendation must be enter or skip."
         )
 
         response = _anthropic_create_message(
@@ -1517,7 +1495,11 @@ def _sonnet_entry_analysis(opportunity):
 
         return result
     except Exception as exc:
-        return _sonnet_failure_result(f"sonnet_error_fallback:{str(exc)[:80]}")
+        return {
+            "confidence": 1.0,
+            "recommendation": "enter",
+            "reasoning": f"sonnet_error_fallback:{str(exc)[:80]}",
+        }
 
 
 def _get_haiku_monitor_cache():
