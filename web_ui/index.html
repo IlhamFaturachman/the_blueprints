@@ -699,6 +699,14 @@ async function fetchData() {
             dailyProgress = currentGain >= 0 ? 100 : 0;
         }
 
+        const dailyGateOpen = daily.entry_gate_open !== false;
+        const dailyTargetReached = daily.target_reached === true;
+        const dailyGateReason = daily.entry_gate_reason || 'active';
+
+        latestCash = cash;
+        latestDailyBaseline = dailyBaseline;
+        latestDailyTarget = dailyTarget;
+
         document.getElementById('valDailyTarget').innerHTML = `${dailyProgress.toFixed(2)}%`;
         document.getElementById('valDailyTarget').className = dailyTargetReached ? 'value good' : 'value';
         document.getElementById('valDailyGate').innerHTML = `Baseline: $${dailyBaseline.toFixed(4)} | Target: $${dailyTarget.toFixed(4)} | Gate: ${dailyGateOpen ? 'OPEN' : 'CLOSED'} (${dailyGateReason})`;
