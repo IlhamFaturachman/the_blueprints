@@ -501,8 +501,14 @@ async function fetchData() {
         const meta = data.meta || {};
         const baseWallet = meta.base_wallet || 5.0;
         let total_pnl = 0; d_closed.forEach(p => total_pnl += (p.realized_pnl_usd || 0));
+        const pnlEl = document.getElementById('valPnl');
+        if (pnlEl) {
+            pnlEl.innerHTML = `$${total_pnl.toFixed(4)}`;
+            pnlEl.className = total_pnl >= 0 ? "value good" : "value bad";
+        }
+        document.getElementById('valClosed').innerHTML = `Closed deals: ${d_closed.length}`;
+
         let cash = meta.current_wallet !== undefined ? meta.current_wallet - (meta.open_cost_basis || 0) : (baseWallet + total_pnl - (meta.open_cost_basis || 0));
-        
         latestCash = cash;
         const daily = meta.daily_session || {};
         latestDailyBaseline = daily.baseline_wallet || baseWallet;
