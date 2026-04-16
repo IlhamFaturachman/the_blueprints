@@ -1,7 +1,7 @@
 import logging
 import time
 from datetime import datetime, timezone
-from market_discovery_internal.utils import _safe_float, _safe_div, _clamp
+from market_discovery_internal.utils import _safe_float, _safe_div, _clamp, send_telegram_alert
 from market_discovery_internal.config import (
     HYBRID_TAKE_PROFIT_MIN_PRICE, HYBRID_TAKE_PROFIT_MULTIPLIER,
     HYBRID_STOP_LOSS_MULTIPLIER, HYBRID_LATE_WINDOW_HOURS,
@@ -511,6 +511,20 @@ def run_paper_trading_cycle(
         if updated_position.get("status") == "closed":
             closed_this_cycle.append(updated_position)
             next_history.append(updated_position)
+            
+            # [MODUL N] Telegram Notification for Closure
+            pnl = float(updated_position.get("realized_pnl_usd", 0.0))
+            emoji = "🟢" if pnl > 0 else "🔴"
+            result_text = "PROFIT" if pnl > 0 else "LOSS"
+            msg = (
+                f"{emoji} *POSITION CLOSED: {result_text}* {emoji}\n\n"
+                f"📍 *City*: {updated_position.get('city')}\n"
+                f"❓ *Question*: {updated_position.get('market_question')}\n"
+                f"💰 *PnL*: **${pnl:+.4f}**\n"
+                f"📉 *Exit Price*: ${updated_position.get('exit_price')}\n"
+                f"🏁 *Reason*: {updated_position.get('exit_reason')}"
+            )
+            send_telegram_alert(msg)
         else:
             next_open_positions.append(updated_position)
     position_management_ms = elapsed_ms_fn(position_management_started)
@@ -557,20 +571,40 @@ def run_paper_trading_cycle(
     if effective_allow_new_entries and wallet_after_position_management <= 3.50:
         effective_allow_new_entries = False
         effective_entry_gate_reason = "circuit_breaker_tripped"
-        from market_discovery_internal.utils import send_telegram_alert
         if not state_meta.get("circuit_breaker_alert_sent"):
-            send_telegram_alert(f"🚨 **CIRCUIT BREAKER TRIPPED** 🚨\n\nDaily Loss Limit Reached!\nWallet is at **${wallet_after_position_management:.2f}**.\nBot is halting all new entries until reset.")
+            send_telegram_alert(
+                f"🚨 *CIRCUIT BREAKER TRIPPED* 🚨\n\n"
+                f"CRITICAL: Daily Loss Limit Reached!\n"
+                f"Wallet is at **${wallet_after_position_management:.2f}**.\n\n"
+                f"⚠️ Bot is halting all new entries until manual reset."
+            )
             state_meta["circuit_breaker_alert_sent"] = True
 
     # [MODUL D] Compounding & Slot Expansion (Tier 2/Tier 3)
     current_tier_max_slots = paper_max_open_positions
     current_stake_usd = float(stake_usd)
+    new_tier = 1
+    
     if wallet_after_position_management >= 30.0:
         current_stake_usd = 3.0
         current_tier_max_slots = 20
+        new_tier = 3
     elif wallet_after_position_management >= 10.0:
         current_stake_usd = 2.0
         current_tier_max_slots = 15
+        new_tier = 2
+
+    # Notify on Tier Change
+    prev_tier = state_meta.get("current_tier", 1)
+    if new_tier > prev_tier:
+        send_telegram_alert(
+            f"🏰 *TIER UPGRADED: TIER {new_tier}* 🏰\n\n"
+            f"Vault reached **${wallet_after_position_management:.2f}**!\n"
+            f"⚔️ *Stake*: ${current_stake_usd:.2f}\n"
+            f"📦 *Slots*: {current_tier_max_slots}\n\n"
+            f"Leveling up the attack!"
+        )
+    state_meta["current_tier"] = new_tier
 
     available_slots = max(current_tier_max_slots - len(open_token_ids), 0)
 
@@ -586,6 +620,17 @@ def run_paper_trading_cycle(
             max_bound=max_bound,
             fetch_orderbook_quote_fn=_get_orderbook_quote,
         )
+        # [MODUL N] Telegram Notification for Entries
+        for pos in opened_this_cycle:
+            msg = (
+                f"🚀 *NEW ENTRY: POSITION OPENED* 🚀\n\n"
+                f"📍 *City*: {pos.get('city')}\n"
+                f"⚖️ *Target*: {pos.get('threshold')}{pos.get('unit')} {pos.get('direction')}\n"
+                f"💵 *Stake*: ${pos.get('stake_usd')}\n"
+                f"🏷️ *Entry Price*: ${pos.get('entry_price')}\n"
+                f"🎯 *TP Target*: ${pos.get('take_profit_target_price')}"
+            )
+            send_telegram_alert(msg)
     else:
         opened_this_cycle = []
         opened_city_keys = set()
