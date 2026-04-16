@@ -99,8 +99,10 @@
         .ws-indicator { background: rgba(0,0,0,0.3); padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); margin-right: 16px; font-size: 0.85rem; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; }
         .ws-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
         .ws-live { color: var(--success); }
+        .ws-stale { color: var(--error); animation: pulse 1s infinite; }
         .ws-reconnecting { color: #f59e0b; animation: pulse 1.5s infinite; }
         .ws-disconnected { color: var(--error); }
+        .data-age { color: #94a3b8; font-family: monospace; font-size: 0.8rem; }
         
         .flash-up { animation: flashUp 1.5s cubic-bezier(0.4, 0, 0.2, 1); }
         .flash-down { animation: flashDown 1.5s cubic-bezier(0.4, 0, 0.2, 1); }
@@ -194,7 +196,11 @@
         <div class="card">
             <h3>🕒 UTC Real Time</h3>
             <div class="value" id="valUtcClock" style="font-size: 1.35rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valUtcDate">UTC -</div>
+            <div class="ws-indicator" id="wsIndicator">
+                <div class="ws-dot"></div>
+                <span id="wsStatus">Connecting...</span>
+                <span id="lastUpdateAt" class="data-age">--:--:--</span>
+            </div>
         </div>
         <div class="card">
             <h3>🗽 ET Washington</h3>
@@ -285,6 +291,7 @@ let latestPositions = [];
 let wsSocket = null;
 let wsReconnectAttempts = 0;
 let wsReconnectTimer = null;
+let lastReceivedAt = Date.now();
 
 function showReason(city, date, threshold, unit, prob, conf, bucketReason) {
     const pProb = (Number(prob) * 100).toFixed(1);
@@ -346,6 +353,7 @@ function getWsUrl() {
 
 function setWsStatus(state, text) {
     const statusEl = document.getElementById('wsStatus');
+    const lastUpdateAtEl = document.getElementById('lastUpdateAt');
     if (!statusEl) {
         return;
     }
@@ -353,6 +361,9 @@ function setWsStatus(state, text) {
     if (state === 'live') cls = 'ws-live';
     if (state === 'reconnecting') cls = 'ws-reconnecting';
     statusEl.innerHTML = `<span class="ws-dot ${cls}"></span>${text}`;
+    if (lastUpdateAtEl) {
+        lastUpdateAtEl.textContent = new Date().toLocaleTimeString();
+    }
 }
 
 function scheduleWsReconnect() {
@@ -444,11 +455,13 @@ function handleWsMessage(raw) {
     }
 
     if (msg.type === 'price_update') {
+        lastReceivedAt = Date.now();
         updatePositionLiveByToken(String(msg.token_id || ''), Number(msg.bid_price || 0));
         return;
     }
 
     if (msg.type === 'position_closed') {
+        lastReceivedAt = Date.now();
         handlePositionClosed(msg);
         return;
     }

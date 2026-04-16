@@ -11,8 +11,10 @@ Usage:
 import os
 import sys
 import time
+import signal
 import threading
 import multiprocessing
+import fcntl
 from datetime import datetime, timezone
 
 # Add parent directory to path to ensure internal package is importable
@@ -257,10 +259,50 @@ def _stop_background_services():
     if _ws_broadcaster: _ws_broadcaster.stop()
 
 # ---------------------------------------------------------------------------
-# Main Entry Point
+# Main Entry Point & Hardening
 # ---------------------------------------------------------------------------
 
+class PIDLock:
+    def __init__(self, lockfile):
+        self.lockfile = lockfile
+        self.fd = None
+
+    def __enter__(self):
+        self.fd = open(self.lockfile, 'w')
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.fd.write(str(os.getpid()))
+            self.fd.flush()
+        except IOError:
+            print(f"[FATAL] Another instance of THE BLUEPRINTS is already running (locked by {self.lockfile})")
+            sys.exit(1)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.fd:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            self.fd.close()
+            try:
+                os.remove(self.lockfile)
+            except OSError:
+                pass
+
 def main():
+    # 0. Global Signal Handlers for Graceful Shutdown
+    def handle_exit_signal(signum, frame):
+        print(f"\n[SIGN] Received signal {signum}. Shutting down THE BLUEPRINTS...")
+        _stop_background_services()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_exit_signal)
+    signal.signal(signal.SIGTERM, handle_exit_signal)
+
+    # 1. Process Protection (PID Lock)
+    lock_path = "/tmp/the_blueprints.pid"
+    with PIDLock(lock_path):
+        _main_protected()
+
+def _main_protected():
     flags = parse_cli_mode_flags(sys.argv)
     
     if flags["paper_report_mode"]:
@@ -300,6 +342,9 @@ def main():
             print_paper_cycle_summary_fn=print_paper_cycle_summary
         )
         return
+
+        target_cities_len=len(TARGET_CITIES)
+    )
 
     # Default: Discovery Mode
     run_main_discovery_mode(
