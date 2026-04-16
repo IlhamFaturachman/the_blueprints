@@ -533,15 +533,16 @@ def run_paper_trading_cycle(
             
             # [MODUL N] Telegram Notification for Closure
             pnl = float(updated_position.get("realized_pnl_usd", 0.0))
-            emoji = "🟢" if pnl > 0 else "🔴"
-            result_text = "PROFIT" if pnl > 0 else "LOSS"
+            roi = float(updated_position.get("realized_roi_pct", 0.0))
+            emoji = "✅" if pnl > 0 else "❌"
+            result_text = "CUAN" if pnl > 0 else "LOSS"
             msg = (
                 f"{emoji} *POSITION CLOSED: {result_text}* {emoji}\n\n"
                 f"📍 *City*: {updated_position.get('city')}\n"
-                f"❓ *Question*: {updated_position.get('market_question')}\n"
-                f"💰 *PnL*: **${pnl:+.4f}**\n"
-                f"📉 *Exit Price*: ${updated_position.get('exit_price')}\n"
-                f"🏁 *Reason*: {updated_position.get('exit_reason')}"
+                f"❓ *Market*: {updated_position.get('market_question')}\n"
+                f"💰 *PnL*: **USD {pnl:+.2f} ({roi:+.1f}%)**\n"
+                f"📉 *Exit Price*: USD {updated_position.get('exit_price'):.4f}\n"
+                f"🏁 *Reason*: {updated_position.get('close_reason', 'unknown')}"
             )
             send_telegram_alert(msg)
         else:
@@ -593,10 +594,10 @@ def run_paper_trading_cycle(
         effective_entry_gate_reason = "circuit_breaker_tripped"
         if not state_meta.get("circuit_breaker_alert_sent"):
             send_telegram_alert(
-                f"🚨 *CIRCUIT BREAKER TRIPPED* 🚨\n\n"
-                f"CRITICAL: Daily Loss Limit Reached!\n"
-                f"Wallet is at **${wallet_after_position_management:.2f}**.\n\n"
-                f"⚠️ Bot is halting all new entries until manual reset."
+                f"🛑 *CIRCUIT BREAKER: THE FORTRESS ACTIVATED* 🛑\n\n"
+                f"⚠️ *Status*: Daily Loss Limit Hit!\n"
+                f"📉 *Current Wallet*: USD {wallet_after_position_management:.2f}\n\n"
+                f"Sesuai protokol Risk Management, bot *MENUTUP PINTU* untuk entri baru sampai reset manual dilakukan."
             )
             state_meta["circuit_breaker_alert_sent"] = True
 
@@ -626,11 +627,12 @@ def run_paper_trading_cycle(
     prev_tier = state_meta.get("current_tier", 1)
     if new_tier != prev_tier:
         send_telegram_alert(
-            f"🏰 *TIER STATUS: TIER {new_tier}* 🏰\n\n"
-            f"Vault: **${wallet_after_position_management:.2f}**\n"
-            f"⚔️ *Stake per position*: ${current_stake_usd:.2f}\n"
+            f"🏰 *MODUL D: TIER STATUS UPDATE* 🏰\n\n"
+            f"📈 *New Level*: **TIER {new_tier}**\n"
+            f"💰 *Vault Balance*: USD {wallet_after_position_management:.2f}\n"
+            f"⚔️ *Stake per Pos*: USD {current_stake_usd:.2f}\n"
             f"📦 *Max Slots*: {current_tier_max_slots}\n\n"
-            f"Strategi disesuaikan untuk pertumbuhan optimal!"
+            f"Kapasitas tempur ditingkatkan secara otonom!"
         )
     state_meta["current_tier"] = new_tier
 
@@ -651,12 +653,13 @@ def run_paper_trading_cycle(
         # [MODUL N] Telegram Notification for Entries
         for pos in opened_this_cycle:
             msg = (
-                f"🚀 *NEW ENTRY: POSITION OPENED* 🚀\n\n"
-                f"📍 *City*: {pos.get('city')}\n"
-                f"⚖️ *Target*: {pos.get('threshold')}{pos.get('unit')} {pos.get('direction')}\n"
-                f"💵 *Stake*: ${pos.get('stake_usd')}\n"
-                f"🏷️ *Entry Price*: ${pos.get('entry_price')}\n"
-                f"🎯 *TP Target*: ${pos.get('take_profit_target_price')}"
+                f"🏹 *HUJAN PANAH: NEW POSITION* 🏹\n\n"
+                f"📍 *City*: {pos.get('city').upper()}\n"
+                f"⚖️ *Target*: {pos.get('threshold')}{pos.get('unit')} {pos.get('direction').upper()}\n"
+                f"💵 *Stake*: USD {pos.get('cost_basis'):.2f}\n"
+                f"🏷️ *Entry Price*: USD {pos.get('entry_price'):.4f}\n"
+                f"🎯 *TP Target*: USD {pos.get('target_price'):.4f}\n"
+                f"🎯 *Prob*: {float(pos.get('entry_model_prob', 0))*100:.1f}% | *Edge*: {float(pos.get('entry_edge', 0))*100:.1f}%"
             )
             send_telegram_alert(msg)
     else:
