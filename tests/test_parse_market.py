@@ -162,27 +162,54 @@ def test_market_outside_72h_returns_none():
     assert result is None
 
 
-def test_daily_mode_same_day_market_passes():
+def test_daily_mode_same_day_market_rejected_with_reason():
     now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
     with patch("market_discovery._log_unmatched"):
-        result = parse_market(
+        parsed, reason = parse_market(
             make_raw("Will New York hit 80°F?", end_date="2026-04-14T16:30:00Z"),
             now_utc=now_utc,
             daily_resolve_only=True,
             daily_min_hours_to_resolve=0,
+            return_skip_reason=True,
         )
-    assert result is not None
-    assert result["date"] == "2026-04-14"
+    assert parsed is None
+    assert reason == "daily_date_mismatch"
 
 
-def test_daily_mode_next_day_market_rejected_with_reason():
+def test_daily_mode_next_day_market_passes():
     now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
     with patch("market_discovery._log_unmatched"):
-        parsed, reason = parse_market(
+        result = parse_market(
             make_raw("Will New York hit 80°F?", end_date="2026-04-15T12:00:00Z"),
             now_utc=now_utc,
             daily_resolve_only=True,
             daily_min_hours_to_resolve=6,
+        )
+    assert result is not None
+    assert result["date"] == "2026-04-15"
+
+
+def test_daily_mode_day_after_next_market_passes():
+    now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    with patch("market_discovery._log_unmatched"):
+        result = parse_market(
+            make_raw("Will New York hit 80°F?", end_date="2026-04-16T12:00:00Z"),
+            now_utc=now_utc,
+            daily_resolve_only=True,
+            daily_min_hours_to_resolve=6,
+        )
+    assert result is not None
+    assert result["date"] == "2026-04-16"
+
+
+def test_daily_mode_three_days_ahead_market_rejected_with_reason():
+    now_utc = datetime(2026, 4, 14, 23, 0, tzinfo=timezone.utc)
+    with patch("market_discovery._log_unmatched"):
+        parsed, reason = parse_market(
+            make_raw("Will New York hit 80°F?", end_date="2026-04-17T20:00:00Z"),
+            now_utc=now_utc,
+            daily_resolve_only=True,
+            daily_min_hours_to_resolve=0,
             return_skip_reason=True,
         )
     assert parsed is None
@@ -193,10 +220,10 @@ def test_daily_mode_market_below_min_hours_rejected_with_reason():
     now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
     with patch("market_discovery._log_unmatched"):
         parsed, reason = parse_market(
-            make_raw("Will New York hit 80°F?", end_date="2026-04-14T15:30:00Z"),
+            make_raw("Will New York hit 80°F?", end_date="2026-04-15T12:00:00Z"),
             now_utc=now_utc,
             daily_resolve_only=True,
-            daily_min_hours_to_resolve=8,
+            daily_min_hours_to_resolve=30,
             return_skip_reason=True,
         )
     assert parsed is None
@@ -204,10 +231,10 @@ def test_daily_mode_market_below_min_hours_rejected_with_reason():
 
 
 def test_daily_mode_market_too_close_to_resolve_rejected_with_reason():
-    now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    now_utc = datetime(2026, 4, 14, 21, 0, tzinfo=timezone.utc)
     with patch("market_discovery._log_unmatched"):
         parsed, reason = parse_market(
-            make_raw("Will New York hit 80°F?", end_date="2026-04-14T10:30:00Z"),
+            make_raw("Will New York hit 80°F?", end_date="2026-04-15T00:30:00Z"),
             now_utc=now_utc,
             daily_resolve_only=True,
             daily_min_hours_to_resolve=0,

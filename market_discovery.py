@@ -457,6 +457,8 @@ def parse_market(
     now_utc=None,
     daily_resolve_only=DAILY_RESOLVE_ONLY,
     daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE,
+    daily_min_resolve_days_ahead=DAILY_MIN_RESOLVE_DAYS_AHEAD,
+    daily_max_resolve_days_ahead=DAILY_MAX_RESOLVE_DAYS_AHEAD,
     return_skip_reason=False,
 ):
     """
@@ -551,11 +553,18 @@ def parse_market(
     end_date_raw = raw.get("endDate") or raw.get("end_date") or ""
     try:
         end_dt = datetime.fromisoformat(end_date_raw.replace("Z", "+00:00"))
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+        else:
+            end_dt = end_dt.astimezone(timezone.utc)
         date_str = end_dt.strftime("%Y-%m-%d")
         now = now_utc if isinstance(now_utc, datetime) else datetime.now(timezone.utc)
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
+        else:
+            now = now.astimezone(timezone.utc)
         hours_until_resolve = (end_dt - now).total_seconds() / 3600
+        resolve_days_ahead = (end_dt.date() - now.date()).days
     except (ValueError, AttributeError):
         _log_unmatched(question, f"could not parse endDate: {end_date_raw}")
         return _with_reason(None)
@@ -570,8 +579,23 @@ def parse_market(
         except (TypeError, ValueError):
             min_hours = DAILY_MIN_HOURS_TO_RESOLVE
 
+        try:
+            min_days = int(daily_min_resolve_days_ahead)
+        except (TypeError, ValueError):
+            min_days = DAILY_MIN_RESOLVE_DAYS_AHEAD
+
+        try:
+            max_days = int(daily_max_resolve_days_ahead)
+        except (TypeError, ValueError):
+            max_days = DAILY_MAX_RESOLVE_DAYS_AHEAD
+
         min_hours = max(min_hours, 0.0)
-        if end_dt.date() != now.date():
+        min_days = max(min_days, 0)
+        max_days = max(max_days, 0)
+        if max_days < min_days:
+            min_days, max_days = max_days, min_days
+
+        if resolve_days_ahead < min_days or resolve_days_ahead > max_days:
             return _with_reason(None, "daily_date_mismatch")
         if hours_until_resolve < 6.0:
             return _with_reason(None, "too_close_to_resolve")
