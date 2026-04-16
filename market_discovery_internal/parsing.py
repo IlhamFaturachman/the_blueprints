@@ -179,13 +179,9 @@ def parse_market(
         return _with_reason(None)
 
     if daily_resolve_only:
-        min_days = int(daily_min_resolve_days_ahead)
-        max_days = int(daily_max_resolve_days_ahead)
-
-        if resolve_days_ahead < min_days or resolve_days_ahead > max_days:
-            return _with_reason(None, "daily_date_mismatch")
-        
-        # [MODUL C] The Golden Window (Strict 8 - 14 hour enforcement)
+        # [MODUL C] The Golden Window is the SOLE time filter (8-14h before resolve).
+        # This replaces the old days-ahead check which was mathematically contradicting
+        # the window (min 1 day = 24h, but window max is 14h — impossible to satisfy both).
         if hours_until_resolve > 14.0:
             return _with_reason(None, "too_early_to_enter")
         if hours_until_resolve < 8.0:
