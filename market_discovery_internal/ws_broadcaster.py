@@ -148,7 +148,7 @@ class WsBroadcaster:
                     self._port,
                     ping_interval=None,
                     ping_timeout=None,
-                    # reuse_address is default in newer websockets, but we are explicit
+                    reuse_address=True,
                 ):
                     self._ready_event.set()
                     ping_task = asyncio.create_task(self._ping_loop())
