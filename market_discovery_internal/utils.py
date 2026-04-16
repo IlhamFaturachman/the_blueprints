@@ -6,7 +6,19 @@ import os
 from datetime import datetime, timezone
 import requests
 
-from market_discovery_internal.config import LOG_FILE
+from market_discovery_internal.config import LOG_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+def send_telegram_alert(message):
+    """[MODUL N] Send push notification via Telegram Bot API."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, json=payload, timeout=5)
+        return True
+    except Exception:
+        return False
 
 def fetch_with_retry(url, params=None, headers=None, max_retries=3):
     """

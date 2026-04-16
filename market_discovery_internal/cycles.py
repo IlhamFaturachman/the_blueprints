@@ -539,18 +539,40 @@ def run_paper_trading_cycle(
     effective_allow_new_entries = bool(allow_new_entries)
     effective_entry_gate_reason = str(entry_gate_reason or "active")
     daily_session = state_meta.get("daily_session") if isinstance(state_meta.get("daily_session"), dict) else {}
+    
+    state_base_wallet = float(state_meta.get("base_wallet", float(daily_session.get("baseline_wallet", 0.0) or 0.0)))
+    realized_after_position_management = sum(
+        float(position.get("realized_pnl_usd", 0.0) or 0.0)
+        for position in next_history
+    )
+    wallet_after_position_management = round(state_base_wallet + realized_after_position_management, 4)
+
     if effective_allow_new_entries and daily_session:
-        baseline_wallet = float(daily_session.get("baseline_wallet", 0.0) or 0.0)
         target_wallet = float(daily_session.get("target_wallet", 0.0) or 0.0)
-        state_base_wallet = float(state_meta.get("base_wallet", baseline_wallet) or baseline_wallet)
-        realized_after_position_management = sum(
-            float(position.get("realized_pnl_usd", 0.0) or 0.0)
-            for position in next_history
-        )
-        wallet_after_position_management = round(state_base_wallet + realized_after_position_management, 4)
         if target_wallet > 0 and wallet_after_position_management >= target_wallet:
             effective_allow_new_entries = False
             effective_entry_gate_reason = "daily_target_reached"
+
+    # [MODUL L] Circuit Breaker
+    if effective_allow_new_entries and wallet_after_position_management <= 3.50:
+        effective_allow_new_entries = False
+        effective_entry_gate_reason = "circuit_breaker_tripped"
+        from market_discovery_internal.utils import send_telegram_alert
+        if not state_meta.get("circuit_breaker_alert_sent"):
+            send_telegram_alert(f"🚨 **CIRCUIT BREAKER TRIPPED** 🚨\n\nDaily Loss Limit Reached!\nWallet is at **${wallet_after_position_management:.2f}**.\nBot is halting all new entries until reset.")
+            state_meta["circuit_breaker_alert_sent"] = True
+
+    # [MODUL D] Compounding & Slot Expansion (Tier 2/Tier 3)
+    current_tier_max_slots = paper_max_open_positions
+    current_stake_usd = float(stake_usd)
+    if wallet_after_position_management >= 30.0:
+        current_stake_usd = 3.0
+        current_tier_max_slots = 20
+    elif wallet_after_position_management >= 10.0:
+        current_stake_usd = 2.0
+        current_tier_max_slots = 15
+
+    available_slots = max(current_tier_max_slots - len(open_token_ids), 0)
 
     if effective_allow_new_entries:
         opened_this_cycle, opened_city_keys, _ = append_opened_positions_from_candidates_fn(
@@ -559,7 +581,7 @@ def run_paper_trading_cycle(
             open_token_ids=open_token_ids,
             open_city_counts=open_city_counts,
             available_slots=available_slots,
-            stake_usd=stake_usd,
+            stake_usd=current_stake_usd,
             min_bound=min_bound,
             max_bound=max_bound,
             fetch_orderbook_quote_fn=_get_orderbook_quote,
