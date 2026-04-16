@@ -166,7 +166,7 @@ def test_daily_mode_same_day_market_passes():
     now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
     with patch("market_discovery._log_unmatched"):
         result = parse_market(
-            make_raw("Will New York hit 80°F?", end_date="2026-04-14T10:30:00Z"),
+            make_raw("Will New York hit 80°F?", end_date="2026-04-14T16:30:00Z"),
             now_utc=now_utc,
             daily_resolve_only=True,
             daily_min_hours_to_resolve=0,
@@ -193,11 +193,62 @@ def test_daily_mode_market_below_min_hours_rejected_with_reason():
     now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
     with patch("market_discovery._log_unmatched"):
         parsed, reason = parse_market(
-            make_raw("Will New York hit 80°F?", end_date="2026-04-14T10:30:00Z"),
+            make_raw("Will New York hit 80°F?", end_date="2026-04-14T15:30:00Z"),
             now_utc=now_utc,
             daily_resolve_only=True,
-            daily_min_hours_to_resolve=6,
+            daily_min_hours_to_resolve=8,
             return_skip_reason=True,
         )
     assert parsed is None
     assert reason == "daily_min_hours_not_met"
+
+
+def test_daily_mode_market_too_close_to_resolve_rejected_with_reason():
+    now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+    with patch("market_discovery._log_unmatched"):
+        parsed, reason = parse_market(
+            make_raw("Will New York hit 80°F?", end_date="2026-04-14T10:30:00Z"),
+            now_utc=now_utc,
+            daily_resolve_only=True,
+            daily_min_hours_to_resolve=0,
+            return_skip_reason=True,
+        )
+    assert parsed is None
+    assert reason == "too_close_to_resolve"
+
+
+def test_parse_market_injects_market_implied_fields_when_family_cache_exists():
+    now_utc = datetime(2026, 4, 14, 8, 0, tzinfo=timezone.utc)
+
+    target = make_raw(
+        "Will New York be exactly 70°F on April 14?",
+        end_date="2026-04-14T20:00:00Z",
+        clob_token_ids=["0xtarget", "0xother"],
+    )
+    target["bestBid"] = "0.18"
+    target["bestAsk"] = "0.22"
+
+    sibling = make_raw(
+        "Will New York be exactly 71°F on April 14?",
+        end_date="2026-04-14T20:00:00Z",
+        clob_token_ids=["0xsibling", "0xother2"],
+    )
+    sibling["bestBid"] = "0.28"
+    sibling["bestAsk"] = "0.32"
+
+    with patch("market_discovery._log_unmatched"), patch(
+        "market_discovery._CURRENT_EVENT_FAMILIES",
+        {"0xtarget": [target, sibling]},
+    ):
+        parsed = parse_market(
+            target,
+            now_utc=now_utc,
+            daily_resolve_only=False,
+        )
+
+    assert parsed is not None
+    assert parsed.get("market_implied_prob") is not None
+    assert parsed.get("market_implied_expected_temp_c") is not None
+    assert parsed.get("family_size") == 2
+    assert isinstance(parsed.get("bracket_distribution"), list)
+    assert len(parsed["bracket_distribution"]) == 2

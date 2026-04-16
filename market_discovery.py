@@ -13,6 +13,7 @@ import os
 import sys
 import time
 import json
+import re
 from datetime import datetime, timezone
 
 import requests
@@ -71,6 +72,10 @@ from market_discovery_internal.state_persistence import (
 
 # Constants are imported from market_discovery_internal.config to keep
 # market_discovery.py as a backward-compatible public surface.
+
+# Event family cache used by market-implied probability logic.
+# Shape: {yes_token_id: [raw_market_dict, ...siblings_in_same_event...]}
+_CURRENT_EVENT_FAMILIES = {}
 
 # ---------------------------------------------------------------------------
 # HTTP Utility
@@ -219,13 +224,129 @@ def _dedupe_markets(markets):
 
     return unique
 
-def _events_to_markets(events):
-    """Flatten a list of event dicts into their constituent market dicts."""
+
+def _extract_yes_token_id(raw_market):
+    """Return YES token id from Gamma market payload when available."""
+    clob_ids_raw = raw_market.get("clobTokenIds")
+    if not clob_ids_raw:
+        return None
+
+    try:
+        clob_ids = json.loads(clob_ids_raw) if isinstance(clob_ids_raw, str) else clob_ids_raw
+        if isinstance(clob_ids, list) and clob_ids:
+            return str(clob_ids[0])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _events_to_markets(events, reset_family_cache=False):
+    """Flatten events into markets and keep sibling families for implied pricing."""
+    global _CURRENT_EVENT_FAMILIES
+
+    if reset_family_cache:
+        _CURRENT_EVENT_FAMILIES = {}
+
     markets = []
     for event in events:
-        for market in event.get("markets", []):
+        event_markets = event.get("markets", [])
+
+        if isinstance(event_markets, list) and len(event_markets) >= 2:
+            for sibling in event_markets:
+                token_id = _extract_yes_token_id(sibling)
+                if token_id:
+                    _CURRENT_EVENT_FAMILIES[token_id] = event_markets
+
+        for market in event_markets:
             markets.append(market)
     return markets
+
+
+def _compute_market_implied_prob(token_id):
+    """Compute normalized bracket probability from sibling markets in the same event."""
+    siblings = _CURRENT_EVENT_FAMILIES.get(str(token_id))
+    if not siblings or len(siblings) < 2:
+        return None
+
+    rows = []
+    for sibling in siblings:
+        sibling_token = _extract_yes_token_id(sibling)
+        if not sibling_token:
+            continue
+
+        raw_bid = sibling.get("bestBid")
+        raw_ask = sibling.get("bestAsk")
+        try:
+            bid = float(raw_bid)
+            ask = float(raw_ask)
+        except (TypeError, ValueError):
+            continue
+
+        if bid <= 0 or ask <= 0:
+            continue
+
+        search_text = str(sibling.get("question") or sibling.get("title") or "")
+        match = THRESHOLD_RE.search(search_text)
+        if not match:
+            match = THRESHOLD_RE.search(_market_search_text(sibling))
+        if not match:
+            continue
+
+        try:
+            threshold = float(match.group(1))
+            unit = str(match.group(2)).upper()
+        except (TypeError, ValueError, IndexError):
+            continue
+
+        threshold_c = ((threshold - 32) * 5.0 / 9.0) if unit == "F" else threshold
+        mid_price = (bid + ask) / 2.0
+
+        rows.append(
+            {
+                "token_id": sibling_token,
+                "threshold_c": float(threshold_c),
+                "mid_price": float(mid_price),
+            }
+        )
+
+    if len(rows) < 2:
+        return None
+
+    total_mid = sum(row["mid_price"] for row in rows)
+    if total_mid <= 0:
+        return None
+
+    own_row = None
+    for row in rows:
+        if row["token_id"] == str(token_id):
+            own_row = row
+            break
+    if own_row is None:
+        return None
+
+    market_implied_prob = own_row["mid_price"] / total_mid
+    expected_temp_c = sum(row["threshold_c"] * row["mid_price"] for row in rows) / total_mid
+
+    bracket_distribution = sorted(
+        [
+            {
+                "token_id": row["token_id"],
+                "threshold_c": round(row["threshold_c"], 1),
+                "mid_price": round(row["mid_price"], 4),
+                "prob": round(row["mid_price"] / total_mid, 4),
+            }
+            for row in rows
+        ],
+        key=lambda item: item["prob"],
+        reverse=True,
+    )
+
+    return {
+        "market_implied_prob": round(market_implied_prob, 4),
+        "market_implied_expected_temp_c": round(expected_temp_c, 2),
+        "family_size": len(rows),
+        "bracket_distribution": bracket_distribution,
+    }
 
 
 def fetch_markets(inspect=False, aggressive_scan=False):
@@ -275,7 +396,7 @@ def fetch_markets(inspect=False, aggressive_scan=False):
             print()
         sys.exit(0)
 
-    markets = _events_to_markets(events)
+    markets = _events_to_markets(events, reset_family_cache=True)
     candidates = [market for market in markets if _is_temperature_market_candidate(market)]
     if candidates:
         return _dedupe_markets(candidates)
@@ -419,17 +540,8 @@ def parse_market(
         _log_unmatched(question, "could not parse outcomePrices")
         return _with_reason(None)
 
-    # Step 5: Extract token ID — Gamma API returns clobTokenIds as a JSON string ["id1","id2"]
-    # The first ID is the YES token.
-    clob_ids_raw = raw.get("clobTokenIds")
-    token_id = None
-    if clob_ids_raw:
-        try:
-            clob_ids = json.loads(clob_ids_raw) if isinstance(clob_ids_raw, str) else clob_ids_raw
-            if isinstance(clob_ids, list) and clob_ids:
-                token_id = str(clob_ids[0])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    # Step 5: Extract YES token ID from Gamma market payload.
+    token_id = _extract_yes_token_id(raw)
 
     if not token_id:
         _log_unmatched(question, "missing token_id")
@@ -461,6 +573,8 @@ def parse_market(
         min_hours = max(min_hours, 0.0)
         if end_dt.date() != now.date():
             return _with_reason(None, "daily_date_mismatch")
+        if hours_until_resolve < 6.0:
+            return _with_reason(None, "too_close_to_resolve")
         if hours_until_resolve < min_hours:
             return _with_reason(None, "daily_min_hours_not_met")
 
@@ -495,6 +609,14 @@ def parse_market(
         parsed["gamma_spread"] = float(gamma_spread)
     if gamma_volume_24hr is not None:
         parsed["volume_24hr"] = float(gamma_volume_24hr)
+
+    implied = _compute_market_implied_prob(token_id)
+    if isinstance(implied, dict):
+        parsed["market_implied_prob"] = implied.get("market_implied_prob")
+        parsed["market_implied_expected_temp_c"] = implied.get("market_implied_expected_temp_c")
+        parsed["family_size"] = implied.get("family_size")
+        parsed["bracket_distribution"] = implied.get("bracket_distribution", [])
+
     return _with_reason(parsed)
 
 
@@ -678,17 +800,45 @@ def calculate_edge(market, forecast_temp):
     """
     Calculate model probability and edge for a market.
 
-    - above:  1.0 if forecast >= threshold else 0.0
-    - below:  1.0 if forecast < threshold else 0.0
-    - exact:  Gaussian probability within ±0.5°C bracket around threshold
+    Priority:
+    1) market-implied probability when sibling family pricing is available
+    2) Gaussian fallback using weather forecast
     """
     import math
-    if forecast_temp is None:
-        return None
 
     threshold = market["threshold"]
     unit = market["unit"]
     direction = market["direction"]
+
+    implied_prob = market.get("market_implied_prob")
+    implied_temp_c = market.get("market_implied_expected_temp_c")
+    if implied_prob is not None:
+        try:
+            model_prob = float(implied_prob)
+        except (TypeError, ValueError):
+            model_prob = None
+
+        if model_prob is not None and model_prob > 0:
+            if implied_temp_c is None:
+                forecast_temp_c = ((threshold - 32) * 5.0 / 9.0) if unit == "F" else threshold
+            else:
+                forecast_temp_c = float(implied_temp_c)
+
+            forecast_converted = (forecast_temp_c * 9.0 / 5.0) + 32.0 if unit == "F" else forecast_temp_c
+            ref_price = market.get("best_ask") or market.get("yes_price", 1.0)
+            edge = round(model_prob - float(ref_price), 4)
+
+            return {
+                **market,
+                "model_prob": round(model_prob, 4),
+                "edge": edge,
+                "forecast_temp_c": round(float(forecast_temp_c), 1),
+                "forecast_temp_converted": round(float(forecast_converted), 1),
+                "prob_source": "market_implied",
+            }
+
+    if forecast_temp is None:
+        return None
 
     # Open-Meteo is Celsius; convert only when market threshold is Fahrenheit.
     if unit == "F":
@@ -712,7 +862,8 @@ def calculate_edge(market, forecast_temp):
     else:
         return None
 
-    edge = round(model_prob - market["yes_price"], 4)
+    ref_price = market.get("best_ask") or market["yes_price"]
+    edge = round(model_prob - ref_price, 4)
 
     return {
         **market,
@@ -720,6 +871,7 @@ def calculate_edge(market, forecast_temp):
         "edge": edge,
         "forecast_temp_c": round(float(forecast_temp), 1),
         "forecast_temp_converted": round(float(forecast_converted), 1),
+        "prob_source": "gaussian_openmeteo",
     }
 
 
@@ -961,6 +1113,500 @@ def _build_daily_session_meta(meta, current_wallet, now_utc=None):
     return session
 
 
+_AI_USAGE_LEDGER = None
+_SONNET_ENTRY_CACHE = None
+_HAIKU_MONITOR_CACHE = None
+
+
+def _load_json_blob(path, default):
+    """Best-effort JSON loader with default fallback."""
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as file_handle:
+                payload = json.load(file_handle)
+            if isinstance(default, dict) and isinstance(payload, dict):
+                return payload
+            if isinstance(default, list) and isinstance(payload, list):
+                return payload
+            if not isinstance(default, (dict, list)):
+                return payload
+    except Exception:
+        pass
+    return default
+
+
+def _save_json_blob(path, payload):
+    """Best-effort JSON writer used for local runtime caches."""
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as file_handle:
+            json.dump(payload, file_handle, ensure_ascii=True)
+    except Exception:
+        pass
+
+
+def _parse_iso_utc(value):
+    """Parse ISO datetime text into UTC-aware datetime."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _ai_month_key(now_utc=None):
+    now_dt = now_utc or datetime.now(timezone.utc)
+    return now_dt.strftime("%Y-%m")
+
+
+def _ai_day_key(now_utc=None):
+    now_dt = now_utc or datetime.now(timezone.utc)
+    return now_dt.strftime("%Y-%m-%d")
+
+
+def _ensure_ai_usage_ledger(now_utc=None):
+    """Load/normalize monthly AI usage ledger used for budget enforcement."""
+    global _AI_USAGE_LEDGER
+
+    if not isinstance(_AI_USAGE_LEDGER, dict):
+        _AI_USAGE_LEDGER = _load_json_blob(AI_USAGE_LEDGER_FILE, {})
+
+    month_key = _ai_month_key(now_utc=now_utc)
+    if _AI_USAGE_LEDGER.get("month") != month_key:
+        _AI_USAGE_LEDGER = {
+            "month": month_key,
+            "spent_usd": 0.0,
+            "daily": {},
+        }
+    elif not isinstance(_AI_USAGE_LEDGER.get("daily"), dict):
+        _AI_USAGE_LEDGER["daily"] = {}
+
+    return _AI_USAGE_LEDGER
+
+
+def _save_ai_usage_ledger(ledger):
+    global _AI_USAGE_LEDGER
+    _AI_USAGE_LEDGER = ledger if isinstance(ledger, dict) else {}
+    _save_json_blob(AI_USAGE_LEDGER_FILE, _AI_USAGE_LEDGER)
+
+
+def _reserve_ai_call_slot(call_kind, now_utc=None):
+    """Reserve a daily call slot if monthly/daily limits allow the request."""
+    ledger = _ensure_ai_usage_ledger(now_utc=now_utc)
+    monthly_spent = _safe_float(ledger.get("spent_usd"), 0.0)
+    if AI_MONTHLY_BUDGET_USD > 0 and monthly_spent >= AI_MONTHLY_BUDGET_USD:
+        return False, "monthly_budget_reached"
+
+    day_key = _ai_day_key(now_utc=now_utc)
+    daily = ledger["daily"].setdefault(
+        day_key,
+        {
+            "sonnet_calls": 0,
+            "haiku_calls": 0,
+            "spent_usd": 0.0,
+        },
+    )
+
+    if call_kind == "sonnet_entry":
+        cap = max(0, int(SONNET_ENTRY_MAX_CALLS_PER_DAY))
+        if cap > 0 and int(daily.get("sonnet_calls", 0)) >= cap:
+            return False, "sonnet_daily_cap_reached"
+        daily["sonnet_calls"] = int(daily.get("sonnet_calls", 0)) + 1
+    elif call_kind == "haiku_monitor":
+        cap = max(0, int(HAIKU_MONITOR_MAX_CALLS_PER_DAY))
+        if cap > 0 and int(daily.get("haiku_calls", 0)) >= cap:
+            return False, "haiku_daily_cap_reached"
+        daily["haiku_calls"] = int(daily.get("haiku_calls", 0)) + 1
+
+    _save_ai_usage_ledger(ledger)
+    return True, "ok"
+
+
+def _extract_usage_value(usage, key):
+    if usage is None:
+        return 0
+    value = getattr(usage, key, None)
+    if value is None and isinstance(usage, dict):
+        value = usage.get(key)
+    return _safe_float(value, 0.0)
+
+
+def _extract_response_usage(response):
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+
+    return {
+        "input_tokens": _extract_usage_value(usage, "input_tokens"),
+        "output_tokens": _extract_usage_value(usage, "output_tokens"),
+        "cache_creation_input_tokens": _extract_usage_value(usage, "cache_creation_input_tokens"),
+        "cache_read_input_tokens": _extract_usage_value(usage, "cache_read_input_tokens"),
+    }
+
+
+def _estimate_ai_usage_cost_usd(model, usage_counts):
+    model_key = str(model or "").lower()
+
+    if "haiku" in model_key:
+        input_rate = 1.0
+        output_rate = 5.0
+        cache_write_rate = 2.0
+        cache_hit_rate = 0.10
+    elif "sonnet" in model_key:
+        input_rate = 3.0
+        output_rate = 15.0
+        cache_write_rate = 6.0
+        cache_hit_rate = 0.30
+    else:
+        input_rate = 3.0
+        output_rate = 15.0
+        cache_write_rate = 6.0
+        cache_hit_rate = 0.30
+
+    input_tokens = _safe_float(usage_counts.get("input_tokens"), 0.0)
+    output_tokens = _safe_float(usage_counts.get("output_tokens"), 0.0)
+    cache_write_tokens = _safe_float(usage_counts.get("cache_creation_input_tokens"), 0.0)
+    cache_hit_tokens = _safe_float(usage_counts.get("cache_read_input_tokens"), 0.0)
+
+    total_usd = (
+        (input_tokens * input_rate)
+        + (output_tokens * output_rate)
+        + (cache_write_tokens * cache_write_rate)
+        + (cache_hit_tokens * cache_hit_rate)
+    ) / 1_000_000.0
+    return round(max(total_usd, 0.0), 8)
+
+
+def _record_ai_usage_cost(call_kind, model, response, now_utc=None):
+    ledger = _ensure_ai_usage_ledger(now_utc=now_utc)
+    usage_counts = _extract_response_usage(response)
+    call_cost = _estimate_ai_usage_cost_usd(model=model, usage_counts=usage_counts)
+
+    ledger["spent_usd"] = round(_safe_float(ledger.get("spent_usd"), 0.0) + call_cost, 8)
+    day_key = _ai_day_key(now_utc=now_utc)
+    daily = ledger["daily"].setdefault(
+        day_key,
+        {
+            "sonnet_calls": 0,
+            "haiku_calls": 0,
+            "spent_usd": 0.0,
+        },
+    )
+    daily["spent_usd"] = round(_safe_float(daily.get("spent_usd"), 0.0) + call_cost, 8)
+    daily["last_call_kind"] = str(call_kind)
+    daily["last_model"] = str(model or "")
+    daily["last_call_cost_usd"] = call_cost
+
+    _save_ai_usage_ledger(ledger)
+
+
+def _extract_text_from_anthropic_response(response):
+    content = getattr(response, "content", None)
+    if content is None and isinstance(response, dict):
+        content = response.get("content")
+
+    if not isinstance(content, list):
+        return str(content or "")
+
+    parts = []
+    for block in content:
+        text = getattr(block, "text", None)
+        if text is None and isinstance(block, dict):
+            text = block.get("text")
+        if text:
+            parts.append(str(text))
+    return "\n".join(parts)
+
+
+def _extract_json_payload(text):
+    if not text:
+        return None
+
+    match = re.search(r"\{(?:.|\n)*?\}", str(text), re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    start = str(text).find("{")
+    end = str(text).rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(str(text)[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _anthropic_create_message(client, *, model, max_tokens, prompt):
+    request_kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    if AI_ENABLE_WEB_SEARCH:
+        request_kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
+
+    try:
+        return client.messages.create(**request_kwargs)
+    except Exception:
+        if not AI_ENABLE_WEB_SEARCH:
+            raise
+
+    fallback_kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    return client.messages.create(**fallback_kwargs)
+
+
+def _get_sonnet_entry_cache():
+    global _SONNET_ENTRY_CACHE
+    if not isinstance(_SONNET_ENTRY_CACHE, dict):
+        _SONNET_ENTRY_CACHE = _load_json_blob(SONNET_ENTRY_CACHE_FILE, {})
+    return _SONNET_ENTRY_CACHE
+
+
+def _save_sonnet_entry_cache(cache):
+    global _SONNET_ENTRY_CACHE
+    _SONNET_ENTRY_CACHE = cache if isinstance(cache, dict) else {}
+    _save_json_blob(SONNET_ENTRY_CACHE_FILE, _SONNET_ENTRY_CACHE)
+
+
+def _sonnet_entry_analysis(opportunity):
+    """Analyze candidate entry with Sonnet. Falls back to permissive path on failure."""
+    if not SONNET_ENTRY_ENABLED or not ANTHROPIC_API_KEY:
+        return {
+            "confidence": 1.0,
+            "recommendation": "enter",
+            "reasoning": "sonnet_disabled",
+        }
+
+    city = str(opportunity.get("city") or "")
+    date = str(opportunity.get("date") or "")
+    token_id = str(opportunity.get("token_id") or "")
+    threshold = _safe_float(opportunity.get("threshold"), 0.0)
+    unit = str(opportunity.get("unit") or "C")
+
+    cache_key = f"{date}:{city.lower()}:{token_id}:{threshold}:{unit}"
+    cache = _get_sonnet_entry_cache()
+    now_dt = datetime.now(timezone.utc)
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict):
+        cached_at = _parse_iso_utc(cached.get("checked_at"))
+        if cached_at is not None:
+            age_hours = (now_dt - cached_at).total_seconds() / 3600.0
+            if age_hours <= SONNET_ENTRY_CACHE_TTL_HOURS:
+                result = cached.get("result")
+                if isinstance(result, dict):
+                    return result
+
+    allowed, reason = _reserve_ai_call_slot("sonnet_entry", now_utc=now_dt)
+    if not allowed:
+        return {
+            "confidence": 1.0,
+            "recommendation": "enter",
+            "reasoning": reason,
+        }
+
+    try:
+        import importlib
+
+        anthropic = importlib.import_module("anthropic")
+    except Exception:
+        return {
+            "confidence": 1.0,
+            "recommendation": "enter",
+            "reasoning": "anthropic_not_installed",
+        }
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        best_ask = _safe_float(opportunity.get("best_ask"), _safe_float(opportunity.get("yes_price"), 0.0))
+        implied_temp = opportunity.get("market_implied_expected_temp_c")
+        hours_left = _safe_float(opportunity.get("hours_until_resolve"), 0.0)
+        distribution = opportunity.get("bracket_distribution")
+        if not isinstance(distribution, list):
+            distribution = []
+
+        dist_text = "\n".join(
+            f"  - {item.get('threshold_c')}C => p={_safe_float(item.get('prob'), 0.0):.2%}, mid={_safe_float(item.get('mid_price'), 0.0):.3f}"
+            for item in distribution[:8]
+            if isinstance(item, dict)
+        )
+        if not dist_text:
+            dist_text = "  - no bracket distribution available"
+
+        prompt = (
+            "Analyze this temperature-bracket entry candidate for a weather prediction market.\n"
+            f"City: {city}\n"
+            f"Date: {date}\n"
+            f"Bracket threshold: {threshold:.1f}{unit}\n"
+            f"Entry ask: {best_ask:.4f}\n"
+            f"Hours until resolve: {hours_left:.1f}\n"
+            f"Market implied expected temp (C): {implied_temp}\n"
+            "Bracket distribution:\n"
+            f"{dist_text}\n\n"
+            "Use web search for METAR/airport weather and NWS forecast when available. "
+            "Return JSON only with keys: confidence, recommendation, sonnet_temp_c, metar_temp_c, nws_forecast_c, reasoning. "
+            "recommendation must be enter or skip."
+        )
+
+        response = _anthropic_create_message(
+            client,
+            model=SONNET_ENTRY_MODEL,
+            max_tokens=SONNET_ENTRY_MAX_TOKENS,
+            prompt=prompt,
+        )
+        _record_ai_usage_cost("sonnet_entry", SONNET_ENTRY_MODEL, response, now_utc=now_dt)
+
+        parsed = _extract_json_payload(_extract_text_from_anthropic_response(response))
+        if not isinstance(parsed, dict):
+            raise ValueError("sonnet_response_not_json")
+
+        confidence = _clamp(_safe_float(parsed.get("confidence"), 0.0))
+        recommendation = str(parsed.get("recommendation") or "skip").strip().lower()
+        if recommendation not in {"enter", "skip"}:
+            recommendation = "skip"
+
+        result = {
+            "confidence": confidence,
+            "recommendation": recommendation,
+            "sonnet_temp_c": parsed.get("sonnet_temp_c"),
+            "metar_temp_c": parsed.get("metar_temp_c"),
+            "nws_forecast_c": parsed.get("nws_forecast_c"),
+            "reasoning": str(parsed.get("reasoning") or ""),
+        }
+
+        cache[cache_key] = {
+            "checked_at": now_dt.isoformat(),
+            "result": result,
+        }
+        _save_sonnet_entry_cache(cache)
+
+        return result
+    except Exception as exc:
+        return {
+            "confidence": 1.0,
+            "recommendation": "enter",
+            "reasoning": f"sonnet_error_fallback:{str(exc)[:80]}",
+        }
+
+
+def _get_haiku_monitor_cache():
+    global _HAIKU_MONITOR_CACHE
+    if not isinstance(_HAIKU_MONITOR_CACHE, dict):
+        _HAIKU_MONITOR_CACHE = _load_json_blob(HAIKU_MONITOR_CACHE_FILE, {})
+    return _HAIKU_MONITOR_CACHE
+
+
+def _save_haiku_monitor_cache(cache):
+    global _HAIKU_MONITOR_CACHE
+    _HAIKU_MONITOR_CACHE = cache if isinstance(cache, dict) else {}
+    _save_json_blob(HAIKU_MONITOR_CACHE_FILE, _HAIKU_MONITOR_CACHE)
+
+
+def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolve=None):
+    """Re-check open position thesis via Haiku at configured interval."""
+    if not HAIKU_MONITOR_ENABLED or not ANTHROPIC_API_KEY:
+        return {"action": "hold", "confidence": 1.0, "reasoning": "monitor_disabled"}
+
+    token_id = str(position.get("token_id") or "")
+    if not token_id:
+        return {"action": "hold", "confidence": 1.0, "reasoning": "missing_token_id"}
+
+    cache = _get_haiku_monitor_cache()
+    now_dt = datetime.now(timezone.utc)
+    cached = cache.get(token_id)
+    if isinstance(cached, dict):
+        checked_at = _parse_iso_utc(cached.get("checked_at"))
+        if checked_at is not None:
+            elapsed_hours = (now_dt - checked_at).total_seconds() / 3600.0
+            if elapsed_hours < HAIKU_MONITOR_INTERVAL_HOURS:
+                result = cached.get("result")
+                if isinstance(result, dict):
+                    return result
+
+    allowed, reason = _reserve_ai_call_slot("haiku_monitor", now_utc=now_dt)
+    if not allowed:
+        return {"action": "hold", "confidence": 1.0, "reasoning": reason}
+
+    try:
+        import importlib
+
+        anthropic = importlib.import_module("anthropic")
+    except Exception:
+        return {"action": "hold", "confidence": 1.0, "reasoning": "anthropic_not_installed"}
+
+    city = str(position.get("city") or "")
+    date = str(position.get("date") or "")
+    threshold = _safe_float(position.get("threshold"), 0.0)
+    unit = str(position.get("unit") or "C")
+    entry_price = _safe_float(position.get("entry_price"), 0.0)
+    market_price = _safe_float(current_yes_price, _safe_float(position.get("last_price"), entry_price))
+    remaining_hours = _safe_float(hours_until_resolve, _safe_float(position.get("hours_until_resolve"), 0.0))
+
+    prompt = (
+        "Monitor an open temperature-bracket position.\n"
+        f"City: {city}\n"
+        f"Date: {date}\n"
+        f"Threshold: {threshold:.1f}{unit}\n"
+        f"Entry price: {entry_price:.4f}\n"
+        f"Current price: {market_price:.4f}\n"
+        f"Hours until resolve: {remaining_hours:.1f}\n\n"
+        "Use web search for latest airport weather and forecast when available. "
+        "Return JSON only with keys: action, confidence, current_temp_c, reasoning. "
+        "action must be hold or close."
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = _anthropic_create_message(
+            client,
+            model=HAIKU_MONITOR_MODEL,
+            max_tokens=HAIKU_MONITOR_MAX_TOKENS,
+            prompt=prompt,
+        )
+        _record_ai_usage_cost("haiku_monitor", HAIKU_MONITOR_MODEL, response, now_utc=now_dt)
+
+        parsed = _extract_json_payload(_extract_text_from_anthropic_response(response))
+        if not isinstance(parsed, dict):
+            raise ValueError("haiku_monitor_response_not_json")
+
+        action = str(parsed.get("action") or "hold").strip().lower()
+        if action not in {"hold", "close"}:
+            action = "hold"
+        confidence = _clamp(_safe_float(parsed.get("confidence"), 1.0))
+
+        result = {
+            "action": action,
+            "confidence": confidence,
+            "reasoning": str(parsed.get("reasoning") or ""),
+            "current_temp_c": parsed.get("current_temp_c"),
+        }
+        cache[token_id] = {
+            "checked_at": now_dt.isoformat(),
+            "result": result,
+        }
+        _save_haiku_monitor_cache(cache)
+        return result
+    except Exception as exc:
+        return {
+            "action": "hold",
+            "confidence": 1.0,
+            "reasoning": f"monitor_error_fallback:{str(exc)[:80]}",
+        }
+
+
 def _build_tuned_filter_opportunities(tuner_snapshot):
     """Build per-cycle opportunity filter with city-level tuned edge floors."""
     city_scores = tuner_snapshot.get("city_scores") if isinstance(tuner_snapshot, dict) else {}
@@ -1009,7 +1655,34 @@ def _build_tuned_filter_opportunities(tuner_snapshot):
                     }
                 )
 
-        return sorted(opportunities, key=lambda item: item["edge"], reverse=True)
+        ranked = sorted(opportunities, key=lambda item: item["edge"], reverse=True)
+
+        if not SONNET_ENTRY_ENABLED or not ANTHROPIC_API_KEY:
+            return ranked
+
+        validated = []
+        for opportunity in ranked:
+            if opportunity.get("direction") != "exact":
+                validated.append(opportunity)
+                continue
+
+            analysis = _sonnet_entry_analysis(opportunity)
+            confidence = _clamp(_safe_float(analysis.get("confidence"), 0.0))
+            recommendation = str(analysis.get("recommendation") or "skip").strip().lower()
+
+            if recommendation == "enter" and confidence >= SONNET_ENTRY_MIN_CONFIDENCE:
+                validated.append(
+                    {
+                        **opportunity,
+                        "sonnet_confidence": confidence,
+                        "sonnet_temp_c": analysis.get("sonnet_temp_c"),
+                        "metar_temp_c": analysis.get("metar_temp_c"),
+                        "nws_forecast_c": analysis.get("nws_forecast_c"),
+                        "sonnet_reasoning": analysis.get("reasoning", ""),
+                    }
+                )
+
+        return sorted(validated, key=lambda item: item["edge"], reverse=True)
 
     return _filter
 
@@ -1904,7 +2577,8 @@ def _format_discovery_daily_skip_line(diag):
     return (
         "  Daily skips         : "
         f"date-mismatch={int(diag.get('daily_date_mismatch', 0))}, "
-        f"min-hours={int(diag.get('daily_min_hours_not_met', 0))} "
+        f"min-hours={int(diag.get('daily_min_hours_not_met', 0))}, "
+        f"too-close={int(diag.get('too_close_to_resolve', 0))} "
         f"(min={float(diag.get('daily_min_hours_to_resolve', DAILY_MIN_HOURS_TO_RESOLVE)):.1f}h)"
     )
 
@@ -2225,6 +2899,8 @@ def run_paper_trading_cycle(
         position_confidence_score_fn=_position_confidence_score,
         update_paper_position_fn=update_paper_position,
         close_paper_position_fn=close_paper_position,
+        haiku_position_monitor_fn=_haiku_position_monitor,
+        haiku_monitor_min_confidence=HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT,
         fetch_orderbook_quote_fn=fetch_orderbook_quote,
         build_open_position_inventory_fn=_build_open_position_inventory,
         build_entry_candidates_fn=_build_entry_candidates,

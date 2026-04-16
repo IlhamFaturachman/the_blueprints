@@ -49,4 +49,5 @@ def test_discovery_diagnostics_includes_bucket_and_evidence_counts():
     assert diag["daily_mode_enabled"] is True
     assert diag["daily_date_mismatch"] == 2
     assert diag["daily_min_hours_not_met"] == 1
+    assert diag["too_close_to_resolve"] == 0
     assert diag["daily_skipped_total"] == 3

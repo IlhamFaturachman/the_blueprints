@@ -1,6 +1,6 @@
 # Copilot Handoff
 
-Date: 2026-04-14
+Date: 2026-04-16
 
 ## Current Baseline
 
@@ -160,19 +160,32 @@ Date: 2026-04-14
 140. Re-ran targeted regression suite after anomaly rollout (`test_paper_cycle`, `test_main`, `test_discovery_diagnostics`): 23 passed.
 141. Re-ran full suite after anomaly rollout: 106 passed.
 142. Re-smoke-tested wrapper and direct `--paper-report-json` paths after anomaly rollout; both emitted valid JSON with `anomaly_counters`.
+143. Added event-family cache mapping in discovery fetch path to preserve sibling bracket context for implied pricing.
+144. Added implied probability builder from sibling bracket mid prices and injected implied fields into parsed markets.
+145. Updated `calculate_edge()` to prioritize implied probability with explicit `prob_source`, keeping Gaussian fallback when implied data is unavailable.
+146. Added daily-mode parser guard `too_close_to_resolve` (<6h) and extended diagnostics pipeline/output to include the new skip counter.
+147. Added Anthropic runtime config surface for Sonnet entry and Haiku monitoring plus budget/call-cap controls.
+148. Added AI usage ledger (`AI_USAGE_LEDGER_FILE`) to track monthly spend and enforce `AI_MONTHLY_BUDGET_USD` hard guard.
+149. Added Sonnet entry analysis with cache and fallback behavior; integrated gate into tuned exact-opportunity filtering.
+150. Added Haiku position monitor with interval cache and fallback behavior; integrated confidence-gated `haiku_monitor_exit` path in paper-cycle orchestration.
+151. Updated runner script to load `.env` and apply safe defaults for Sonnet/Haiku and exact thresholds.
+152. Added `anthropic>=0.50.0` dependency in requirements.
+153. Added/updated tests for implied-edge path, daily too-close parser behavior, diagnostics counter, Haiku forced exit, and Sonnet gate behavior.
+154. Re-ran targeted regression suite after rollout: 56 passed.
+155. Re-ran full suite after rollout: 150 passed.
 
 ## Open Items
 
-1. Run a 24-48h paper-loop observation window with daily mode ON and review city coverage trend (`rolling_city_coverage_metrics`).
-2. Evaluate whether no-swap policy should evolve into strict conditional swap after enough cycle evidence.
-3. Observe anomaly counters during 24-48h window and tune alert thresholds only if noise or misses appear.
-4. Optionally continue cosmetic modularization for low-value utility helpers if needed, but structural extraction target is now largely complete.
-5. Proceed to guarded AI-provider phase only after observation metrics are stable.
+1. Set real `ANTHROPIC_API_KEY` in runtime `.env`/service environment and verify first live Sonnet + Haiku calls succeed.
+2. Run 24-48h paper-loop observation window with daily mode ON and monitor AI usage ledger spend against `AI_MONTHLY_BUDGET_USD=5.0`.
+3. Tune `SONNET_ENTRY_MAX_CALLS_PER_DAY` and `HAIKU_MONITOR_MAX_CALLS_PER_DAY` if usage trend projects over budget.
+4. Evaluate no-swap city policy using updated metrics and decide whether conditional swap heuristics are needed.
+5. Observe anomaly counters and tune thresholds only if sustained noise/miss behavior appears.
 
 ## Next Steps (Exact)
 
-1. Run 24-48h paper loop with daily mode enabled and capture trend snapshots from `--paper-report-json` (`rolling_acceptance_metrics`, `rolling_city_coverage_metrics`, retention/rotation).
-2. Review no-swap policy impact using journal/rolling metrics and decide whether swap heuristics are needed.
-3. Track new `anomaly_counters` fields (`current_*_streak`, `alerts.*`) and adjust streak/ratio thresholds only after enough cycles.
+1. Deploy with real API key and run one `--paper` cycle plus one `--paper-report-json` check to confirm end-to-end Sonnet/Haiku path and ledger creation.
+2. Start paper-loop observation window and capture daily snapshots for `rolling_acceptance_metrics`, `rolling_city_coverage_metrics`, and `anomaly_counters`.
+3. Watch `logs/ai_usage_ledger.json` daily; lower call caps immediately if projected monthly spend exceeds $5.
 4. Keep parity gate discipline for any follow-up change (targeted tests -> full suite -> wrapper/direct report-json smoke).
-5. Move to guarded AI-provider phase only after operational metrics are stable across observation window.
+5. Only proceed to deeper AI strategy tuning after operational stability and budget adherence are confirmed.

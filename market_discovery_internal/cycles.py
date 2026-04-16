@@ -24,6 +24,7 @@ def parse_discovery_markets(
     daily_skip_reasons = {
         "daily_date_mismatch": 0,
         "daily_min_hours_not_met": 0,
+        "too_close_to_resolve": 0,
     }
 
     for raw in markets_raw:
@@ -246,6 +247,8 @@ def run_paper_trading_cycle(
     paper_max_open_positions,
     paper_min_city_diversity,
     paper_journal_max_entries,
+    haiku_position_monitor_fn=None,
+    haiku_monitor_min_confidence=0.75,
     allow_new_entries=True,
     entry_gate_reason="active",
 ):
@@ -304,6 +307,8 @@ def run_paper_trading_cycle(
     position_forecast_prefetch_ms = elapsed_ms_fn(position_prefetch_started)
 
     position_management_started = perf_counter_fn()
+    haiku_monitor_calls = 0
+    haiku_monitor_forced_exits = 0
     for position in state.get("positions", []):
         position = ensure_take_profit_target_fn(position)
 
@@ -335,6 +340,44 @@ def run_paper_trading_cycle(
             continue
 
         hours_until_resolve = live_market.get("hours_until_resolve")
+
+        monitor_result = None
+        if callable(haiku_position_monitor_fn):
+            try:
+                monitor_result = haiku_position_monitor_fn(
+                    position,
+                    current_yes_price=current_yes_price,
+                    hours_until_resolve=hours_until_resolve,
+                )
+            except TypeError:
+                # Backward-compat: support monitor callbacks that accept only position.
+                monitor_result = haiku_position_monitor_fn(position)
+            except Exception:
+                monitor_result = None
+            finally:
+                haiku_monitor_calls += 1
+
+        if isinstance(monitor_result, dict):
+            monitor_action = str(monitor_result.get("action") or "hold").strip().lower()
+            try:
+                monitor_confidence = float(monitor_result.get("confidence", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                monitor_confidence = 0.0
+
+            if monitor_action == "close" and monitor_confidence >= float(haiku_monitor_min_confidence):
+                forced_closed = close_paper_position_fn(
+                    position=position,
+                    exit_price=current_yes_price,
+                    reason="haiku_monitor_exit",
+                    now_utc=now,
+                )
+                forced_closed["haiku_monitor_confidence"] = round(monitor_confidence, 4)
+                forced_closed["haiku_monitor_reasoning"] = str(monitor_result.get("reasoning") or "")
+                closed_this_cycle.append(forced_closed)
+                next_history.append(forced_closed)
+                haiku_monitor_forced_exits += 1
+                continue
+
         forecast_valid = forecast_still_valid_fn(
             position,
             current_yes_price,
@@ -475,6 +518,11 @@ def run_paper_trading_cycle(
             "failed": int(position_forecast_prefetch.get("failed", 0)),
             "workers": int(position_forecast_prefetch.get("workers", 0)),
             "skipped": bool(position_forecast_prefetch.get("skipped", True)),
+        },
+        "haiku_monitor": {
+            "calls": int(haiku_monitor_calls),
+            "forced_exits": int(haiku_monitor_forced_exits),
+            "min_confidence": float(haiku_monitor_min_confidence),
         },
     }
 

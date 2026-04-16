@@ -113,6 +113,7 @@ def build_discovery_diagnostics(
     daily_skip_reasons = discovery.get("daily_skip_reasons") if isinstance(discovery.get("daily_skip_reasons"), dict) else {}
     daily_date_mismatch = int(daily_skip_reasons.get("daily_date_mismatch", 0))
     daily_min_hours_not_met = int(daily_skip_reasons.get("daily_min_hours_not_met", 0))
+    too_close_to_resolve = int(daily_skip_reasons.get("too_close_to_resolve", 0))
 
     counts = {
         "raw_total": len(raw_markets),
@@ -128,7 +129,8 @@ def build_discovery_diagnostics(
         "evidence_invalid": 0,
         "daily_date_mismatch": daily_date_mismatch,
         "daily_min_hours_not_met": daily_min_hours_not_met,
-        "daily_skipped_total": daily_date_mismatch + daily_min_hours_not_met,
+        "too_close_to_resolve": too_close_to_resolve,
+        "daily_skipped_total": daily_date_mismatch + daily_min_hours_not_met + too_close_to_resolve,
         "daily_mode_enabled": bool(discovery.get("daily_resolve_only", daily_resolve_only)),
         "daily_min_hours_to_resolve": float(
             discovery.get("daily_min_hours_to_resolve", daily_min_hours_to_resolve)

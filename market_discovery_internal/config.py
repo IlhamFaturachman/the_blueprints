@@ -145,8 +145,8 @@ MARKET_MIN_VOLUME_24HR = float(os.getenv("MARKET_MIN_VOLUME_24HR", "500"))
 
 # Probability model for exact-bracket markets (Gaussian around forecast)
 MODEL_EXACT_SIGMA_C = float(os.getenv("MODEL_EXACT_SIGMA_C", "1.5"))
-STRATEGY_EXACT_MIN_EDGE = float(os.getenv("STRATEGY_EXACT_MIN_EDGE", "0.05"))
-STRATEGY_EXACT_MIN_MODEL_PROB = float(os.getenv("STRATEGY_EXACT_MIN_MODEL_PROB", "0.15"))
+STRATEGY_EXACT_MIN_EDGE = float(os.getenv("STRATEGY_EXACT_MIN_EDGE", "0.02"))
+STRATEGY_EXACT_MIN_MODEL_PROB = float(os.getenv("STRATEGY_EXACT_MIN_MODEL_PROB", "0.10"))
 PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"))
 PAPER_LOOP_CONTINUE_ON_ERROR = _env_bool("PAPER_LOOP_CONTINUE_ON_ERROR", True)
 PAPER_LOOP_ERROR_BACKOFF_SECONDS = max(
@@ -232,6 +232,35 @@ ENTRY_BUCKET_WATCH_MAX_PRICE = float(os.getenv("ENTRY_BUCKET_WATCH_MAX_PRICE", "
 AI_AGENT_ENABLED = _env_bool("AI_AGENT_ENABLED", False)
 AI_AGENT_MIN_OVERRIDE_CONFIDENCE = float(os.getenv("AI_AGENT_MIN_OVERRIDE_CONFIDENCE", "0.80"))
 AI_AGENT_TIMEOUT_SECONDS = float(os.getenv("AI_AGENT_TIMEOUT_SECONDS", "5.0"))
+
+# Anthropic API integration (entry gate + monitor)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+AI_ENABLE_WEB_SEARCH = _env_bool("AI_ENABLE_WEB_SEARCH", True)
+
+# Hard budget and usage controls (keeps monthly cost <= configured budget)
+AI_MONTHLY_BUDGET_USD = max(0.0, float(os.getenv("AI_MONTHLY_BUDGET_USD", "5.0")))
+AI_USAGE_LEDGER_FILE = os.getenv("AI_USAGE_LEDGER_FILE", "logs/ai_usage_ledger.json")
+
+# Sonnet entry gate
+SONNET_ENTRY_ENABLED = _env_bool("SONNET_ENTRY_ENABLED", True)
+SONNET_ENTRY_MIN_CONFIDENCE = float(os.getenv("SONNET_ENTRY_MIN_CONFIDENCE", "0.80"))
+SONNET_ENTRY_MODEL = os.getenv("SONNET_ENTRY_MODEL", "claude-sonnet-4-6")
+SONNET_ENTRY_MAX_TOKENS = max(64, int(os.getenv("SONNET_ENTRY_MAX_TOKENS", "500")))
+SONNET_ENTRY_MAX_CALLS_PER_DAY = max(0, int(os.getenv("SONNET_ENTRY_MAX_CALLS_PER_DAY", "6")))
+SONNET_ENTRY_CACHE_FILE = os.getenv("SONNET_ENTRY_CACHE_FILE", "logs/sonnet_entry_cache.json")
+SONNET_ENTRY_CACHE_TTL_HOURS = max(1.0, float(os.getenv("SONNET_ENTRY_CACHE_TTL_HOURS", "6")))
+
+# Haiku monitor gate for open positions
+HAIKU_MONITOR_ENABLED = _env_bool("HAIKU_MONITOR_ENABLED", True)
+HAIKU_MONITOR_INTERVAL_HOURS = max(1.0, float(os.getenv("HAIKU_MONITOR_INTERVAL_HOURS", "6.0")))
+HAIKU_MONITOR_MODEL = os.getenv("HAIKU_MONITOR_MODEL", "claude-haiku-4-5-20251001")
+HAIKU_MONITOR_MAX_TOKENS = max(64, int(os.getenv("HAIKU_MONITOR_MAX_TOKENS", "220")))
+HAIKU_MONITOR_MAX_CALLS_PER_DAY = max(0, int(os.getenv("HAIKU_MONITOR_MAX_CALLS_PER_DAY", "24")))
+HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT = min(
+    1.0,
+    max(0.0, float(os.getenv("HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT", "0.75"))),
+)
+HAIKU_MONITOR_CACHE_FILE = os.getenv("HAIKU_MONITOR_CACHE_FILE", "logs/haiku_monitor_cache.json")
 
 # Weather evidence quality controls (for hold-to-resolve safety)
 WEATHER_EVIDENCE_MAX_AGE_HOURS = float(os.getenv("WEATHER_EVIDENCE_MAX_AGE_HOURS", "3.0"))

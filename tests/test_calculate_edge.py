@@ -66,3 +66,39 @@ def test_exact_direction_far_forecast_low_prob():
 def test_returns_none_when_forecast_is_missing():
     market = make_market(75.0, "F", "above", 0.28)
     assert calculate_edge(market, None) is None
+
+
+def test_market_implied_prob_used_when_available():
+    market = make_market(28.0, "C", "exact", 0.14)
+    market["market_implied_prob"] = 0.22
+    market["market_implied_expected_temp_c"] = 28.5
+    market["best_ask"] = 0.14
+
+    result = calculate_edge(market, forecast_temp=None)
+
+    assert result is not None
+    assert result["model_prob"] == pytest.approx(0.22, abs=0.001)
+    assert result["edge"] == pytest.approx(0.08, abs=0.001)
+    assert result["prob_source"] == "market_implied"
+
+
+def test_market_implied_takes_priority_over_gaussian_forecast():
+    market = make_market(28.0, "C", "exact", 0.14)
+    market["market_implied_prob"] = 0.20
+    market["market_implied_expected_temp_c"] = 28.0
+    market["best_ask"] = 0.14
+
+    result = calculate_edge(market, forecast_temp=5.0)
+
+    assert result is not None
+    assert result["prob_source"] == "market_implied"
+    assert result["model_prob"] == pytest.approx(0.20, abs=0.001)
+
+
+def test_gaussian_fallback_when_market_implied_not_available():
+    market = make_market(75.0, "F", "exact", 0.05)
+    result = calculate_edge(market, (75.0 - 32) * 5 / 9)
+
+    assert result is not None
+    assert result["prob_source"] == "gaussian_openmeteo"
+    assert result["model_prob"] > 0

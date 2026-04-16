@@ -162,6 +162,37 @@ def test_run_paper_cycle_closes_position_on_take_profit(tmp_path):
     assert cycle["closed"][0]["close_reason"] == "take_profit_100pct"
 
 
+def test_run_paper_cycle_closes_position_on_haiku_monitor_signal(tmp_path):
+    state_file = tmp_path / "paper_state.json"
+    entry_opp = make_opportunity(yes_price=0.25, token_id="0xhaiku")
+    open_position = build_paper_position(entry_opp, stake_usd=100)
+    save_paper_state({"positions": [open_position], "history": [], "updated_at": None}, path=str(state_file))
+
+    live_market = make_opportunity(yes_price=0.24, token_id="0xhaiku")
+    discovery = {
+        "markets_raw": [],
+        "parsed": [live_market],
+        "enriched": [live_market],
+        "opportunities": [],
+        "failed_cities": [],
+        "skipped_markets": 0,
+        "exact_skipped": 0,
+    }
+
+    with patch("market_discovery.run_discovery_cycle", return_value=discovery), patch(
+        "market_discovery._haiku_position_monitor",
+        return_value={"action": "close", "confidence": 0.91, "reasoning": "monitor says invalid"},
+    ), patch(
+        "market_discovery.fetch_orderbook_quote",
+        return_value={"best_bid": 0.24, "best_ask": 0.25},
+    ):
+        cycle = run_paper_trading_cycle(state_path=str(state_file))
+
+    assert len(cycle["closed"]) == 1
+    assert cycle["closed"][0]["close_reason"] == "haiku_monitor_exit"
+    assert cycle["closed"][0]["haiku_monitor_confidence"] == 0.91
+
+
 def test_run_paper_cycle_force_aggressive_scan_passes_through(tmp_path):
     state_file = tmp_path / "paper_state.json"
     discovery = {

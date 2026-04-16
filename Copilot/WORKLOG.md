@@ -716,3 +716,52 @@
   - Result: wrapper path emitted valid JSON including `anomaly_counters`.
 - Status:
   - Completed
+
+## 2026-04-16
+
+### 2026-04-16T00:00:00Z - AI hybrid rollout: market-implied + Sonnet entry gate + Haiku monitor with $5 budget guard
+- Scope:
+  - market_discovery.py
+  - market_discovery_internal/cycles.py
+  - market_discovery_internal/diagnostics.py
+  - market_discovery_internal/config.py
+  - .env.example
+  - run_paper_5usd.sh
+  - requirements.txt
+  - tests/test_calculate_edge.py
+  - tests/test_parse_market.py
+  - tests/test_discovery_diagnostics.py
+  - tests/test_paper_cycle.py
+  - tests/test_sonnet_entry_gate.py
+- Reason:
+  - Implement requested end-to-end AI-hybrid strategy updates from latest plan while preserving runtime safety and compatibility.
+  - Enforce monthly API cost discipline by adding explicit budget/call-cap guardrails designed to keep spend at or below $5/month.
+- Changes:
+  - Added event family cache in discovery and market-implied probability computation from sibling bracket mid prices.
+  - Injected implied fields into parsed markets (`market_implied_prob`, implied expected temp, family size, bracket distribution).
+  - Updated `calculate_edge()` to prioritize market-implied probability with Gaussian forecast fallback.
+  - Added same-day daily-mode skip reason `too_close_to_resolve` (`<6h`) and propagated diagnostics counters/output.
+  - Added Anthropic config surface for Sonnet/Haiku integration, including:
+    - monthly budget guard (`AI_MONTHLY_BUDGET_USD`),
+    - daily call caps (`SONNET_ENTRY_MAX_CALLS_PER_DAY`, `HAIKU_MONITOR_MAX_CALLS_PER_DAY`),
+    - cache files and model settings.
+  - Implemented Sonnet entry analysis with cache, fallback behavior, and budget/call-slot reservation.
+  - Implemented Haiku open-position monitor with interval cache, fallback behavior, and budget/call-slot reservation.
+  - Integrated Sonnet gate into tuned exact-market opportunity filtering.
+  - Integrated confidence-gated Haiku monitor forced exit path into cycle orchestration (`haiku_monitor_exit`) without replacing existing hybrid exit logic.
+  - Added AI usage ledger with per-month spend tracking and per-day call accounting.
+  - Updated runner script to load `.env` and pass safe default limits for exact thresholds + Sonnet/Haiku controls.
+  - Added `anthropic>=0.50.0` dependency.
+  - Added/updated regression tests for:
+    - implied-prob edge path,
+    - daily parser too-close behavior,
+    - diagnostics too-close counter,
+    - Haiku monitor forced exit,
+    - Sonnet gate accept/reject behavior.
+- Validation:
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q tests/test_calculate_edge.py tests/test_parse_market.py tests/test_discovery_diagnostics.py tests/test_paper_cycle.py tests/test_sonnet_entry_gate.py
+  - Result: 56 passed in 0.24s
+  - /Users/macairm12020/Documents/Blueprints/the_blueprints/.venv/bin/python -m pytest -q
+  - Result: 150 passed in 0.29s
+- Status:
+  - Completed
