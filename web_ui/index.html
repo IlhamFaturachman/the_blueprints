@@ -524,13 +524,12 @@ async function fetchData() {
         document.getElementById('valTuner').innerHTML = `A:${sum.aggressive || 0} | C:${sum.cautious || 0} | B:${sum.blacklist || 0}`;
         document.getElementById('valTunerMeta').innerHTML = `Tracked: ${sum.cities_total || 0} | Min: ${tuner.min_trades || 0}`;
 
-        const last_cycle = (data.cycle_journal || []).slice(-1)[0];
+        const last_cycle = cycleRowsCache[0];
         if (last_cycle) {
             document.getElementById('valLastRun').innerHTML = new Date(last_cycle.timestamp).toLocaleString();
             let cov = last_cycle.city_coverage || {};
             document.getElementById('valCoverage').innerHTML = `Coverage: ${cov.unique_opportunity_cities}/${cov.min_city_target}`;
         } else if (data.updated_at) {
-            // [MODUL L] Initial cycle feedback fallback
             document.getElementById('valLastRun').innerHTML = new Date(data.updated_at).toLocaleString();
             document.getElementById('valCoverage').innerHTML = `Discovery in progress...`;
         }
