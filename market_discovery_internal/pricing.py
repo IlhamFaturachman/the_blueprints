@@ -181,15 +181,6 @@ def calculate_edge(market, forecast_temp):
         "forecast": forecast
     }
 
-def _compute_market_implied_prob(token_id, sibling_markets=None):
-    """Calculates the normalized probability of a market among its siblings."""
-    if not sibling_markets or len(sibling_markets) < 2: return 0.5
-    # Simplistic: return inverse of YES price normalized
-    total_yes = sum(m.get("yes_price", 0.5) for m in sibling_markets)
-    if total_yes == 0: return 0.0
-    target_price = next((m.get("yes_price", 0.5) for m in sibling_markets if m.get("token_id") == token_id), 0.5)
-    return target_price / total_yes
-
 def _enrich_markets_missing_prices(markets, max_workers=6):
     """Concurrently fetch missing prices for markets that might have stagnant Gamma data."""
     if not markets: return []

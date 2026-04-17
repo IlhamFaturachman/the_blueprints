@@ -230,19 +230,29 @@ def parse_market(
         direction = "exact"
 
     # Step 4: Price
+    # Primary: outcomePrices array (legacy Gamma field)
+    # Fallback: bestAsk (newer bracket-style markets may omit outcomePrices)
     outcome_prices_raw = raw.get("outcomePrices")
-    if not outcome_prices_raw:
-        _log_unmatched(question, "missing outcomePrices")
-        return _with_reason(None)
+    yes_price = None
+    if outcome_prices_raw:
+        try:
+            prices = json.loads(outcome_prices_raw) if isinstance(outcome_prices_raw, str) else outcome_prices_raw
+            if isinstance(prices, list) and len(prices) > 0:
+                yes_price = float(prices[0])
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
 
-    try:
-        prices = json.loads(outcome_prices_raw) if isinstance(outcome_prices_raw, str) else outcome_prices_raw
-        if not isinstance(prices, list) or len(prices) == 0:
-            _log_unmatched(question, "outcomePrices is not valid")
-            return _with_reason(None)
-        yes_price = float(prices[0])
-    except (json.JSONDecodeError, ValueError, TypeError):
-        _log_unmatched(question, "could not parse outcomePrices")
+    if yes_price is None:
+        # Fallback: use bestAsk as YES price for bracket markets
+        best_ask_raw = raw.get("bestAsk")
+        if best_ask_raw is not None:
+            try:
+                yes_price = float(best_ask_raw)
+            except (ValueError, TypeError):
+                pass
+
+    if yes_price is None:
+        _log_unmatched(question, "missing outcomePrices")
         return _with_reason(None)
 
     # Step 5: Token ID
@@ -284,6 +294,25 @@ def parse_market(
             return _with_reason(None, "too_close_to_resolve")
 
     market_slug = raw.get("slug") or raw.get("event_slug") or ""
+
+    # Extract Gamma-provided pricing fields for downstream gates
+    raw_best_ask = raw.get("bestAsk")
+    raw_best_bid = raw.get("bestBid")
+    try:
+        best_ask = float(raw_best_ask) if raw_best_ask is not None else None
+    except (ValueError, TypeError):
+        best_ask = None
+    try:
+        best_bid = float(raw_best_bid) if raw_best_bid is not None else None
+    except (ValueError, TypeError):
+        best_bid = None
+    gamma_spread = round(best_ask - best_bid, 4) if (best_ask is not None and best_bid is not None) else None
+    try:
+        volume_24hr = float(raw.get("volume24hr") or raw.get("volume_24hr") or 0.0)
+    except (ValueError, TypeError):
+        volume_24hr = 0.0
+    gamma_accepting_orders = bool(raw.get("acceptingOrders", True))
+
     return _with_reason({
         "city": city,
         "icao_code": icao_code,
@@ -296,6 +325,11 @@ def parse_market(
         "unit": unit,
         "direction": direction,
         "yes_price": yes_price,
+        "best_ask": best_ask,
+        "best_bid": best_bid,
+        "gamma_spread": gamma_spread,
+        "volume_24hr": volume_24hr,
+        "gamma_accepting_orders": gamma_accepting_orders,
         "token_id": token_id,
         "hours_until_resolve": round(hours_until_resolve, 1),
         "market_slug": market_slug,

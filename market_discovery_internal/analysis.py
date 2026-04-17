@@ -509,33 +509,68 @@ def _maybe_apply_ai_decision(opportunity):
     return enriched
 
 def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
-    """Classify an opportunity into action buckets based on price/prob goals."""
+    """Classify an opportunity into action buckets based on price/prob goals.
+
+    Priority order:
+    1. enter_hold_candidate — high-confidence, high-edge positions
+    2. enter_swing          — mid-range price within entry bounds (above watchlist threshold)
+    3. watchlist            — cheap but interesting (below watchlist threshold)
+    4. reject               — price outside valid entry range or too expensive
+    """
     # If AI has already decided a bucket, use it.
     if opportunity.get("ai_bucket"):
-        return {"bucket": opportunity["ai_bucket"], "reason": "ai_decision"}
+        return {"bucket": opportunity["ai_bucket"], "reason": "ai_decision", "confidence": 1.0}
 
     prob = opportunity.get("model_prob", 0.0)
     edge = opportunity.get("edge", 0.0)
     price = opportunity.get("yes_price", 1.0)
-    
+
     prob_pct = f"{prob*100:.1f}%"
     edge_pct = f"{edge*100:.1f}%"
-    
+    _min = float(min_entry_price)
+    _max = float(max_entry_price)
+
+    # HOLD: highest-conviction signal — hold through to resolution
     if prob >= ENTRY_BUCKET_HOLD_MIN_PROB and edge >= ENTRY_BUCKET_HOLD_MIN_EDGE:
         return {
-            "bucket": "enter_hold_candidate", 
+            "bucket": "enter_hold_candidate",
             "strategy": "hold_until_resolve",
-            "reason": f"Prob {prob_pct} & Edge {edge_pct} meet HOLD criteria (Min {ENTRY_BUCKET_HOLD_MIN_PROB*100}%/{ENTRY_BUCKET_HOLD_MIN_EDGE*100}%)."
+            "reason": (
+                f"Prob {prob_pct} & Edge {edge_pct} meet HOLD criteria "
+                f"(Min {ENTRY_BUCKET_HOLD_MIN_PROB*100:.0f}%/{ENTRY_BUCKET_HOLD_MIN_EDGE*100:.0f}%)."
+            ),
+            "confidence": round(prob, 4),
         }
-    if price <= ENTRY_BUCKET_WATCH_MAX_PRICE:
+
+    # SWING: price in the mid-range above the watchlist ceiling — enter now
+    if ENTRY_BUCKET_WATCH_MAX_PRICE < price <= _max:
         return {
-            "bucket": "watchlist", 
+            "bucket": "enter_swing",
             "strategy": "swing",
-            "reason": f"Price USD {price:.2f} fits WATCHLIST (Max USD {ENTRY_BUCKET_WATCH_MAX_PRICE:.2f})."
+            "reason": (
+                f"Price USD {price:.2f} in swing range "
+                f"[{ENTRY_BUCKET_WATCH_MAX_PRICE:.2f}-{_max:.2f}] with Prob {prob_pct}, Edge {edge_pct}."
+            ),
+            "confidence": round(prob, 4),
         }
-    
+
+    # WATCHLIST: cheap markets within the entry floor — monitor but don't enter yet
+    if _min <= price <= ENTRY_BUCKET_WATCH_MAX_PRICE:
+        return {
+            "bucket": "watchlist",
+            "strategy": "swing",
+            "reason": (
+                f"Price USD {price:.2f} in WATCHLIST range "
+                f"[{_min:.2f}-{ENTRY_BUCKET_WATCH_MAX_PRICE:.2f}]. Monitoring."
+            ),
+        }
+
+    # REJECT: price outside valid entry range
     return {
-        "bucket": "reject", 
+        "bucket": "reject",
         "strategy": "swing",
-        "reason": f"Prob {prob_pct} or Edge {edge_pct} below entry thresholds."
+        "reason": (
+            f"Price USD {price:.2f} outside valid entry range [{_min:.2f}-{_max:.2f}]. "
+            f"Prob {prob_pct}, Edge {edge_pct}."
+        ),
     }

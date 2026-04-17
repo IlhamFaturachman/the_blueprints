@@ -34,9 +34,11 @@ class PriceWatcher:
         self._ping_interval = ping_interval
         self._watchdog_timeout = watchdog_timeout
 
-        # Shared state between main process and subprocess
-        self._desired_ids = multiprocessing.Manager().list()
-        self._lock = multiprocessing.Lock()
+        # Shared state between main process and subprocess.
+        # Use a Queue for subscription updates to avoid multiprocessing.Manager()
+        # which spawns a non-daemon SyncManager process that becomes an orphan
+        # when the service is restarted by systemd.
+        self._sub_update_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._stop_event = multiprocessing.Event()
         self._process: multiprocessing.Process | None = None
 
@@ -64,12 +66,12 @@ class PriceWatcher:
         logger.info("[WS-MPC] PriceWatcher stopped")
 
     def update_subscriptions(self, token_ids: set) -> None:
-        """Update the shared list of desired token IDs."""
-        with self._lock:
-            while len(self._desired_ids) > 0:
-                self._desired_ids.pop()
-            self._desired_ids.extend(list(token_ids))
-        logger.debug("[WS-MPC] Subscriptions updated: %d IDs", len(token_ids))
+        """Send a subscription update to the watcher subprocess via queue."""
+        try:
+            self._sub_update_queue.put_nowait(list(token_ids))
+        except Exception as exc:
+            logger.warning("[WS-MPC] Could not queue subscription update: %s", exc)
+        logger.debug("[WS-MPC] Subscriptions update queued: %d IDs", len(token_ids))
 
     def _run_loop(self) -> None:
         """Internal subprocess loop — handles connection and watchdog."""
@@ -107,45 +109,53 @@ class PriceWatcher:
 
         self._last_msg_at = time.time()
         current_subs = set()
-        
+        desired_subs = set()  # Tracks the latest desired subscription set
+
         while not self._stop_event.is_set():
             try:
                 ilogger.info("[WS-MPC] Connecting to %s (with SSL Tweak)", self._url)
                 import ssl
                 ws = websocket.WebSocketApp(
                     self._url,
-                    on_open=lambda w: self._on_open(w, current_subs, ilogger),
+                    on_open=lambda w: self._on_open(w, current_subs, desired_subs, ilogger),
                     on_message=lambda w, m: self._on_message(w, m, ilogger),
                     on_error=lambda w, e: ilogger.warning("[WS-MPC] Error: %s", e),
                     on_close=lambda w, c, m: self._on_close(w, c, m, current_subs, ilogger),
                 )
-                
+
                 # Enterprise SSL Tweak (Handle Cloudflare/Handshake issues)
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE  # Last resort for handshake hang
-                
+
                 def watchdog_fn():
                     while ws.sock and ws.sock.connected:
                         if time.time() - self._last_msg_at > self._watchdog_timeout:
                             ilogger.warning("[WS-MPC] WATCHDOG TIMEOUT (%ds). Closing.", self._watchdog_timeout)
                             ws.close()
                             break
-                        
-                        # Sync subscriptions dynamically
-                        with self._lock:
-                            desired = set(self._desired_ids)
-                        
-                        to_add = desired - current_subs
-                        to_remove = current_subs - desired
-                        
+
+                        # Drain subscription updates from queue (last write wins)
+                        latest = None
+                        while not self._sub_update_queue.empty():
+                            try:
+                                latest = self._sub_update_queue.get_nowait()
+                            except Exception:
+                                pass
+                        if latest is not None:
+                            desired_subs.clear()
+                            desired_subs.update(latest)
+
+                        to_add = desired_subs - current_subs
+                        to_remove = current_subs - desired_subs
+
                         if to_add:
                             self._send_op(ws, list(to_add), "subscribe", ilogger)
                             current_subs.update(to_add)
                         if to_remove:
                             self._send_op(ws, list(to_remove), "unsubscribe", ilogger)
                             current_subs.difference_update(to_remove)
-                            
+
                         time.sleep(1)
 
                 threading.Thread(target=watchdog_fn, daemon=True).start()
@@ -187,14 +197,23 @@ class PriceWatcher:
                     if tid and bid is not None:
                         self._update_queue.put((tid, float(bid)))
 
-    def _on_open(self, ws, current_subs: set, ilogger: logging.Logger):
-        with self._lock:
-            desired = list(self._desired_ids)
-        ilogger.info("[WS-MPC] Connected. Syncing %d subscriptions", len(desired))
-        if desired:
-            self._send_op(ws, desired, "subscribe", ilogger)
+    def _on_open(self, ws, current_subs: set, desired_subs: set, ilogger: logging.Logger):
+        # Drain any queued updates before subscribing on (re)connect
+        latest = None
+        while not self._sub_update_queue.empty():
+            try:
+                latest = self._sub_update_queue.get_nowait()
+            except Exception:
+                pass
+        if latest is not None:
+            desired_subs.clear()
+            desired_subs.update(latest)
+
+        ilogger.info("[WS-MPC] Connected. Syncing %d subscriptions", len(desired_subs))
+        if desired_subs:
+            self._send_op(ws, list(desired_subs), "subscribe", ilogger)
             current_subs.clear()
-            current_subs.update(desired)
+            current_subs.update(desired_subs)
 
     def _on_close(self, ws, code, msg, current_subs: set, ilogger: logging.Logger):
         ilogger.info("[WS-MPC] Closed: %s (code: %s)", msg, code)

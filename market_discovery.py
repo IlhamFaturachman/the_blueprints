@@ -20,6 +20,36 @@ from datetime import datetime, timezone
 # Add parent directory to path to ensure internal package is importable
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# ---------------------------------------------------------------------------
+# EARLY PID LOCK — acquired BEFORE slow module imports to close the startup
+# race window. Two instances starting within seconds of each other both rush
+# through ~7s of imports; without this, both reach the late PIDLock at nearly
+# the same time and may both succeed.  This early grab happens in <1ms.
+# The late PIDLock class still exists for clean __exit__ / file cleanup.
+# ---------------------------------------------------------------------------
+_EARLY_PID_LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "the_blueprints.pid")
+_early_pid_fd = None
+
+if __name__ == "__main__":
+    # Open WITHOUT truncating (O_RDWR | O_CREAT). Truncation happens AFTER
+    # the flock is acquired, so the ExecStartPre script can never read an
+    # empty PID file and mistake a live instance for a stale one.
+    _early_pid_raw = os.open(
+        _EARLY_PID_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o644
+    )
+    _early_pid_fd = os.fdopen(_early_pid_raw, 'r+')
+    try:
+        fcntl.flock(_early_pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # We own the lock — now safe to truncate and stamp our PID.
+        _early_pid_fd.seek(0)
+        _early_pid_fd.truncate()
+        _early_pid_fd.write(str(os.getpid()))
+        _early_pid_fd.flush()
+    except IOError:
+        print(f"[FATAL] Another instance of THE BLUEPRINTS is already running (locked by {_EARLY_PID_LOCK_PATH})")
+        _early_pid_fd.close()
+        sys.exit(0)  # Duplicate — not a crash, don't trigger systemd restart loop
+
 from market_discovery_internal.config import (
     TARGET_CITIES, DAILY_RESOLVE_ONLY, DAILY_MIN_HOURS_TO_RESOLVE,
     STRATEGY_MAX_YES_PRICE, STRATEGY_MIN_MODEL_PROB, STRATEGY_MIN_EDGE,
@@ -283,6 +313,14 @@ class PIDLock:
         self.fd = None
 
     def __enter__(self):
+        # If early lock was already acquired (same process), reuse _early_pid_fd.
+        # Opening with 'w' would truncate the file and break the lock on Linux.
+        global _early_pid_fd
+        if _early_pid_fd is not None:
+            # Already locked by this process via early lock — just return.
+            self.fd = _early_pid_fd
+            return self
+        # Fallback path (e.g. running without __main__ or in tests).
         self.fd = open(self.lockfile, 'w')
         try:
             fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -290,13 +328,24 @@ class PIDLock:
             self.fd.flush()
         except IOError:
             print(f"[FATAL] Another instance of THE BLUEPRINTS is already running (locked by {self.lockfile})")
-            sys.exit(1)
+            sys.exit(0)  # Duplicate — not a crash, don't trigger systemd restart loop
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.fd:
+        global _early_pid_fd
+        if self.fd and self.fd is not _early_pid_fd:
+            # Normal path: release and clean up the late-acquired fd.
             fcntl.flock(self.fd, fcntl.LOCK_UN)
             self.fd.close()
+            try:
+                os.remove(self.lockfile)
+            except OSError:
+                pass
+        elif _early_pid_fd is not None:
+            # Early lock path: release the early lock and clean up.
+            fcntl.flock(_early_pid_fd, fcntl.LOCK_UN)
+            _early_pid_fd.close()
+            _early_pid_fd = None
             try:
                 os.remove(self.lockfile)
             except OSError:

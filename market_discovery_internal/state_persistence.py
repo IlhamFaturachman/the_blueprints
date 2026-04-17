@@ -1,4 +1,5 @@
 import json
+import os
 from market_discovery_internal.database_manager import db
 
 _EMPTY_STATE = {
@@ -73,7 +74,33 @@ def save_paper_state(state, path=None):
     if journal:
         db.add_cycle_metric(journal[-1])
 
-    # 4. Mirror to JSON (Mirrored Copy for Dashboard/Manual Debug)
+    # 4. Persist closed trade history (new entries only — skip existing token_ids)
+    for trade in state.get("history", []):
+        token_id = trade.get("token_id")
+        if not token_id:
+            continue
+        exists = conn.execute(
+            "SELECT 1 FROM trade_history WHERE token_id = ?", (token_id,)
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                """INSERT INTO trade_history
+                   (token_id, city, date, pnl_usd, roi_pct, close_reason, closed_at, raw_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    token_id,
+                    trade.get("city"),
+                    trade.get("date"),
+                    trade.get("realized_pnl_usd"),
+                    trade.get("realized_roi_pct"),
+                    trade.get("close_reason"),
+                    trade.get("closed_at"),
+                    json.dumps(trade),
+                ),
+            )
+    conn.commit()
+
+    # 5. Mirror to JSON (Mirrored Copy for Dashboard/Manual Debug)
     if path:
         try:
             with open(path, "w", encoding="utf-8") as f:
