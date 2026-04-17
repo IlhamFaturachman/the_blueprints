@@ -2,6 +2,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import urllib.parse
 import os
+import json
+import time
+import threading
 
 from market_discovery_internal.config import (
     TARGET_CITIES, OPEN_METEO_API, OPEN_METEO_HISTORICAL_API,
@@ -16,34 +19,76 @@ class ForecastTemp(float):
         obj.source = source
         return obj
 
-def _fetch_historical_average(city, date):
-    """Fetch the 10-year historical average max temp for this date/city using a single range lookup."""
+from market_discovery_internal.database_manager import db
+
+# [MODUL DB] LEGACY JSON CACHE REMOVED
+# _HIST_CACHE_FILE = "logs/cache/historical_avg.json"
+_HIST_CACHE_TTL_DAYS = 30
+
+def _fetch_historical_average(city, date, allow_live=True):
+    """Fetch the 10-year historical average max temp for this date/city using a single range lookup.
+    Results are stored in the SQLite Data Warehouse to avoid Open-Meteo 429 rate limits.
+    
+    If allow_live=False (Default for trading), it will ONLY return cached data or None.
+    """
     coords = TARGET_CITIES.get(city)
     if not coords or not date:
         return None
+
+    month_day = date[5:]  # e.g. "04-17"
     
+    # 1. Check SQLite Warehouse first
+    entry = db.get_weather(city, month_day)
+
+    if entry:
+        age_days = (time.time() - entry.get("ts", 0)) / 86400
+        if age_days < _HIST_CACHE_TTL_DAYS:
+            return entry.get("max_temp")
+
+    if not allow_live:
+        return entry.get("max_temp") if entry else None
+
     try:
         year = int(date.split("-")[0])
-        month_day = date[5:]
         # Fetch a 10-year window ending last year
         start_date = f"{year-10}-{month_day}"
         end_date = f"{year-1}-{month_day}"
-        
+
+        # [MODUL DB] Wave 2 Priming: Fetching both temperature and precipitation
         params = {
             "latitude": coords["lat"], "longitude": coords["lon"],
             "start_date": start_date, "end_date": end_date,
-            "daily": "temperature_2m_max", "timezone": "auto"
+            "daily": ["temperature_2m_max", "precipitation_sum"], 
+            "timezone": "auto"
         }
-        res = fetch_with_retry(OPEN_METEO_HISTORICAL_API, params=params)
+        
+        # [MODUL U] Rebalanced Persistence: 8 retries for stealth load
+        res = fetch_with_retry(OPEN_METEO_HISTORICAL_API, params=params, max_retries=8)
+        if res is None:
+            raise ValueError("All retries exhausted for historical fetch (429 or Timeout)")
+            
         daily = res.get("daily", {})
         times = daily.get("time", [])
         temps = daily.get("temperature_2m_max", [])
-        
+        precips = daily.get("precipitation_sum", [])
+
         # Filter for the same month and day across the decade
-        matches = [t for ts, t in zip(times, temps) if ts.endswith(month_day) and t is not None]
-        return round(sum(matches) / len(matches), 1) if matches else None
+        matches_temp = [t for ts, t in zip(times, temps) if ts.endswith(month_day) and t is not None]
+        matches_precip = [p for ts, p in zip(times, precips) if ts.endswith(month_day) and p is not None]
+        
+        avg_temp = round(sum(matches_temp) / len(matches_temp), 1) if matches_temp else None
+        avg_precip = round(sum(matches_precip) / len(matches_precip), 2) if matches_precip else None
+
+        if avg_temp is not None:
+            # Save both to the Warehouse
+            db.save_weather(city, month_day, max_temp=avg_temp, precip=avg_precip)
+
+        return avg_temp
     except Exception as e:
         print(f"[MODUL-K] Historical fetch error: {e}")
+        # Return stale cached value if available (better than None)
+        if entry:
+            return entry.get("max_temp")
         return None
 
 def _log_anomaly(city, date, forecast, historical, source="anomaly"):
@@ -55,13 +100,22 @@ def _log_anomaly(city, date, forecast, historical, source="anomaly"):
 
 def fetch_forecast(city, date, icao_override=None):
     """Fetch the daily max temperature forecast from Open-Meteo and wttr.in.
-
-    For same-day forecasts (date == today UTC), uses hourly data to compute
-    the max of remaining daytime hours (06:00–22:00 local).
+    
+    Now uses the SQLite Data Warehouse 'Discovery Cache' for persistent, high-speed lookups.
     """
     coords = TARGET_CITIES.get(city)
     if not coords:
         return None
+
+    # [MODUL DB] Check Discovery Cache first
+    cached = db.get_cached_forecast(city, date)
+    if cached:
+        # Re-fetch historical avg for the full ForecastTemp object
+        hist_avg = _fetch_historical_average(city, date)
+        ft = ForecastTemp(cached['forecast_temp'], cached['source'] + " (cache)")
+        ft.historical_avg = hist_avg
+        ft.noaa_current = None # Snapshot METAR not stored in discovery cache
+        return ft
 
     def _fetch_open_meteo():
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -160,7 +214,8 @@ def fetch_forecast(city, date, icao_override=None):
         
     if base_avg is not None:
         # [MODUL K] Historical Anomaly Check
-        hist_avg = _fetch_historical_average(city, date)
+        # Resilience: Trading engine uses Cache-Only mode to avoid 429s
+        hist_avg = _fetch_historical_average(city, date, allow_live=False)
         if hist_avg is not None:
             if abs(base_avg - hist_avg) > HISTORICAL_DEVIATION_C:
                 _log_anomaly(city, date, base_avg, hist_avg, "historical_anomaly")
@@ -187,14 +242,17 @@ def fetch_forecast(city, date, icao_override=None):
                 _log_anomaly(city, date, base_avg, t_noaa, "prediction_exceeded_by_ground_truth")
                 return None
 
-            # Scenario B: During peak heat, the discrepancy is too high
-            if is_peak_heat and error_margin > CONSENSUS_MAX_ERROR_C:
-                _log_anomaly(city, date, base_avg, t_noaa, "consensus_mismatch_during_peak")
-                return None
+            # Scenario B: REMOVED — comparing daytime max forecast vs evening METAR always
+            # produces false positives (METAR naturally lower than day's max in evening).
+            # Only Scenario A (current temp exceeds forecast max) is a reliable error signal.
 
         ft = ForecastTemp(base_avg, source)
         ft.noaa_current = t_noaa
         ft.historical_avg = hist_avg
+
+        # [MODUL DB] Save verified result to Warehouse Cache
+        db.save_cached_forecast(city, date, base_avg, source)
+        
         return ft
     return None
 
@@ -289,6 +347,7 @@ def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_fo
         "skipped": False,
     }
 
+    count = 0
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_key = {
             executor.submit(fetch_forecast_fn, city, date, icao_override=icao): (city, date, icao)
@@ -296,6 +355,11 @@ def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_fo
         }
         for future in as_completed(future_to_key):
             key = future_to_key[future]
+            city, date, icao = key
+            count += 1
+            # [MODUL L] Per-city live feedback via print (flush=True)
+            print(f"[MODUL-K] {count}/{eligible} complete: {city} ({date})", flush=True)
+            
             try:
                 forecast_temp = future.result()
             except Exception:

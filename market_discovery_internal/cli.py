@@ -54,7 +54,23 @@ def run_main_paper_loop_mode(
     on_kill_fn=None,
 ):
     """Handle paper loop mode in main()."""
-    print(f"Starting paper loop every {paper_loop_interval_seconds}s. Press Ctrl+C to stop.")
+    # [MODUL U] Log Rotation Hardening
+    try:
+        from market_discovery_internal.log_rotator import run_rotator_thread
+        run_rotator_thread("/opt/the_blueprints/logs/paper_loop.out")
+    except Exception as e:
+        print(f"[BOOT] Log rotator failed to start: {e}")
+
+    # [MODUL DB] Gudang Data Warmer Integration
+    try:
+        from market_discovery_internal.warmer import warmer
+        warmer.start()
+    except Exception as e:
+        print(f"[BOOT] Data Warmer failed to start: {e}")
+
+    # [MODUL U] IP Reputation Guard (Cool-off)
+    print(f"Starting paper loop every {paper_loop_interval_seconds}s. (Cool-off for 30s)...", flush=True)
+    sleep_fn(30)
 
     consecutive_errors = 0
     backoff_base = max(1, int(error_backoff_seconds))

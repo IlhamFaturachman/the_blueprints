@@ -153,8 +153,8 @@ CITY_PATTERNS = {
     "lucknow":       r"\blucknow\b",
 }
 
-# Matches: "75F", "80F", "25C", "30 C", "75 degrees F"
-THRESHOLD_PATTERN = r"(\d+(?:\.\d+)?)\s*(?:degrees?\s*)?(?:°\s*)?([FC])\b"
+# Matches: "75F", "80F", "25C", "30 C", "75 degrees F", or just "15" in a weather context
+THRESHOLD_PATTERN = r"(\d+(?:\.\d+)?)\s*(?:degrees?\s*)?(?:°\s*)?([FC])?\b"
 
 # Direction hints
 EXACT_KEYWORDS = r"\b(exact(?:ly)?|equal(?:s| to)?|at exactly|precisely|on the dot)\b"
@@ -184,7 +184,7 @@ HYBRID_STOP_LOSS_MULTIPLIER = float(os.getenv("HYBRID_STOP_LOSS_MULTIPLIER", "0.
 HYBRID_LATE_WINDOW_HOURS = float(os.getenv("HYBRID_LATE_WINDOW_HOURS", "2.0"))
 HYBRID_MIN_CONFIDENCE_TO_HOLD = float(os.getenv("HYBRID_MIN_CONFIDENCE_TO_HOLD", "0.75"))
 HYBRID_CONFIDENCE_EDGE_SCALE = float(os.getenv("HYBRID_CONFIDENCE_EDGE_SCALE", "0.35"))
-PAPER_STATE_FILE = os.getenv("PAPER_STATE_FILE", "logs/paper_positions.json")
+PAPER_STATE_FILE = os.getenv("PAPER_STATE_FILE", "logs/paper_positions_5usd.json")
 PAPER_MAX_OPEN_POSITIONS = int(os.getenv("PAPER_MAX_OPEN_POSITIONS", "3"))
 PAPER_MAX_OPEN_PER_CITY = max(1, int(os.getenv("PAPER_MAX_OPEN_PER_CITY", "1")))
 PAPER_BASE_WALLET = max(
@@ -197,7 +197,7 @@ PAPER_BASE_WALLET = max(
     ),
 )
 PAPER_MIN_CITY_DIVERSITY = max(1, int(os.getenv("PAPER_MIN_CITY_DIVERSITY", "5")))
-PAPER_ENTRY_MIN_PRICE = float(os.getenv("PAPER_ENTRY_MIN_PRICE", "0.10"))
+PAPER_ENTRY_MIN_PRICE = float(os.getenv("PAPER_ENTRY_MIN_PRICE", "0.05"))
 PAPER_ENTRY_MAX_PRICE = float(os.getenv("PAPER_ENTRY_MAX_PRICE", "0.65"))
 
 # Exact-bracket market liquidity gate (uses Gamma bestAsk/spread fields)
@@ -253,7 +253,7 @@ DISCOVERY_FORECAST_PREFETCH_MIN_KEYS = max(
 )
 DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS = max(
     1,
-    int(os.getenv("DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS", "4")),
+    int(os.getenv("DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS", "3")),
 )
 PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS = max(
     0,
@@ -261,7 +261,7 @@ PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS = max(
 )
 PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS = max(
     1,
-    int(os.getenv("PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS", "4")),
+    int(os.getenv("PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS", "3")),
 )
 # Discovery gate: aligned with PAPER_ENTRY_MAX_PRICE so no valid candidate is
 # discarded before it reaches the entry bucket stage.

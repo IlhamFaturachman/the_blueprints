@@ -90,6 +90,8 @@ def fetch_markets(inspect=False, aggressive_scan=False):
             
     return _enrich_markets_missing_prices(deduped)
 
+from market_discovery_internal.database_manager import db
+
 def filter_opportunities(
     markets,
     now_utc=None,
@@ -101,30 +103,62 @@ def filter_opportunities(
 ):
     """
     Filter raw markets down to profitable opportunities using weather forecasts.
+    Now leverages the Data Warehouse for instant bulk filtering.
     """
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
         
-    opportunities = []
+    # 1. Parsing and Pre-Filtering (Quick pass)
+    parsed_list = []
+    keys_to_fetch = []
     for raw in markets:
         parsed, skip_reason = parse_market(raw, now_utc=now_utc, return_skip_reason=True)
         if not parsed: continue
-        
-        # Initial price filter
         if parsed["yes_price"] > max_yes_price: continue
         
-        forecast_temp = fetch_forecast_fn(parsed["city"], parsed["date"], parsed.get("icao_code"))
-        if forecast_temp is None: continue
+        parsed_list.append(parsed)
+        keys_to_fetch.append((parsed["city"], parsed["date"]))
+
+    # 2. Bulk Load Forecasts from Warehouse
+    try:
+        bulk_cache = db.get_bulk_cached_forecasts(keys_to_fetch)
+    except Exception as e:
+        print(f"[RECOVER] Bulk cache fetch failed: {e}")
+        bulk_cache = {}
+    
+    opportunities = []
+    for parsed in parsed_list:
+        city_key = (parsed["city"].lower(), parsed["date"])
+        cached = bulk_cache.get(city_key)
         
-        edge_data = calculate_edge(parsed, forecast_temp)
-        if not edge_data: continue
-        
-        parsed.update(edge_data)
-        parsed["forecast_source"] = getattr(forecast_temp, "source", "unknown")
-        
-        # Strategy filters
-        if parsed["model_prob"] >= min_model_prob and parsed["edge"] >= min_edge:
-            opportunities.append(parsed)
+        try:
+            if cached:
+                # Reconstruct ForecastTemp-like behavior for cached data
+                from market_discovery_internal.forecasting import ForecastTemp, _fetch_historical_average
+                source = (cached.get('source') or "unknown") + " (warehouse)"
+                forecast_temp = ForecastTemp(cached['forecast_temp'], source)
+                forecast_temp.historical_avg = _fetch_historical_average(parsed["city"], parsed["date"], allow_live=False)
+                forecast_temp.noaa_current = None
+            else:
+                # Fallback to direct fetch if missing from warehouse
+                forecast_temp = fetch_forecast_fn(parsed["city"], parsed["date"], parsed.get("icao_code"))
+            
+            if forecast_temp is None: continue
+            
+            edge_data = calculate_edge(parsed, forecast_temp)
+            if not edge_data: continue
+            
+            parsed.update(edge_data)
+            parsed["forecast_source"] = getattr(forecast_temp, "source", "unknown")
+            
+            # Strategy filters
+            if parsed["model_prob"] >= min_model_prob and parsed["edge"] >= min_edge:
+                opportunities.append(parsed)
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] Opportunity filtering failed for {parsed.get('city')}: {e}")
+            traceback.print_exc()
+            continue
             
     # Sort by edge descending
     opportunities.sort(key=lambda x: x["edge"], reverse=True)

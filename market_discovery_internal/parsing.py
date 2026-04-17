@@ -205,7 +205,18 @@ def parse_market(
         return _with_reason(None)
 
     threshold = float(match.group(1))
-    unit = match.group(2).upper()
+    unit_match = match.group(2)
+    
+    if unit_match:
+        unit = unit_match.upper()
+    else:
+        # Smart Inference if unit is missing (Common in current Polymarket titles)
+        if icao_code and icao_code.startswith("K"):
+            unit = "F"
+        elif threshold >= 45: # Realistic heuristic: nobody bets on 45°C weather
+            unit = "F"
+        else:
+            unit = "C"
 
     # Step 3: Direction
     question_lower = question.lower()

@@ -142,6 +142,7 @@ class WsBroadcaster:
         while not self._stop_event.is_set() and attempt < max_attempts:
             attempt += 1
             try:
+                # [MODUL N] WebSocket Handshake Hardening
                 async with websockets_module.serve(
                     self._handle_client,
                     self._host,
@@ -149,6 +150,7 @@ class WsBroadcaster:
                     ping_interval=None,
                     ping_timeout=None,
                     reuse_address=True,
+                    process_request=self._process_request,
                 ):
                     self._ready_event.set()
                     ping_task = asyncio.create_task(self._ping_loop())
@@ -176,6 +178,18 @@ class WsBroadcaster:
                     )
         
         self._ready_event.set()
+
+    async def _process_request(self, connection, request):
+        """
+        Master Plan Handshake Hardening:
+        Handle non-standard Connection headers safely.
+        """
+        headers = getattr(request, "headers", {})
+        if "Connection" in headers:
+            conn = headers.get("Connection", "").lower()
+            if "upgrade" not in conn:
+                logger.debug("[WS-BROADCAST] Non-standard connection header: %s", conn)
+        return None  # Proceed with default WebSocket handshake
 
     async def _handle_client(self, websocket):
         if len(self._clients) >= self._max_clients:

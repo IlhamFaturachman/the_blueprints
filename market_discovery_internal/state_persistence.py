@@ -1,9 +1,5 @@
-"""State persistence helpers for paper-trading mode."""
-
 import json
-import os
-import tempfile
-
+from market_discovery_internal.database_manager import db
 
 _EMPTY_STATE = {
     "positions": [],
@@ -14,69 +10,75 @@ _EMPTY_STATE = {
 }
 
 
-def load_paper_state(path):
-    """Load paper-trading state from disk or return an empty state."""
-    if not os.path.exists(path):
+def load_paper_state(path=None):
+    """Load paper-trading state from the SQLite Data Warehouse."""
+    # [MODUL DB] Migration to Single Source of Truth (SQLite)
+    portfolio = db.get_portfolio()
+    if not portfolio:
         return dict(_EMPTY_STATE)
 
-    try:
-        with open(path, "r", encoding="utf-8") as file_handle:
-            data = json.load(file_handle)
-    except (OSError, json.JSONDecodeError):
-        return dict(_EMPTY_STATE)
+    positions = db.get_active_positions()
+    
+    # Load history (Last 100 trades for UI performance)
+    conn = db._get_conn()
+    history_rows = conn.execute("SELECT raw_json FROM trade_history ORDER BY closed_at DESC LIMIT 100").fetchall()
+    history = [json.loads(r['raw_json']) for r in history_rows]
 
-    positions = data.get("positions", []) if isinstance(data, dict) else []
-    history = data.get("history", []) if isinstance(data, dict) else []
-    cycle_journal = data.get("cycle_journal", []) if isinstance(data, dict) else []
-    updated_at = data.get("updated_at") if isinstance(data, dict) else None
-    meta = data.get("meta") if isinstance(data, dict) else None
+    # Load cycle journal (Last 100 for UI)
+    metrics = db.get_latest_metrics(limit=100)
 
-    if not isinstance(positions, list):
-        positions = []
-    if not isinstance(history, list):
-        history = []
-    if not isinstance(cycle_journal, list):
-        cycle_journal = []
-    if not isinstance(meta, dict):
-        meta = {}
-
-    return {
+    state = {
         "positions": positions,
         "history": history,
-        "cycle_journal": cycle_journal,
-        "updated_at": updated_at,
-        "meta": meta,
+        "cycle_journal": metrics,
+        "updated_at": portfolio.get('updated_at'),
+        "meta": {
+            "base_wallet": portfolio.get('base_wallet'),
+            "cash": portfolio.get('cash'),
+            "current_wallet": portfolio.get('cash') + sum(p.get('cost_basis', 0) for p in positions),
+            "acceptance_metrics_rolling": {
+                "closed_realized_pnl_total_usd": portfolio.get('total_pnl', 0.0)
+            }
+        },
     }
+    
+    # Sync additional meta keys if they exist in the latest metric
+    if metrics:
+        state["meta"].update(metrics[0].get("meta", {}))
+
+    return state
 
 
-def save_paper_state(state, path):
-    """Persist paper-trading state to disk."""
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
+def save_paper_state(state, path=None):
+    """Persist paper-trading state to the SQLite Data Warehouse."""
+    if not state or not isinstance(state, dict):
+        return
 
-    temp_path = None
-    try:
-        fd, temp_path = tempfile.mkstemp(
-            prefix=".paper_state_",
-            suffix=".tmp",
-            dir=directory,
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as file_handle:
-            json.dump(state, file_handle, indent=2, sort_keys=True)
-            file_handle.flush()
-            os.fsync(file_handle.fileno())
+    meta = state.get("meta", {})
+    base_wallet = meta.get("base_wallet", 5.0)
+    cash = meta.get("cash", 5.0)
+    total_pnl = meta.get("acceptance_metrics_rolling", {}).get("closed_realized_pnl_total_usd", 0.0)
 
-        os.replace(temp_path, path)
-        # The dashboard is served by nginx, so the state file must be world-readable.
-        # mkstemp() creates 0600 files; this best-effort chmod keeps static JSON access working.
+    # 1. Update Portfolio Summary
+    db.update_portfolio(base_wallet, cash, total_pnl)
+
+    # 2. Update Active Positions (Atomic Replace)
+    conn = db._get_conn()
+    conn.execute("DELETE FROM active_positions") # Clear to avoid ghosts
+    for pos in state.get("positions", []):
+        db.add_position(pos)
+
+    # 3. Add Cycle Metric (If new journal entry exists)
+    journal = state.get("cycle_journal", [])
+    if journal:
+        db.add_cycle_metric(journal[-1])
+
+    # 4. Mirror to JSON (Mirrored Copy for Dashboard/Manual Debug)
+    if path:
         try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+            # Ensure it's world-readable for the nginx-served dashboard
             os.chmod(path, 0o644)
-        except OSError:
+        except:
             pass
-        temp_path = None
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass

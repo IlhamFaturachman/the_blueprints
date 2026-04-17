@@ -331,8 +331,8 @@ function getMarketLabel(pos) {
 
 function getWsUrl() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname || 'localhost';
-    return `${protocol}//${host}:8082/`;
+    const host = window.location.host || 'localhost:8080';
+    return `${protocol}//${host}/ws`;
 }
 
 function setWsStatus(state, text) {
@@ -529,6 +529,10 @@ async function fetchData() {
             document.getElementById('valLastRun').innerHTML = new Date(last_cycle.timestamp).toLocaleString();
             let cov = last_cycle.city_coverage || {};
             document.getElementById('valCoverage').innerHTML = `Coverage: ${cov.unique_opportunity_cities}/${cov.min_city_target}`;
+        } else if (data.updated_at) {
+            // [MODUL L] Initial cycle feedback fallback
+            document.getElementById('valLastRun').innerHTML = new Date(data.updated_at).toLocaleString();
+            document.getElementById('valCoverage').innerHTML = `Discovery in progress...`;
         }
 
         const tHist = document.getElementById('historyTable');

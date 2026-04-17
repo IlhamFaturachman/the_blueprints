@@ -117,12 +117,12 @@ def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
             discovery_forecast_prefetch_min_keys=DISCOVERY_FORECAST_PREFETCH_MIN_KEYS,
             discovery_forecast_prefetch_max_workers=DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS,
         ),
-        filter_opportunities_fn=lambda enriched: filter_opportunities(
-            enriched,
-            fetch_forecast_fn=fetch_forecast,
-            max_yes_price=STRATEGY_MAX_YES_PRICE,
-            min_model_prob=STRATEGY_MIN_MODEL_PROB,
-            min_edge=STRATEGY_MIN_EDGE
+        filter_opportunities_fn=lambda enriched: sorted(
+            [m for m in enriched
+             if float(m.get("yes_price", 1.0)) <= STRATEGY_MAX_YES_PRICE
+             and float(m.get("model_prob", 0.0)) >= STRATEGY_MIN_MODEL_PROB
+             and float(m.get("edge", -1.0)) >= STRATEGY_MIN_EDGE],
+            key=lambda x: x.get("edge", 0), reverse=True
         ),
         daily_resolve_only=DAILY_RESOLVE_ONLY,
         daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE
@@ -223,6 +223,7 @@ def _start_background_services():
     )
     # [WIRING] Initial subscription sync
     try:
+        import json
         from market_discovery_internal.state_persistence import load_paper_state
         from market_discovery_internal.config import PAPER_STATE_FILE
         state = load_paper_state(PAPER_STATE_FILE)

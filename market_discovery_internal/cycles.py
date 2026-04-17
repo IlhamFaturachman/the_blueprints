@@ -1,5 +1,7 @@
 import logging
 import time
+import os
+import threading
 from datetime import datetime, timezone
 from market_discovery_internal.utils import _safe_float, _safe_div, _clamp, send_telegram_alert
 from market_discovery_internal.config import (
@@ -13,6 +15,10 @@ from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
 
 logger = logging.getLogger(__name__)
+
+# [MODUL L] Heartbeat State
+_HEARTBEAT_SENT = False
+_heartbeat_lock = threading.Lock()
 
 
 def parse_discovery_markets(
@@ -103,17 +109,20 @@ def enrich_discovery_markets(
     forecast_cache_stats = {"hits": 0, "misses": 0}
 
     # [MODUL A] Precision Station Resolution (Pre-Enrichment)
-    # We resolve stations before prefetching so the cache hits the correct ICAO-specific forecast.
-    # Note: AI lookups are internally cached in resolve_station_with_ai_fn.
-    for market in parsed:
+    total_parsed = len(parsed)
+    for i, market in enumerate(parsed, 1):
+        # Progress log for station resolution if many markets
+        if total_parsed > 50 and i % 50 == 0:
+            print(f"[MODUL A] Resolving stations: {i}/{total_parsed} markets processed...", flush=True)
+
         # If ICAO is already explicit via regex, we skip AI to save cost.
-        # Otherwise, if we have rules (description), we let AI attempt extraction.
         if not market.get("icao_explicit"):
             ai_icao = resolve_station_with_ai_fn(market.get("city"), market.get("description"))
             if ai_icao:
                 market["icao_code"] = ai_icao
                 market["icao_explicit"] = True # Mark as explicit so we don't re-run AI
 
+    print(f"[MODUL K] Prefetching forecasts for {len(parsed)} unique slots...", flush=True)
     prefetch_started = perf_counter_fn()
     forecast_prefetch = prefetch_forecasts_fn(
         cache_keys=[(market.get("city"), market.get("date"), market.get("icao_code")) for market in parsed],
@@ -124,7 +133,11 @@ def enrich_discovery_markets(
     forecast_prefetch_ms = elapsed_ms_fn(prefetch_started)
 
     enrich_started = perf_counter_fn()
-    for market in parsed:
+    for i, market in enumerate(parsed, 1):
+        # Progress log for enrichment
+        if total_parsed > 20 and i % 25 == 0:
+             print(f"[MODUL C] Enrichment progress: {i}/{total_parsed} markets...", flush=True)
+
         city = market["city"]
         date = market["date"]
         forecast_temp = fetch_forecast_with_cache_fn(
@@ -145,11 +158,13 @@ def enrich_discovery_markets(
 
         edge_result = calculate_edge_fn(market, forecast_temp)
         if edge_result:
-            edge_result["weather_evidence"] = evidence
-            edge_result["weather_evidence_valid"] = evidence_valid
-            edge_result["weather_evidence_quality_score"] = evidence.get("quality_score")
-            edge_result["weather_evidence_age_hours"] = evidence.get("age_hours")
-            enriched.append(maybe_apply_ai_decision_fn(edge_result))
+            # Merge market metadata into edge result so downstream filters/entry have full context
+            enriched_item = {**market, **edge_result}
+            enriched_item["weather_evidence"] = evidence
+            enriched_item["weather_evidence_valid"] = evidence_valid
+            enriched_item["weather_evidence_quality_score"] = evidence.get("quality_score")
+            enriched_item["weather_evidence_age_hours"] = evidence.get("age_hours")
+            enriched.append(maybe_apply_ai_decision_fn(enriched_item))
     enrich_ms = elapsed_ms_fn(enrich_started)
 
     return {
@@ -178,9 +193,11 @@ def run_discovery_cycle(
 ):
     """Run one discovery cycle and return structured results."""
     cycle_started = perf_counter_fn()
+    print(f"--- [FETCH] Starting market scan (Aggressive: {aggressive_scan}) ---", flush=True)
 
     fetch_started = perf_counter_fn()
     markets_raw = fetch_markets_fn(inspect=inspect, aggressive_scan=aggressive_scan)
+    print(f"--- [FETCH] Found {len(markets_raw)} markets. Parsing...", flush=True)
     fetch_ms = elapsed_ms_fn(fetch_started)
 
     parse_started = perf_counter_fn()
@@ -284,7 +301,21 @@ def run_paper_trading_cycle(
     ws_stale_detection_minutes=15,
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
+    global _HEARTBEAT_SENT
     cycle_started = perf_counter_fn()
+    now_dt = now_utc_fn()
+
+    # [MODUL L] Process Heartbeat
+    print(f"--- CYCLE START: {now_dt.strftime('%H:%M:%S')} (Aggressive: {force_aggressive_scan}) ---", flush=True)
+    
+    with _heartbeat_lock:
+        if not _HEARTBEAT_SENT:
+            send_telegram_alert(
+                "🚀 <b>Bot Master Active: Resumed</b>\n"
+                f"Siklus pertama dimulai pada {now_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC.\n"
+                "Mode: Paper Trading (Zero-Barrier Configuration)"
+            )
+            _HEARTBEAT_SENT = True
 
     state_load_started = perf_counter_fn()
     now = now_utc_fn()
@@ -292,6 +323,13 @@ def run_paper_trading_cycle(
     state_load_ms = elapsed_ms_fn(state_load_started)
 
     state_meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+    
+    # [MODUL L] Initial UI Touch: Tell the Dashboard we are starting a cycle
+    # Update timestamp and last_cycle_at even before the cycle finishes
+    state_meta["last_cycle_at"] = now.isoformat()
+    state["updated_at"] = now.isoformat()
+    state["meta"] = state_meta
+    save_paper_state_fn(state, path=state_path)
     
     # [DAILY RESET] reset baseline_wallet at 00:00 UTC
     last_cycle_at_raw = state_meta.get("last_cycle_at")
@@ -607,6 +645,17 @@ def run_paper_trading_cycle(
     # [MODUL L] Circuit Breaker — trigger on daily drawdown >= $1.50 (Master Plan spec)
     _daily_baseline = float(daily_session.get("baseline_wallet", state_base_wallet) or state_base_wallet)
     _daily_loss = _daily_baseline - wallet_after_position_management
+    
+    # [FIX] Reset circuit breaker alert flag if it's a new day
+    last_cycle_str = str(state_meta.get("last_cycle_at", ""))
+    try:
+        if last_cycle_str:
+            last_date = datetime.fromisoformat(last_cycle_str).date()
+            if last_date < now.date():
+                state_meta.pop("circuit_breaker_alert_sent", None)
+    except:
+        pass
+
     if effective_allow_new_entries and _daily_loss >= 1.50:
         effective_allow_new_entries = False
         effective_entry_gate_reason = "circuit_breaker_tripped"
@@ -882,10 +931,15 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     if entry_price <= 0:
         raise ValueError("entry_price must be > 0")
 
-    quantity = round(float(stake_usd) / entry_price, 6)
-    cost_basis = round(quantity * entry_price, 4)
-    target_price = _compute_take_profit_price(entry_price)
-    entry_yes_reference = _safe_float(opportunity.get("yes_price"), entry_price)
+    # [PAPER REALISM] Implement 1% Slippage Buffer
+    # For paper trading, we simulate paying slightly more than best_ask (slippage).
+    # This ensures our backtests/simulations aren't overly optimistic.
+    effective_price = round(entry_price * 1.01, 4)
+
+    quantity = round(float(stake_usd) / effective_price, 6)
+    cost_basis = round(quantity * effective_price, 4)
+    target_price = _compute_take_profit_price(effective_price)
+    entry_yes_reference = _safe_float(opportunity.get("yes_price"), effective_price)
     entry_price_source = str(opportunity.get("entry_price_source") or "yes_price")
     entry_quote_best_bid = _safe_float(opportunity.get("entry_quote_best_bid"), 0.0)
     entry_quote_best_ask = _safe_float(opportunity.get("entry_quote_best_ask"), 0.0)
@@ -901,7 +955,7 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "date": opportunity["date"],
         "end_date": opportunity.get("end_date"),
         "market_slug": opportunity.get("market_slug", ""),
-        "entry_price": entry_price,
+        "entry_price": effective_price,
         "entry_price_source": entry_price_source,
         "entry_yes_reference": entry_yes_reference,
         "quantity": quantity,
@@ -911,7 +965,7 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "target_price_high": target_price,
         "target_policy": "take_profit_100pct",
         "target_strategy": opportunity.get("strategy", "swing"),
-        "stop_loss_price": round(entry_price * HYBRID_STOP_LOSS_MULTIPLIER, 4),
+        "stop_loss_price": round(effective_price * HYBRID_STOP_LOSS_MULTIPLIER, 4),
         "entry_model_prob": opportunity.get("model_prob"),
         "entry_edge": opportunity.get("edge"),
         "forecast_temp_c": opportunity.get("forecast_temp_c"),
@@ -1150,6 +1204,7 @@ def build_entry_candidates(opportunities, open_token_ids, open_city_counts, min_
         if city_key
     }
     candidate_city_keys = set()
+    seen_event_slugs = set()
     best_candidate_by_city = {}
     cityless_candidates = []
 
@@ -1163,12 +1218,19 @@ def build_entry_candidates(opportunities, open_token_ids, open_city_counts, min_
 
         token_id = opportunity.get("token_id")
         price = _safe_float(opportunity.get("yes_price"), 0.0)
+        slug = opportunity.get("market_slug")
 
         if str(token_id) in open_token_ids:
             continue
         if price < min_bound or price > max_bound:
             continue
-
+        
+        # [MODUL L] Anti-Correlation Guard: One market per specific Weather Event
+        # Composite Key: City + Date + Unit (e.g., "London-2026-04-18-degC")
+        event_key = f"{opportunity.get('city')}-{opportunity.get('date')}-{opportunity.get('unit')}"
+        if event_key in seen_event_slugs:
+            continue
+        seen_event_slugs.add(event_key)
         city_key = _normalize_city_key(opportunity.get("city"))
         if city_key:
             if open_city_counts.get(city_key, 0) >= PAPER_MAX_OPEN_PER_CITY:
@@ -1246,8 +1308,9 @@ def append_opened_positions_from_candidates(
         best_bid = _safe_float(opportunity.get("best_bid"), 0.0)
         if best_ask <= 0:
             quote = fetch_orderbook_quote_fn(token_id) if callable(fetch_orderbook_quote_fn) else None
-            best_ask = _safe_float((quote or {}).get("best_ask"), 0.0)
-            best_bid = _safe_float((quote or {}).get("best_bid"), 0.0)
+            # fetch_orderbook_quote returns {"ask": ..., "bid": ...} keys
+            best_ask = _safe_float((quote or {}).get("ask") or (quote or {}).get("best_ask"), 0.0)
+            best_bid = _safe_float((quote or {}).get("bid") or (quote or {}).get("best_bid"), 0.0)
 
         # Spread gate: skip illiquid markets at entry time
         if best_ask > 0 and best_bid > 0:

@@ -35,13 +35,22 @@ def fetch_with_retry(url, params=None, headers=None, max_retries=3):
     for attempt in range(max_retries):
         try:
             response = requests.get(url, params=params, headers=headers, timeout=10)
+            if response.status_code == 429:
+                # [MODUL U] Sprint Mode Backoff (5s) to hit the 11:00 AM deadline
+                # Record the error so if retries exhaust, we raise it instead of returning None
+                last_error = requests.HTTPError(f"429 Client Error: Too Many Requests for url: {url}", response=response)
+                time.sleep(5)
+                continue
             response.raise_for_status()
             return response.json()
         except (requests.RequestException, ValueError) as e:
             last_error = e
             if attempt < max_retries - 1:
+                # Normal exponential backoff for other errors (timeout, 5xx, etc)
                 time.sleep(2 ** attempt)  # 1s, 2s, 4s
-    raise last_error
+    if last_error:
+        raise last_error
+    return None
 
 def _safe_float(value, default=0.0):
     """Safely convert a value to float, returning default on failure."""
