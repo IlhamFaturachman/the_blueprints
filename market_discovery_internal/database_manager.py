@@ -136,6 +136,24 @@ class BlueprintsDB:
             )
         """)
 
+        # 8. AI Usage Ledger — atomic, thread-safe replacement for ai_usage_ledger.json
+        # monthly: one row per month, accumulates total cost_usd
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ai_monthly_cost (
+                month_key TEXT PRIMARY KEY,
+                total_cost_usd REAL NOT NULL DEFAULT 0.0
+            )
+        """)
+        # daily: one row per (day_key, call_kind), tracks call count
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ai_daily_calls (
+                day_key TEXT NOT NULL,
+                call_kind TEXT NOT NULL,
+                call_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day_key, call_kind)
+            )
+        """)
+
         # Schema migrations — idempotent via try/except for each new column.
         _migrations = [
             "ALTER TABLE active_positions ADD COLUMN raw_json TEXT",
@@ -292,6 +310,61 @@ class BlueprintsDB:
         conn = self._get_conn()
         rows = conn.execute("SELECT data_json FROM cycle_metrics ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [json.loads(r['data_json']) for r in rows]
+
+    # --- AI Usage Ledger (Atomic SQLite replacement for ai_usage_ledger.json) ---
+
+    def ai_get_month_cost(self, month_key):
+        """Return total AI cost in USD for a given month key (e.g. '2026-04')."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT total_cost_usd FROM ai_monthly_cost WHERE month_key = ?", (month_key,)
+        ).fetchone()
+        return float(row["total_cost_usd"]) if row else 0.0
+
+    def ai_add_month_cost(self, month_key, cost_usd):
+        """Atomically add cost_usd to the monthly accumulator."""
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT INTO ai_monthly_cost (month_key, total_cost_usd)
+            VALUES (?, ?)
+            ON CONFLICT(month_key) DO UPDATE SET total_cost_usd = total_cost_usd + excluded.total_cost_usd
+        """, (month_key, float(cost_usd)))
+        conn.commit()
+
+    def ai_get_day_calls(self, day_key, call_kind):
+        """Return call count for a given day+kind pair."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT call_count FROM ai_daily_calls WHERE day_key = ? AND call_kind = ?",
+            (day_key, call_kind)
+        ).fetchone()
+        return int(row["call_count"]) if row else 0
+
+    def ai_try_reserve_call(self, day_key, call_kind, limit):
+        """Atomically increment daily call count if below limit.
+        Returns True if the slot was reserved, False if limit already reached."""
+        conn = self._get_conn()
+        # Ensure row exists
+        conn.execute("""
+            INSERT OR IGNORE INTO ai_daily_calls (day_key, call_kind, call_count)
+            VALUES (?, ?, 0)
+        """, (day_key, call_kind))
+        # Read current count
+        row = conn.execute(
+            "SELECT call_count FROM ai_daily_calls WHERE day_key = ? AND call_kind = ?",
+            (day_key, call_kind)
+        ).fetchone()
+        current = int(row["call_count"]) if row else 0
+        if current >= limit:
+            conn.commit()
+            return False
+        conn.execute("""
+            UPDATE ai_daily_calls SET call_count = call_count + 1
+            WHERE day_key = ? AND call_kind = ?
+        """, (day_key, call_kind))
+        conn.commit()
+        return True
+
 
 # Singleton instance
 db = BlueprintsDB()

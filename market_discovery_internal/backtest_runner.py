@@ -108,7 +108,7 @@ def _fetch_historical_forecast(city, date):
 
 def _model_would_enter(parsed_market, forecast_temp):
     """Run calculate_edge and check if we would have entered this market."""
-    from market_discovery_internal.parsing import calculate_edge
+    from market_discovery_internal.pricing import calculate_edge  # correct module
     if forecast_temp is None:
         return None, None
     try:

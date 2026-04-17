@@ -195,19 +195,26 @@ def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
 def calculate_edge(market, forecast_temp):
     """
     Calculate the statistical edge of a market position compared to forecast.
-    
+
     Logic:
-    - For Above/Below: Model probability based on threshold.
-    - For Exact: Model probability using Gaussian distribution around forecast.
-    - Edge = Model Prob - Market Price.
+    - Above/Below: sigmoid model probability around threshold.
+    - Exact: Gaussian probability around forecast.
+    - Edge = model_prob - (price + slippage_penalty)
+
+    Slippage penalty (spread-aware):
+      slippage_penalty = max(0.0175, gamma_spread / 2.0)
+    Uses real-time spread from the market dict if available (gamma_spread field).
+    Floor of 1.75% ensures conservatism when spread is unknown or very tight.
+    Formula: half-spread approximates one-way transaction cost.
     """
-    if forecast_temp is None: return None
-    
+    if forecast_temp is None:
+        return None
+
     price = market.get("yes_price")
     threshold = market.get("threshold")
     direction = market.get("direction")
     forecast = float(forecast_temp)
-    
+
     model_prob = 0.0
     if direction == "above":
         # Sigmoid: smooth gradient around threshold.
@@ -225,16 +232,24 @@ def calculate_edge(market, forecast_temp):
         sigma = MODEL_EXACT_SIGMA_C
         model_prob = math.exp(-0.5 * (diff / sigma)**2)
 
-    # [MODUL P] Slippage-Aware Execution: Subtract 1.75% (mid-range of 1.5% - 2.0%)
-    # This reflects the cost of bridge impact and spread widening on large/fast entries.
-    slippage_penalty = 0.0175
+    # [MODUL P] Spread-Aware Slippage Penalty
+    # Use gamma_spread from parsed market dict if available; floor at 1.75%.
+    gamma_spread = market.get("gamma_spread")
+    if gamma_spread is not None:
+        try:
+            slippage_penalty = max(0.0175, float(gamma_spread) / 2.0)
+        except (TypeError, ValueError):
+            slippage_penalty = 0.0175
+    else:
+        slippage_penalty = 0.0175
+
     edge = model_prob - (price + slippage_penalty)
 
     return {
         "model_prob": round(model_prob, 4),
         "edge": round(edge, 4),
         "forecast": forecast,
-        "slippage_penalty_applied": slippage_penalty
+        "slippage_penalty_applied": round(slippage_penalty, 4),
     }
 
 def _enrich_markets_missing_prices(markets, max_workers=6):

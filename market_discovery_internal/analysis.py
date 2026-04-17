@@ -82,25 +82,13 @@ def _ai_day_key(now_utc=None):
     if now_utc is None: now_utc = datetime.now(timezone.utc)
     return now_utc.strftime("%Y-%m-%d")
 
-def _ensure_ai_usage_ledger(now_utc=None):
-    ledger = _load_json_blob(AI_USAGE_LEDGER_FILE, {"monthly": {}, "daily_calls": {}})
-    m_key = _ai_month_key(now_utc)
-    if m_key not in ledger["monthly"]:
-        ledger["monthly"][m_key] = {"total_cost_usd": 0.0}
-    return ledger
-
-def _save_ai_usage_ledger(ledger):
-    _save_json_blob(AI_USAGE_LEDGER_FILE, ledger)
-
 def _reserve_ai_call_slot(call_kind, now_utc=None):
-    """Check if budget and daily call limits allow another AI call."""
-    if not ANTHROPIC_API_KEY: return False
-    
-    ledger = _ensure_ai_usage_ledger(now_utc)
-    m_key = _ai_month_key(now_utc)
-    current_month_cost = ledger["monthly"][m_key]["total_cost_usd"]
-    
-    if current_month_cost >= AI_MONTHLY_BUDGET_USD:
+    """Check if budget and daily call limits allow another AI call.
+
+    Uses SQLite (atomic) as the primary source of truth.
+    Falls back to JSON ledger if DB is unavailable.
+    """
+    if not ANTHROPIC_API_KEY:
         return False
 
     from market_discovery_internal.config import (
@@ -112,26 +100,54 @@ def _reserve_ai_call_slot(call_kind, now_utc=None):
         limit = HAIKU_SENSING_MAX_CALLS_PER_DAY
     else:
         limit = HAIKU_MONITOR_MAX_CALLS_PER_DAY
-    
-    d_key = f"{_ai_day_key(now_utc)}:{call_kind}"
-    current_calls = ledger["daily_calls"].get(d_key, 0)
-    
-    if current_calls >= limit:
-        return False
-        
-    ledger["daily_calls"][d_key] = current_calls + 1
-    _save_ai_usage_ledger(ledger)
-    return True
+
+    m_key = _ai_month_key(now_utc)
+    d_key = _ai_day_key(now_utc)
+
+    try:
+        from market_discovery_internal.database_manager import db
+        # 1. Budget gate
+        current_month_cost = db.ai_get_month_cost(m_key)
+        if current_month_cost >= AI_MONTHLY_BUDGET_USD:
+            return False
+        # 2. Daily call gate — atomic reserve
+        return db.ai_try_reserve_call(d_key, call_kind, limit)
+    except Exception:
+        # Fallback to JSON if DB unavailable (graceful degradation)
+        try:
+            ledger = _load_json_blob(AI_USAGE_LEDGER_FILE, {"monthly": {}, "daily_calls": {}})
+            if m_key not in ledger["monthly"]:
+                ledger["monthly"][m_key] = {"total_cost_usd": 0.0}
+            if ledger["monthly"][m_key]["total_cost_usd"] >= AI_MONTHLY_BUDGET_USD:
+                return False
+            dk = f"{d_key}:{call_kind}"
+            if ledger["daily_calls"].get(dk, 0) >= limit:
+                return False
+            ledger["daily_calls"][dk] = ledger["daily_calls"].get(dk, 0) + 1
+            _save_json_blob(AI_USAGE_LEDGER_FILE, ledger)
+            return True
+        except Exception:
+            return False
 
 def _record_ai_usage_cost(call_kind, model, response, now_utc=None):
-    """Parse usage from AI response and update the cost ledger."""
+    """Parse usage from AI response and update the cost ledger (SQLite, atomic)."""
     usage = _extract_response_usage(response)
     cost = _estimate_ai_usage_cost_usd(model, usage)
-    
-    ledger = _ensure_ai_usage_ledger(now_utc)
     m_key = _ai_month_key(now_utc)
-    ledger["monthly"][m_key]["total_cost_usd"] += cost
-    _save_ai_usage_ledger(ledger)
+
+    try:
+        from market_discovery_internal.database_manager import db
+        db.ai_add_month_cost(m_key, cost)
+    except Exception:
+        # Fallback to JSON mirror
+        try:
+            ledger = _load_json_blob(AI_USAGE_LEDGER_FILE, {"monthly": {}, "daily_calls": {}})
+            if m_key not in ledger["monthly"]:
+                ledger["monthly"][m_key] = {"total_cost_usd": 0.0}
+            ledger["monthly"][m_key]["total_cost_usd"] += cost
+            _save_json_blob(AI_USAGE_LEDGER_FILE, ledger)
+        except Exception:
+            pass
 
 def _extract_response_usage(response):
     if not hasattr(response, 'usage'): return {"input_tokens": 0, "output_tokens": 0}

@@ -325,6 +325,30 @@ def run_paper_trading_cycle(
     
     # [MODUL L] Process Watchdog Pulse
     db.update_heartbeat("main_loop")
+
+    # [MODUL L] Memory Watchdog — alert if RSS > 850 MB (one-shot per cooldown period)
+    try:
+        import resource
+        _rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # On Linux, ru_maxrss is in KB; on macOS, it's in bytes
+        import sys as _sys
+        _rss_mb = _rss_kb / 1024.0 if _sys.platform != "darwin" else _rss_kb / (1024.0 * 1024.0)
+        _MEM_ALERT_THRESHOLD_MB = 850
+        _MEM_ALERT_COOLDOWN_CYCLES = 12  # ~1h at 5-min cycles
+        _mem_alert_count = state_meta.get("_mem_alert_count", 0)
+        if _rss_mb > _MEM_ALERT_THRESHOLD_MB:
+            if _mem_alert_count == 0:
+                send_telegram_alert(
+                    f"⚠️ <b>MEMORY WATCHDOG: HIGH RAM</b> ⚠️\n\n"
+                    f"RSS Memory: <b>{_rss_mb:.0f} MB</b> (threshold {_MEM_ALERT_THRESHOLD_MB} MB)\n"
+                    f"Bot masih berjalan, tetapi performa mungkin terdampak.\n"
+                    f"Pertimbangkan restart jika terus meningkat."
+                )
+            state_meta["_mem_alert_count"] = (_mem_alert_count + 1) % _MEM_ALERT_COOLDOWN_CYCLES
+        else:
+            state_meta["_mem_alert_count"] = 0
+    except Exception:
+        pass
     
     # [MODUL L] Monitor Warmer Health
     warmer_heartbeat_raw = db.get_heartbeat("warmer")
