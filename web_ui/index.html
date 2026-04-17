@@ -497,6 +497,19 @@ async function fetchData() {
     try {
         const res = await fetch('../logs/paper_positions_5usd.json', { cache: "no-store" });
         const data = await res.json();
+
+        // [UI HARDENING] Deduplicate and sort by timestamp descending (newest first)
+        // Move this to TOP to avoid race conditions with summary cards
+        const rawCycles = data.cycle_journal || [];
+        const seenTs = new Set();
+        cycleRowsCache = rawCycles
+            .filter(c => {
+                if (!c.timestamp || seenTs.has(c.timestamp)) return false;
+                seenTs.add(c.timestamp);
+                return true;
+            })
+            .sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+
         latestPositions = (data.positions || []).map(p => ({ ...p, last_price: Number(p.last_price || p.entry_quote_best_bid || 0) }));
         const d_closed = data.history || [];
         const meta = data.meta || {};
@@ -547,16 +560,6 @@ async function fetchData() {
             });
         }
 
-        // [UI HARDENING] Deduplicate and sort by timestamp descending (newest first)
-        const rawCycles = data.cycle_journal || [];
-        const seenTs = new Set();
-        cycleRowsCache = rawCycles
-            .filter(c => {
-                if (!c.timestamp || seenTs.has(c.timestamp)) return false;
-                seenTs.add(c.timestamp);
-                return true;
-            })
-            .sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
         updateAggregateCards();
         renderPositionsTable();
         renderCycleTable();
