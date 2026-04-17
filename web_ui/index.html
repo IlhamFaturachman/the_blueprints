@@ -495,7 +495,7 @@ function cycleNextPage() { if (cyclePage < Math.ceil(cycleRowsCache.length / CYC
 
 async function fetchData() {
     try {
-        const res = await fetch('../logs/paper_positions_5usd.json', { cache: "no-store" });
+        const res = await fetch('../logs/paper_positions_5usd.json?t=' + Date.now(), { cache: "no-store" });
         const data = await res.json();
 
         // [UI HARDENING] Deduplicate and sort by timestamp descending (newest first)
