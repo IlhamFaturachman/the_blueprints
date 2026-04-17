@@ -36,10 +36,12 @@ def fetch_with_retry(url, params=None, headers=None, max_retries=3):
         try:
             response = requests.get(url, params=params, headers=headers, timeout=10)
             if response.status_code == 429:
-                # [MODUL U] Sprint Mode Backoff (5s) to hit the 11:00 AM deadline
-                # Record the error so if retries exhaust, we raise it instead of returning None
+                # [MODUL U] Smart Backoff: Archive API is extremely strict.
+                # First 429: 30s, Second: 60s, Third: 120s
+                backoff = 30 * (2 ** attempt)
+                print(f"[RETRY] Rate limit hit (429). Cooling down for {backoff}s before retry {attempt+1}/{max_retries}...")
                 last_error = requests.HTTPError(f"429 Client Error: Too Many Requests for url: {url}", response=response)
-                time.sleep(5)
+                time.sleep(backoff)
                 continue
             response.raise_for_status()
             return response.json()

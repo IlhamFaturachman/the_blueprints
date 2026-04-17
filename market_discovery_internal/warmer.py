@@ -45,28 +45,34 @@ class GudangDataWarmer:
 
         for city in cities:
             for date in dates:
-                month_day = date[5:]
-                
-                # 1. Warm Historical (Priming for Wave 1 & 2)
-                hist = db.get_weather(city, month_day)
-                if not hist:
-                    # _fetch_historical_average (allow_live=True) saves to DB
-                    _fetch_historical_average(city, date, allow_live=True)
-                    # Ultra-Stealth Throttle: Archive API is stricter than Forecast API
-                    time.sleep(12.0) 
+                try:
+                    month_day = date[5:]
+                    
+                    # 1. Warm Historical (Priming for Wave 1 & 2)
+                    hist = db.get_weather(city, month_day)
+                    if not hist:
+                        # _fetch_historical_average (allow_live=True) saves to DB
+                        _fetch_historical_average(city, date, allow_live=True)
+                        # Ultra-Stealth Throttle: Archive API is stricter than Forecast API
+                        time.sleep(25.0) 
 
-                # 2. Warm Forecast (Discovery Cache)
-                # TTL 2 hours for warmer (more relaxed than discovery cycle)
-                cached = db.get_cached_forecast(city, date, ttl_seconds=7200)
-                if not cached:
-                    # fetch_forecast already saves verified result to DB
-                    fetch_forecast(city, date)
-                    # Standard Throttle
-                    time.sleep(5.0)
+                    # 2. Warm Forecast (Discovery Cache)
+                    # TTL 2 hours for warmer (more relaxed than discovery cycle)
+                    cached = db.get_cached_forecast(city, date, ttl_seconds=7200)
+                    if not cached:
+                        # fetch_forecast already saves verified result to DB
+                        fetch_forecast(city, date)
+                        # Standard Throttle
+                        time.sleep(5.0)
 
-                processed += 1
-                if processed % 10 == 0:
-                    print(f"[WARMER] Progress: {processed}/{total_tasks} data points warmed.")
+                    processed += 1
+                    if processed % 10 == 0:
+                        print(f"[WARMER] Progress: {processed}/{total_tasks} data points warmed.")
+                except Exception as e:
+                    if "429" in str(e):
+                        print(f"[WARMER] Circuit Breaker Tripped (429 detected). Aborting cycle for safety: {e}")
+                        return
+                    print(f"[WARMER] Point-specific error ({city}/{date}): {e}")
 
         print(f"--- [WARMER] Warming Cycle Complete: {datetime.now().strftime('%H:%M:%S')} ---")
 
