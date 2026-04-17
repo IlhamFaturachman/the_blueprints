@@ -159,9 +159,13 @@ def calculate_edge(market, forecast_temp):
     
     model_prob = 0.0
     if direction == "above":
-        model_prob = 1.0 if forecast > threshold else 0.0
+        # Sigmoid: smooth gradient around threshold.
+        # k=1.5 → at +1°C prob≈0.82, at +2°C prob≈0.95, at -1°C prob≈0.18
+        k = 1.5
+        model_prob = 1.0 / (1.0 + math.exp(-k * (forecast - threshold)))
     elif direction == "below":
-        model_prob = 1.0 if forecast < threshold else 0.0
+        k = 1.5
+        model_prob = 1.0 / (1.0 + math.exp(-k * (threshold - forecast)))
     elif direction == "exact":
         # Gaussian approximation: exp(-0.5 * ((x-mu)/sigma)^2)
         diff = abs(forecast - threshold)
