@@ -35,8 +35,8 @@ def fetch_markets(inspect=False, aggressive_scan=False):
     try:
         data = fetch_with_retry(GAMMA_EVENTS_API, params={**base_params, "offset": 0})
     except Exception as e:
-        print(f"\nERROR: Could not fetch markets from Gamma API: {e}")
-        sys.exit(1)
+        # Raise instead of sys.exit so the loop retry in cli.py can catch and backoff.
+        raise RuntimeError(f"Could not fetch markets from Gamma API: {e}") from e
 
     if isinstance(data, dict):
         events = data.get("data", data.get("events", []))

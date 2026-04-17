@@ -72,7 +72,8 @@ class BlueprintsDB:
             )
         """)
         
-        # 3. Active Positions
+        # 3. Active Positions — raw_json stores the FULL position object for lossless restore.
+        # Indexed columns are kept for query convenience only; raw_json is the source of truth.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS active_positions (
                 token_id TEXT PRIMARY KEY,
@@ -86,7 +87,8 @@ class BlueprintsDB:
                 opened_at TEXT,
                 market_slug TEXT,
                 icao_code TEXT,
-                metadata TEXT
+                metadata TEXT,
+                raw_json TEXT
             )
         """)
         
@@ -230,21 +232,32 @@ class BlueprintsDB:
         conn.commit()
 
     def get_active_positions(self):
+        """Restore full position objects from raw_json for lossless runtime shape."""
         conn = self._get_conn()
-        rows = conn.execute("SELECT * FROM active_positions").fetchall()
-        return [dict(r) for r in rows]
+        rows = conn.execute("SELECT raw_json FROM active_positions WHERE raw_json IS NOT NULL").fetchall()
+        positions = []
+        for r in rows:
+            try:
+                positions.append(json.loads(r['raw_json']))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return positions
 
     def add_position(self, pos_dict):
+        """Persist a position — stores full payload as raw_json for lossless restore."""
         conn = self._get_conn()
         conn.execute("""
-            INSERT OR REPLACE INTO active_positions 
-            (token_id, city, date, direction, threshold, unit, entry_price, quantity, opened_at, market_slug, icao_code, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO active_positions
+            (token_id, city, date, direction, threshold, unit, entry_price, quantity,
+             opened_at, market_slug, icao_code, metadata, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            pos_dict['token_id'], pos_dict['city'], pos_dict['date'], pos_dict['direction'],
-            pos_dict['threshold'], pos_dict['unit'], pos_dict['entry_price'], pos_dict['quantity'],
-            pos_dict['opened_at'], pos_dict.get('market_slug'), pos_dict.get('icao_code'),
-            json.dumps(pos_dict.get('metadata', {}))
+            pos_dict.get('token_id'), pos_dict.get('city'), pos_dict.get('date'),
+            pos_dict.get('direction'), pos_dict.get('threshold'), pos_dict.get('unit'),
+            pos_dict.get('entry_price'), pos_dict.get('quantity'), pos_dict.get('opened_at'),
+            pos_dict.get('market_slug'), pos_dict.get('icao_code'),
+            json.dumps(pos_dict.get('metadata', {})),
+            json.dumps(pos_dict),
         ))
         conn.commit()
 

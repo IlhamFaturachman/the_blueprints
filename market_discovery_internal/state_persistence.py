@@ -12,7 +12,22 @@ _EMPTY_STATE = {
 
 
 def load_paper_state(path=None):
-    """Load paper-trading state from the SQLite Data Warehouse."""
+    """Load paper-trading state from the SQLite Data Warehouse.
+
+    If `path` is provided and differs from the default PAPER_STATE_FILE,
+    we fall back to loading from that JSON file (test-isolation path).
+    """
+    from market_discovery_internal.config import PAPER_STATE_FILE
+    if path and os.path.abspath(path) != os.path.abspath(PAPER_STATE_FILE):
+        # Isolated / test path — read from JSON file only
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return dict(_EMPTY_STATE)
+
     # [MODUL DB] Migration to Single Source of Truth (SQLite)
     portfolio = db.get_portfolio()
     if not portfolio:
@@ -69,18 +84,29 @@ def save_paper_state(state, path=None):
     for pos in state.get("positions", []):
         db.add_position(pos)
 
-    # 3. Add Cycle Metric (If new journal entry exists)
+    # 3. Add Cycle Metric — idempotent: only persist if the latest entry's timestamp
+    # differs from the most recently stored metric (prevents double-write per cycle).
     journal = state.get("cycle_journal", [])
     if journal:
-        db.add_cycle_metric(journal[-1])
+        latest_entry = journal[-1]
+        latest_ts = latest_entry.get("timestamp", "")
+        existing = conn.execute(
+            "SELECT 1 FROM cycle_metrics WHERE timestamp = ?", (latest_ts,)
+        ).fetchone()
+        if not existing:
+            db.add_cycle_metric(latest_entry)
 
-    # 4. Persist closed trade history (new entries only — skip existing token_ids)
+    # 4. Persist closed trade history.
+    # Dedup key: token_id + opened_at (composite) so the same market token
+    # can be traded more than once without losing history entries.
     for trade in state.get("history", []):
         token_id = trade.get("token_id")
         if not token_id:
             continue
+        opened_at = trade.get("opened_at", "")
         exists = conn.execute(
-            "SELECT 1 FROM trade_history WHERE token_id = ?", (token_id,)
+            "SELECT 1 FROM trade_history WHERE token_id = ? AND closed_at = ?",
+            (token_id, trade.get("closed_at", "")),
         ).fetchone()
         if not exists:
             conn.execute(

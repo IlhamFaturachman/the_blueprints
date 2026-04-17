@@ -91,8 +91,8 @@ from market_discovery_internal.discovery import (
 from market_discovery_internal.cycles import (
     run_discovery_cycle, run_paper_trading_cycle, parse_discovery_markets,
     enrich_discovery_markets, _ensure_take_profit_target, evaluate_hybrid_exit,
-    _position_confidence_score, close_paper_position, build_paper_position,
-    build_open_position_inventory, build_entry_candidates,
+    update_paper_position, _position_confidence_score, close_paper_position,
+    build_paper_position, build_open_position_inventory, build_entry_candidates,
     append_opened_positions_from_candidates
 )
 from market_discovery_internal.cli import (
@@ -182,7 +182,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
             **kwargs
         ),
         position_confidence_score_fn=_position_confidence_score, 
-        update_paper_position_fn=evaluate_hybrid_exit, 
+        update_paper_position_fn=update_paper_position,
         close_paper_position_fn=close_paper_position,
         fetch_orderbook_quote_fn=fetch_orderbook_quote,
         build_open_position_inventory_fn=build_open_position_inventory,
@@ -302,6 +302,11 @@ def _stop_background_services():
                 _ws_watcher._process.terminate()
     if _ws_broadcaster:
         _ws_broadcaster.stop()
+    if _command_server:
+        try:
+            _command_server.shutdown()
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # Main Entry Point & Hardening

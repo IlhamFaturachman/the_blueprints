@@ -123,10 +123,13 @@ class PriceWatcher:
                     on_close=lambda w, c, m: self._on_close(w, c, m, current_subs, ilogger),
                 )
 
-                # Enterprise SSL Tweak (Handle Cloudflare/Handshake issues)
+                # SSL context: full verification by default.
+                # Set env WS_TLS_NO_VERIFY=1 only as debug opt-in (never in production).
                 ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE  # Last resort for handshake hang
+                if os.environ.get("WS_TLS_NO_VERIFY") == "1":
+                    ilogger.warning("[WS-MPC] TLS verification DISABLED via WS_TLS_NO_VERIFY=1 — debug only!")
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
 
                 def watchdog_fn():
                     while ws.sock and ws.sock.connected:

@@ -543,7 +543,7 @@ def run_paper_trading_cycle(
                     position=position,
                     exit_price=current_yes_price,
                     reason="haiku_monitor_exit",
-                    now_utc=now,
+                    now_utc=now_dt,
                 )
                 forced_closed["haiku_monitor_confidence"] = round(monitor_confidence, 4)
                 forced_closed["haiku_monitor_reasoning"] = str(monitor_result.get("reasoning") or "")
@@ -566,7 +566,7 @@ def run_paper_trading_cycle(
                 position=position,
                 exit_price=current_yes_price,
                 reason="sniper_take_profit",
-                now_utc=now,
+                now_utc=now_dt,
             )
             closed_this_cycle.append(forced_closed)
             next_history.append(forced_closed)
@@ -577,7 +577,7 @@ def run_paper_trading_cycle(
                 position=position,
                 exit_price=current_yes_price,
                 reason="sniper_stop_loss_thesis_broken",
-                now_utc=now,
+                now_utc=now_dt,
             )
             closed_this_cycle.append(forced_closed)
             next_history.append(forced_closed)
@@ -590,7 +590,7 @@ def run_paper_trading_cycle(
             current_yes_price=current_yes_price,
             forecast_still_valid=forecast_valid,
             hours_until_resolve=hours_until_resolve,
-            now_utc=now,
+            now_utc=now_dt,
             confidence_score=confidence_score,
         )
 
@@ -600,7 +600,7 @@ def run_paper_trading_cycle(
                 position=updated_position,
                 exit_price=settle_price,
                 reason="resolved_after_hold",
-                now_utc=now,
+                now_utc=now_dt,
             )
 
         if updated_position.get("status") == "closed":
@@ -677,7 +677,7 @@ def run_paper_trading_cycle(
     try:
         if last_cycle_str:
             last_date = datetime.fromisoformat(last_cycle_str).date()
-            if last_date < now.date():
+            if last_date < now_dt.date():
                 state_meta.pop("circuit_breaker_alert_sent", None)
     except:
         pass
@@ -865,7 +865,7 @@ def run_paper_trading_cycle(
     }
 
     cycle_entry = build_cycle_journal_entry_fn(
-        now_utc=now,
+        now_utc=now_dt,
         cycle_metrics=cycle_metrics,
         bucket_counts=bucket_counts,
         cycle=cycle_payload,
@@ -880,7 +880,7 @@ def run_paper_trading_cycle(
     next_meta = {
         **state_meta,
         "empty_temperature_cycles": empty_temperature_cycles,
-        "last_cycle_at": now.isoformat(),
+        "last_cycle_at": now_dt.isoformat(),
         "last_cycle_metrics": cycle_metrics,
         "last_entry_gate_open": bool(effective_allow_new_entries),
         "last_entry_gate_reason": str(effective_entry_gate_reason),
@@ -894,7 +894,7 @@ def run_paper_trading_cycle(
         "positions": next_open_positions,
         "history": next_history,
         "cycle_journal": next_cycle_journal,
-        "updated_at": now.isoformat(),
+        "updated_at": now_dt.isoformat(),
         "meta": next_meta,
     }
     save_paper_state_fn(next_state, path=state_path)
@@ -1353,14 +1353,19 @@ def append_opened_positions_from_candidates(
             continue
 
         # [MODUL L] Liquidity Awareness: Adjust stake based on depth and max 3% slippage
-        from market_discovery_internal.config import MAX_ACCEPTABLE_SLIPPAGE
+        from market_discovery_internal.config import MAX_ACCEPTABLE_SLIPPAGE, MIN_STAKE_THRESHOLD
         from market_discovery_internal.pricing import calculate_depth_adjusted_stake
         dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
-        
+
         if dynamic_stake <= 0:
             logger.warning(f"[LIQUIDITY] Skipping {token_id} - Insufficient depth for safe entry (Slippage Threat).")
             continue
-            
+
+        # [WAVE 2] Hard floor: skip dust stakes below USD 1.00 to avoid exchange min-order rejection
+        if dynamic_stake < MIN_STAKE_THRESHOLD:
+            logger.warning(f"[DUST-FILTER] Skipping {token_id} - Dynamic stake ${dynamic_stake:.2f} < floor ${MIN_STAKE_THRESHOLD:.2f}.")
+            continue
+
         if dynamic_stake < float(stake_usd):
             logger.info(f"[LIQUIDITY] Scaling down stake for {token_id}: ${stake_usd} -> ${dynamic_stake}")
 
