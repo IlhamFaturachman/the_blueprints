@@ -108,7 +108,7 @@ def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
             perf_counter_fn=time.perf_counter,
             elapsed_ms_fn=lambda started: (time.perf_counter() - started) * 1000,
             prefetch_forecasts_fn=lambda **kwargs: prefetch_forecasts(fetch_forecast_fn=fetch_forecast, **kwargs),
-            fetch_forecast_with_cache_fn=lambda **kwargs: fetch_forecast_with_cache(fetch_forecast_fn=fetch_forecast, **kwargs),
+            fetch_forecast_with_cache_fn=lambda city, date, cache, **kwargs: fetch_forecast_with_cache(city, date, cache, fetch_forecast_fn=fetch_forecast, **kwargs),
             build_weather_evidence_fn=build_weather_evidence,
             is_weather_evidence_valid_fn=is_weather_evidence_valid,
             calculate_edge_fn=calculate_edge,
@@ -144,7 +144,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         prefetch_forecasts_fn=lambda **kwargs: prefetch_forecasts(fetch_forecast_fn=fetch_forecast, **kwargs),
         ensure_take_profit_target_fn=_ensure_take_profit_target, 
         forecast_still_valid_fn=lambda **kwargs: forecast_still_valid(
-            fetch_forecast_with_cache_fn=lambda **k: fetch_forecast_with_cache(fetch_forecast_fn=fetch_forecast, **k),
+            fetch_forecast_with_cache_fn=lambda city, date, cache, **k: fetch_forecast_with_cache(city, date, cache, fetch_forecast_fn=fetch_forecast, **k),
             build_weather_evidence_fn=build_weather_evidence,
             is_weather_evidence_valid_fn=is_weather_evidence_valid,
             position_to_market_fn=position_to_market,
