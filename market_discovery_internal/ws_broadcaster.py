@@ -179,11 +179,18 @@ class WsBroadcaster:
         
         self._ready_event.set()
 
-    async def _process_request(self, connection, request):
+    async def _process_request(self, *args, **kwargs):
         """
         Master Plan Handshake Hardening:
         Handle non-standard Connection headers safely.
+        Variadic signature ensures zero-flaw compatibility across websockets versions.
         """
+        # In newer websockets, 'request' is usually the second positional arg (index 1)
+        # after 'connection' (index 0). In older, it might be different.
+        request = kwargs.get("request")
+        if not request and len(args) > 1:
+            request = args[1]
+        
         headers = getattr(request, "headers", {})
         if "Connection" in headers:
             conn = headers.get("Connection", "").lower()
