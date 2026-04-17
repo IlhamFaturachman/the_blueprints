@@ -1,3 +1,4 @@
+#!/bin/bash
 # 🛡️ THE BLUEPRINTS: Pre-Start Hardening Script
 # This script ensures that the PID file is clean and database is backed up before the bot starts.
 
