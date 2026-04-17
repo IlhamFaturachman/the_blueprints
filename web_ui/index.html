@@ -548,7 +548,7 @@ async function fetchData() {
             });
         }
 
-        cycleRowsCache = [...(data.cycle_journal || [])].reverse();
+        cycleRowsCache = [...(data.cycle_journal || [])];
         updateAggregateCards();
         renderPositionsTable();
         renderCycleTable();
