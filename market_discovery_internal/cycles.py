@@ -303,6 +303,7 @@ def run_paper_trading_cycle(
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
     global _HEARTBEAT_SENT
+    cycle_started = perf_counter_fn()  # Top-level timer for total cycle duration
     state_load_started = perf_counter_fn()
     now_dt = now_utc_fn()
     state = load_paper_state_fn(path=state_path)
