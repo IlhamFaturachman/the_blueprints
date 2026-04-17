@@ -19,7 +19,7 @@ def make_opportunity():
 
 
 def test_ai_disabled_keeps_deterministic_path(monkeypatch):
-    monkeypatch.setattr(md, "AI_AGENT_ENABLED", False)
+    monkeypatch.setattr("market_discovery_internal.analysis.AI_AGENT_ENABLED", False)
     opp = make_opportunity()
 
     enriched = md._maybe_apply_ai_decision(opp)
@@ -30,7 +30,7 @@ def test_ai_disabled_keeps_deterministic_path(monkeypatch):
 
 
 def test_ai_enabled_missing_config_falls_back_safely(monkeypatch):
-    monkeypatch.setattr(md, "AI_AGENT_ENABLED", True)
+    monkeypatch.setattr("market_discovery_internal.analysis.AI_AGENT_ENABLED", True)
     monkeypatch.delenv("AI_AGENT_PROVIDER", raising=False)
     monkeypatch.delenv("AI_AGENT_MODEL", raising=False)
     monkeypatch.delenv("AI_AGENT_API_KEY", raising=False)
@@ -42,7 +42,7 @@ def test_ai_enabled_missing_config_falls_back_safely(monkeypatch):
 
 
 def test_ai_mock_provider_applies_signal(monkeypatch):
-    monkeypatch.setattr(md, "AI_AGENT_ENABLED", True)
+    monkeypatch.setattr("market_discovery_internal.analysis.AI_AGENT_ENABLED", True)
     monkeypatch.setenv("AI_AGENT_PROVIDER", "mock")
     monkeypatch.setenv("AI_AGENT_MODEL", "mock-model")
     monkeypatch.setenv("AI_AGENT_API_KEY", "dummy")
@@ -55,7 +55,7 @@ def test_ai_mock_provider_applies_signal(monkeypatch):
 
 
 def test_ai_unknown_provider_falls_back_error(monkeypatch):
-    monkeypatch.setattr(md, "AI_AGENT_ENABLED", True)
+    monkeypatch.setattr("market_discovery_internal.analysis.AI_AGENT_ENABLED", True)
     monkeypatch.setenv("AI_AGENT_PROVIDER", "unknown-provider")
     monkeypatch.setenv("AI_AGENT_MODEL", "x")
     monkeypatch.setenv("AI_AGENT_API_KEY", "dummy")

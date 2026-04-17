@@ -1049,14 +1049,11 @@ def _ensure_take_profit_target(position):
 def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     """Create a paper position from an opportunity candidate."""
     from market_discovery_internal.pricing import (
-        check_liquidity_depth, calculate_depth_adjusted_stake
+        calculate_depth_adjusted_stake
     )
     
-    # [MODUL E] Liquidity Depth Gate
     token_id = opportunity.get("token_id")
-    if not check_liquidity_depth(token_id, stake_usd):
-        raise ValueError(f"Market {token_id} rejected due to insufficient liquidity depth at Best Ask.")
-        
+    # Liquidity depth check moved to append_opened_positions_from_candidates
     entry_price = _safe_float(opportunity.get("entry_price"), _safe_float(opportunity.get("yes_price"), 0.0))
     if entry_price <= 0:
         raise ValueError("entry_price must be > 0")

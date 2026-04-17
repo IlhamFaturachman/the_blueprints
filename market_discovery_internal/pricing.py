@@ -274,8 +274,9 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None):
     Calculate the statistical edge of a market position compared to forecast.
 
     Logic:
-    - Above/Below: sigmoid model probability around threshold.
+    - Above/Below: sigmoid model probability around threshold (threshold already in °C from parse_market).
     - Exact: Gaussian probability around forecast.
+    - If market_implied_prob available: takes priority over model (prob_source="market_implied").
     - [PACK A] Calibrated probability applied via Bayesian shrinkage.
     - Edge = calibrated_prob - (price + slippage_penalty)
 
@@ -285,31 +286,47 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None):
     Floor of 1.75% ensures conservatism when spread is unknown or very tight.
     Formula: half-spread approximates one-way transaction cost.
     """
-    if forecast_temp is None:
-        return None
-
     price = market.get("yes_price")
     threshold = market.get("threshold")
     direction = market.get("direction")
     city = str(market.get("city", "")).lower()
-    forecast = float(forecast_temp)
 
-    raw_prob = 0.0
-    if direction == "above":
-        # Sigmoid: smooth gradient around threshold.
-        # k=1.5 → at +1°C prob≈0.82, at +2°C prob≈0.95, at -1°C prob≈0.18
-        k = 1.5
-        diff = max(-50, min(50, (forecast - threshold)))
-        raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
-    elif direction == "below":
-        k = 1.5
-        diff = max(-50, min(50, (threshold - forecast)))
-        raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
-    elif direction == "exact":
-        # Gaussian approximation: exp(-0.5 * ((x-mu)/sigma)^2)
-        diff = abs(forecast - threshold)
-        sigma = MODEL_EXACT_SIGMA_C
-        raw_prob = math.exp(-0.5 * (diff / sigma)**2)
+    # Market-implied probability path: use sibling family data when available.
+    # This takes priority over the model because it embeds live market consensus.
+    market_implied = market.get("market_implied_prob")
+    if market_implied is not None and price is not None:
+        try:
+            raw_prob = float(market_implied)
+            prob_source = "market_implied"
+            forecast = None
+        except (TypeError, ValueError):
+            market_implied = None
+
+    if market_implied is None:
+        if forecast_temp is None:
+            return None
+        forecast = float(forecast_temp)
+        prob_source = "gaussian_openmeteo"
+
+    # Compute model probability only for non-market-implied path
+    if market_implied is None:
+        raw_prob = 0.0
+        if direction == "above":
+            # Sigmoid: smooth gradient around threshold.
+            # k=1.5 → at +1°C prob≈0.82, at +2°C prob≈0.95, at -1°C prob≈0.18
+            k = 1.5
+            diff = max(-50, min(50, (forecast - threshold)))
+            raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
+        elif direction == "below":
+            k = 1.5
+            diff = max(-50, min(50, (threshold - forecast)))
+            raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
+        elif direction == "exact":
+            # Gaussian approximation: exp(-0.5 * ((x-mu)/sigma)^2)
+            diff = abs(forecast - threshold)
+            sigma = MODEL_EXACT_SIGMA_C
+            raw_prob = math.exp(-0.5 * (diff / sigma)**2)
+    # else: raw_prob already set from market_implied above
 
     # [PACK A] Calibration bins
     _h = hours_until_resolve if hours_until_resolve is not None else market.get("hours_until_resolve")
@@ -348,6 +365,7 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None):
         "raw_prob": round(raw_prob, 4),
         "edge": round(edge, 4),
         "forecast": forecast,
+        "prob_source": prob_source,
         "slippage_penalty_applied": round(slippage_penalty, 4),
         "horizon_bin": horizon_bin,
         "price_bin": price_bin,
