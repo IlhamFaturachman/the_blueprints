@@ -227,13 +227,29 @@ def fetch_forecast(city, date, icao_override=None):
         # We ONLY enforce consensus mismatch if it's already hotter than predicted (High Confidence Error)
         # OR if we are in the peak heat window (12-18 local) and the temp is way off.
         if t_noaa is not None:
-            # Use city longitude to estimate local hour (avoids pytz dependency)
-            # lon / 15 gives UTC offset in hours; clamp to [-12, 14]
-            lon = (coords or {}).get("lon", 0.0)
-            utc_offset_hours = round(lon / 15.0)
-            utc_offset_hours = max(-12, min(14, utc_offset_hours))
-            local_hour = (datetime.now(timezone.utc).hour + utc_offset_hours) % 24
-            is_peak_heat = (12 <= local_hour <= 19)
+            # [MODUL A] Precision Timezone Sync: Use IANA timezone from config
+            target_tz = (coords or {}).get("tz", "UTC")
+            
+            try:
+                import zoneinfo
+            except ImportError:
+                from backports import zoneinfo # Fallback for old python
+
+            try:
+                # Use zoneinfo for high-accuracy local hour calculation
+                tz = zoneinfo.ZoneInfo(target_tz)
+                now_local = datetime.now(timezone.utc).astimezone(tz)
+                local_hour = now_local.hour
+                is_peak_heat = (12 <= local_hour <= 19)
+            except Exception as e:
+                # Emergency Fallback: If zoneinfo fails, use the old lon/15 heuristic
+                # but log it as a non-fatal warning.
+                lon = (coords or {}).get("lon", 0.0)
+                utc_offset_hours = round(lon / 15.0)
+                utc_offset_hours = max(-12, min(14, utc_offset_hours))
+                local_hour = (datetime.now(timezone.utc).hour + utc_offset_hours) % 24
+                is_peak_heat = (12 <= local_hour <= 19)
+                print(f"[WARNING] Timezone precision fallback for {city}: {e}")
 
             error_margin = abs(base_avg - t_noaa)
 

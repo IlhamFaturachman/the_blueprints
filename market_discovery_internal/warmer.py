@@ -35,6 +35,8 @@ class GudangDataWarmer:
 
     def perform_warming_cycle(self):
         print(f"--- [WARMER] Warming Cycle Start: {datetime.now().strftime('%H:%M:%S')} ---")
+        # [MODUL L] Update Heartbeat Pulse
+        db.update_heartbeat("warmer")
         
         # We warm the next 7 days for all cities
         dates = [(datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(8)]

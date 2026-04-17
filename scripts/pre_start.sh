@@ -1,22 +1,31 @@
-#!/bin/bash
 # 🛡️ THE BLUEPRINTS: Pre-Start Hardening Script
-# This script ensures that the PID file is clean before the bot starts.
-# It prevents "Ghost PID" locks from blocking the service.
+# This script ensures that the PID file is clean and database is backed up before the bot starts.
 
 PF="/opt/the_blueprints/the_blueprints.pid"
+DB_FILE="/opt/the_blueprints/logs/blueprints_master.db"
+BK_DIR="/opt/the_blueprints/logs/backups"
 
-echo "[PRE-START $(date +'%H:%M:%S.%N')] Starting integrity check. PF exists=$([ -f "$PF" ] && echo yes || echo no)"
+echo "[PRE-START $(date +'%H:%M:%S.%N')] Starting pre-flight checks."
 
+# 1. PID Cleanup (Anti-Ghost)
 if [ -f "$PF" ]; then
-    sleep 0.5
     OLD=$(cat "$PF" 2>/dev/null)
-    
     if [ -n "$OLD" ] && kill -0 "$OLD" 2>/dev/null; then
-        echo "[PRE-START] ACTIVE INSTANCE DETECTED (PID: $OLD). Keeping PID file."
+        echo "[PRE-START] ACTIVE INSTANCE DETECTED (PID: $OLD)."
     else
-        echo "[PRE-START] GHOST OR STALE INSTANCE DETECTED ($OLD). Force-removing $PF."
+        echo "[PRE-START] GHOST INSTANCE DETECTED ($OLD). Force-removing $PF."
         rm -f "$PF"
     fi
+fi
+
+# 2. Database Backup (Corruption Shield)
+if [ -f "$DB_FILE" ]; then
+    mkdir -p "$BK_DIR"
+    TS=$(date +'%Y%m%d_%H%M%S')
+    echo "[PRE-START] Backing up database to $BK_DIR/blueprints_backup_$TS.db"
+    cp "$DB_FILE" "$BK_DIR/blueprints_backup_$TS.db"
+    # Keep only last 7 days of backups
+    find "$BK_DIR" -name "blueprints_backup_*.db" -mtime +7 -delete
 fi
 
 echo "[PRE-START $(date +'%H:%M:%S.%N')] Done."

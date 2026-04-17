@@ -174,11 +174,16 @@ def calculate_edge(market, forecast_temp):
         sigma = MODEL_EXACT_SIGMA_C
         model_prob = math.exp(-0.5 * (diff / sigma)**2)
 
-    edge = model_prob - price
+    # [MODUL P] Slippage-Aware Execution: Subtract 1.75% (mid-range of 1.5% - 2.0%)
+    # This reflects the cost of bridge impact and spread widening on large/fast entries.
+    slippage_penalty = 0.0175
+    edge = model_prob - (price + slippage_penalty)
+
     return {
         "model_prob": round(model_prob, 4),
         "edge": round(edge, 4),
-        "forecast": forecast
+        "forecast": forecast,
+        "slippage_penalty_applied": slippage_penalty
     }
 
 def _enrich_markets_missing_prices(markets, max_workers=6):

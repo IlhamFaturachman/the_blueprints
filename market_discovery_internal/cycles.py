@@ -13,6 +13,7 @@ from market_discovery_internal.config import (
 )
 from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
+from market_discovery_internal.database_manager import db
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +317,30 @@ def run_paper_trading_cycle(
                 "Mode: Paper Trading (Zero-Barrier Configuration)"
             )
             _HEARTBEAT_SENT = True
+    
+    # [MODUL L] Process Watchdog Pulse
+    db.update_heartbeat("main_loop")
+    
+    # [MODUL L] Monitor Warmer Health
+    warmer_heartbeat_raw = db.get_heartbeat("warmer")
+    if warmer_heartbeat_raw:
+        try:
+            from market_discovery_internal.reporting import parse_utc_datetime
+            whb = parse_utc_datetime(warmer_heartbeat_raw)
+            if whb:
+                stale_hours = (datetime.now(timezone.utc) - whb).total_seconds() / 3600.0
+                if stale_hours > 6.0: # 3x the normal 2-hour interval
+                    if not state_meta.get("warmer_silent_fail_alert_sent"):
+                        send_telegram_alert(
+                            "⚠️ <b>WATCHDOG: WARMER STAGNANT</b> ⚠️\n\n"
+                            f"Layanan Gudang Data Warmer tidak berdetak selama <b>{stale_hours:.1f} jam</b>.\n"
+                            "Penyebaran data forecast mungkin tertunda. Harap cek proses background."
+                        )
+                        state_meta["warmer_silent_fail_alert_sent"] = True
+                else:
+                    state_meta["warmer_silent_fail_alert_sent"] = False
+        except Exception as e:
+            logger.error(f"[WATCHDOG] Error checking warmer heartbeat: {e}")
 
     state_load_started = perf_counter_fn()
     now = now_utc_fn()
@@ -642,10 +667,14 @@ def run_paper_trading_cycle(
             effective_allow_new_entries = False
             effective_entry_gate_reason = "daily_target_reached"
 
-    # [MODUL L] Circuit Breaker — trigger on daily drawdown >= $1.50 (Master Plan spec)
+    # [MODUL L] Circuit Breaker — trigger on daily drawdown >= 15% of baseline
     _daily_baseline = float(daily_session.get("baseline_wallet", state_base_wallet) or state_base_wallet)
     _daily_loss = _daily_baseline - wallet_after_position_management
     
+    # [FIX] Transition to 15% dynamic drawdown shield as requested by user
+    _drawdown_limit = round(_daily_baseline * 0.15, 2)
+    _drawdown_limit = max(1.50, _drawdown_limit) # Floor at 1.50 for safety on small tiers
+
     # [FIX] Reset circuit breaker alert flag if it's a new day
     last_cycle_str = str(state_meta.get("last_cycle_at", ""))
     try:
@@ -656,15 +685,15 @@ def run_paper_trading_cycle(
     except:
         pass
 
-    if effective_allow_new_entries and _daily_loss >= 1.50:
+    if effective_allow_new_entries and _daily_loss >= _drawdown_limit:
         effective_allow_new_entries = False
         effective_entry_gate_reason = "circuit_breaker_tripped"
         if not state_meta.get("circuit_breaker_alert_sent"):
             send_telegram_alert(
                 f"⚡ <b>CIRCUIT BREAKER: HALTED</b> ⚡\n\n"
-                f"⚠️ <b>Reason</b>: Daily Loss Limit Reached\n"
+                f"⚠️ <b>Reason</b>: Max Daily Drawdown (15%) Reached\n"
                 f"📊 <b>Baseline</b>: USD {_daily_baseline:.2f} → <b>Now</b>: USD {wallet_after_position_management:.2f}\n"
-                f"📉 <b>Daily Loss</b>: USD {_daily_loss:.2f} / $1.50 limit\n\n"
+                f"📉 <b>Daily Loss</b>: USD {_daily_loss:.2f} / ${_drawdown_limit:.2f} limit\n\n"
                 f"Protokol risiko aktif: bot berhenti buka posisi baru sampai reset harian."
             )
             state_meta["circuit_breaker_alert_sent"] = True

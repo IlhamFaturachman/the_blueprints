@@ -32,7 +32,16 @@ class BlueprintsDB:
             self._local.conn.row_factory = sqlite3.Row
             # [MODUL DB] Enable WAL mode for high concurrency
             self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA synchronous=NORMAL")
+            # [MODUL DB] Use FULL synchronization for absolute durability against corruption
+            self._local.conn.execute("PRAGMA synchronous=FULL")
+            
+            # [MODUL DB] Integrity Shield: Check for corruption on every first connection
+            try:
+                check = self._local.conn.execute("PRAGMA integrity_check").fetchone()
+                if check[0] != "ok":
+                    print(f"[CRITICAL] Database integrity check FAILED: {check[0]}")
+            except sqlite3.Error as e:
+                print(f"[CRITICAL] Database integrity check ERROR: {e}")
         return self._local.conn
 
     def _initialize_db(self):
@@ -117,7 +126,33 @@ class BlueprintsDB:
             )
         """)
 
+        # 7. Process Heartbeat (Watchdog Module)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS process_heartbeat (
+                process_name TEXT PRIMARY KEY,
+                last_pulse TEXT
+            )
+        """)
+
         conn.commit()
+
+    def update_heartbeat(self, process_name):
+        """Update the heartbeat timestamp for a specific process."""
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT OR REPLACE INTO process_heartbeat (process_name, last_pulse)
+            VALUES (?, ?)
+        """, (process_name, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+
+    def get_heartbeat(self, process_name):
+        """Retrieve the last pulse timestamp for a specific process."""
+        conn = self._get_conn()
+        res = conn.execute(
+            "SELECT last_pulse FROM process_heartbeat WHERE process_name = ?",
+            (process_name,)
+        ).fetchone()
+        return res["last_pulse"] if res else None
 
     # --- Weather Logic ---
     def get_cached_forecast(self, city, date, ttl_seconds=3600):
