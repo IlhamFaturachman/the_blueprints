@@ -197,8 +197,8 @@ def fetch_forecast(city, date, icao_override=None):
     source = None
 
     if t_om is not None and t_wt is not None:
-        # [MODUL K] Anomaly Check (Max 7°C deviation between oracles)
-        if abs(t_om - t_wt) > 7.0:
+        # [MODUL K] Anomaly Check (Strict Consensus Gate)
+        if abs(t_om - t_wt) > CONSENSUS_MAX_ERROR_C:
             return None # Major disagreement between weather sources, reject forecast to be safe.
         
         base_avg = round((t_om + t_wt) / 2.0, 1)

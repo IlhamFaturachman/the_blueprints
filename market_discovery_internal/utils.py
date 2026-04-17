@@ -9,13 +9,17 @@ import requests
 from market_discovery_internal.config import LOG_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 def send_telegram_alert(message):
-    """[MODUL N] Send push notification via Telegram Bot API."""
+    """[MODUL N] Send push notification via Telegram Bot API with HTML escaping."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
+    
+    # Escape HTML special characters to prevent Telegram parsing errors
+    safe_message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": str(TELEGRAM_CHAT_ID),
-        "text": message,
+        "text": safe_message,
         "parse_mode": "HTML",
         "disable_web_page_preview": False
     }

@@ -9,8 +9,9 @@ import math
 from market_discovery_internal.config import (
     WEATHER_EVIDENCE_MAX_AGE_HOURS, WEATHER_EVIDENCE_MIN_QUALITY_SCORE,
     AI_MONTHLY_BUDGET_USD, AI_USAGE_LEDGER_FILE,
-    SONNET_ENTRY_ENABLED, SONNET_ENTRY_CACHE_FILE, SONNET_ENTRY_CACHE_TTL_HOURS,
-    SONNET_ENTRY_MODEL, SONNET_ENTRY_MAX_TOKENS, SONNET_ENTRY_MIN_CONFIDENCE,
+    HAIKU_ENTRY_ENABLED, HAIKU_ENTRY_CACHE_FILE, HAIKU_ENTRY_CACHE_TTL_HOURS,
+    HAIKU_ENTRY_MODEL, HAIKU_ENTRY_MAX_TOKENS, HAIKU_ENTRY_MIN_CONFIDENCE,
+    HAIKU_FAIL_OPEN,
     HAIKU_MONITOR_ENABLED, HAIKU_MONITOR_CACHE_FILE, HAIKU_MONITOR_MODEL,
     HAIKU_MONITOR_MAX_TOKENS, HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT,
     HAIKU_SENSING_ENABLED, HAIKU_SENSING_MODEL, HAIKU_SENSING_MAX_TOKENS,
@@ -103,10 +104,10 @@ def _reserve_ai_call_slot(call_kind, now_utc=None):
         return False
 
     from market_discovery_internal.config import (
-        SONNET_ENTRY_MAX_CALLS_PER_DAY, HAIKU_MONITOR_MAX_CALLS_PER_DAY, HAIKU_SENSING_MAX_CALLS_PER_DAY
+        HAIKU_ENTRY_MAX_CALLS_PER_DAY, HAIKU_MONITOR_MAX_CALLS_PER_DAY, HAIKU_SENSING_MAX_CALLS_PER_DAY
     )
-    if call_kind == "sonnet_entry":
-        limit = SONNET_ENTRY_MAX_CALLS_PER_DAY
+    if call_kind == "haiku_entry":
+        limit = HAIKU_ENTRY_MAX_CALLS_PER_DAY
     elif call_kind == "haiku_sensing":
         limit = HAIKU_SENSING_MAX_CALLS_PER_DAY
     else:
@@ -139,15 +140,12 @@ def _extract_response_usage(response):
 
 def _estimate_ai_usage_cost_usd(model, usage_counts):
     # Anthropic pricing (2025)
-    # Claude 4 Sonnet: $3/MTok input, $15/MTok output
     # Claude Haiku 4.5: $0.80/MTok input, $4.00/MTok output
     # Claude Haiku 3.x: $0.25/MTok input, $1.25/MTok output
     m = str(model).lower()
     in_t = usage_counts.get("input_tokens", 0)
     out_t = usage_counts.get("output_tokens", 0)
 
-    if "sonnet" in m:
-        return (in_t * (3.0/1_000_000)) + (out_t * (15.0/1_000_000))
     if "haiku" in m:
         # haiku-4-5 is more expensive than haiku-3.x
         if "4-5" in m or "4_5" in m:
@@ -166,8 +164,18 @@ def _extract_text_from_anthropic_response(response):
         return ""
 
 def _extract_json_payload(text):
-    """Extract the first valid-looking JSON block from unstructured text."""
+    """Extract the first valid-looking JSON block from unstructured text using robust regex."""
     if not text: return None
+    import re
+    # Match the first '{' and corresponding last '}' even with whitespace/newlines
+    match = re.search(r'(\{.*\})', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            pass
+            
+    # Fallback to older bracket searching if regex somehow misses
     try:
         start = text.find("{")
         end = text.rfind("}")
@@ -185,39 +193,38 @@ def _anthropic_create_message(client, *, model, max_tokens, prompt):
     )
 
 # ---------------------------------------------------------------------------
-# Sonnet Entry Analysis
+# Haiku Entry Analysis
 # ---------------------------------------------------------------------------
 
-def _get_sonnet_entry_cache():
-    return _load_json_blob(SONNET_ENTRY_CACHE_FILE, {})
+def _get_haiku_entry_cache():
+    return _load_json_blob(HAIKU_ENTRY_CACHE_FILE, {})
 
-def _save_sonnet_entry_cache(cache):
-    _save_json_blob(SONNET_ENTRY_CACHE_FILE, cache)
+def _save_haiku_entry_cache(cache):
+    _save_json_blob(HAIKU_ENTRY_CACHE_FILE, cache)
 
-def _sonnet_failure_result(reason):
-    from market_discovery_internal.config import SONNET_FAIL_OPEN
+def _haiku_entry_failure_result(reason):
     return {
-        "recommendation": "enter" if SONNET_FAIL_OPEN else "skip",
+        "recommendation": "enter" if HAIKU_FAIL_OPEN else "skip",
         "confidence": 0.5,
         "reasoning": f"Analysis failed: {reason}"
     }
 
-def _sonnet_entry_analysis(opportunity):
-    """Use Claude Sonnet to validate a high-alpha entry candidate."""
-    if not SONNET_ENTRY_ENABLED or not ANTHROPIC_API_KEY:
-        return _sonnet_failure_result("Disabled or missing API key")
+def _haiku_entry_analysis(opportunity):
+    """Use Claude Haiku to validate a high-alpha entry candidate."""
+    if not HAIKU_ENTRY_ENABLED or not ANTHROPIC_API_KEY:
+        return _haiku_entry_failure_result("Disabled or missing API key")
 
-    cache = _get_sonnet_entry_cache()
+    cache = _get_haiku_entry_cache()
     token_id = opportunity.get("token_id")
     if token_id in cache:
         entry = cache[token_id]
         prev = datetime.fromisoformat(entry["at"].replace("Z", "+00:00"))
         age = (datetime.now(timezone.utc) - prev).total_seconds() / 3600
-        if age < SONNET_ENTRY_CACHE_TTL_HOURS:
+        if age < HAIKU_ENTRY_CACHE_TTL_HOURS:
             return entry["analysis"]
 
-    if not _reserve_ai_call_slot("sonnet_entry"):
-        return _sonnet_failure_result("Budget or daily limit reached")
+    if not _reserve_ai_call_slot("haiku_entry"):
+        return _haiku_entry_failure_result("Budget or daily limit reached")
 
     try:
         from anthropic import Anthropic
@@ -235,25 +242,31 @@ def _sonnet_entry_analysis(opportunity):
         }
         
         prompt = (
-            f"Analyze this Polymarket weather prediction: {json.dumps(payload)}\n"
-            "Return JSON: {\"recommendation\": \"enter\"|\"skip\", \"confidence\": 0.0-1.0, \"reasoning\": \"string\"}"
+            "SYSTEM: You are a clinical, paranoid weather trading auditor. Return ONLY a JSON object.\n"
+            "TASKS:\n"
+            "1. Scrutinize the payload below for anomalies (impossible temps, missing units, stale metadata).\n"
+            "2. Decide if the trade is 'enter' or 'skip'.\n"
+            "3. If ANY anomaly or extreme inconsistency exists, you MUST 'skip'.\n\n"
+            f"PAYLOAD: {json.dumps(payload)}\n\n"
+            "FORMAT: {\"recommendation\": \"enter\"/\"skip\", \"confidence\": 0.0-1.0, \"reasoning\": \"brief string\"}"
         )
         
-        response = _anthropic_create_message(client, model=SONNET_ENTRY_MODEL, max_tokens=SONNET_ENTRY_MAX_TOKENS, prompt=prompt)
-        _record_ai_usage_cost("sonnet_entry", SONNET_ENTRY_MODEL, response)
+        response = _anthropic_create_message(client, model=HAIKU_ENTRY_MODEL, max_tokens=HAIKU_ENTRY_MAX_TOKENS, prompt=prompt)
+        _record_ai_usage_cost("haiku_entry", HAIKU_ENTRY_MODEL, response)
         
         text = _extract_text_from_anthropic_response(response)
-        analysis = _extract_json_payload(text)
+        analysis = _extract_json_payload(text) or {}
         
         if not analysis or "recommendation" not in analysis:
-            analysis = _sonnet_failure_result("Invalid AI response format")
+            # Final fallback: if JSON is broken but we are in a high-stakes simulation, we log it.
+            analysis = _haiku_entry_failure_result("Critical: AI returned non-compliant data format")
 
         cache[token_id] = {"at": datetime.now(timezone.utc).isoformat(), "analysis": analysis}
-        _save_sonnet_entry_cache(cache)
+        _save_haiku_entry_cache(cache)
         return analysis
         
     except Exception as e:
-        return _sonnet_failure_result(str(e))
+        return _haiku_entry_failure_result(str(e))
 
 # ---------------------------------------------------------------------------
 # [MODUL A] Station Knowledge & Haiku Sensing
@@ -294,11 +307,12 @@ def resolve_station_with_ai(city, description):
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
         
         prompt = (
+            "CRITICAL: Identify the weather station with 100% precision.\n"
             f"Context: Polymarket weather market for {city}.\n"
             f"Rules text: \"{description}\"\n\n"
-            "Task: Identify the official weather station or airport ICAO/IATA code required for resolution.\n"
-            "Return ONLY a JSON object: {\"station_name\": \"string\", \"icao\": \"4-letter-code-or-null\"}\n"
-            "Example: New York Central Park -> KNYC, London Heathrow -> EGLL."
+            "Task: Locate the official ICAO/IATA code. If ambiguous, choose the most likely central station.\n"
+            "If the text mentions 'Station NOT found' or similar anomaly, return null for icao.\n"
+            "Return ONLY a JSON object: {\"station_name\": \"string\", \"icao\": \"4-letter-code-or-null\"}"
         )
 
         response = client.messages.create(
@@ -378,11 +392,12 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
         }
 
         prompt = (
-            "You are a risk monitor for a weather prediction market position.\n"
-            f"Position data: {json.dumps(payload)}\n\n"
-            "Based on the data above, should this position be closed early or held?\n"
-            "Consider: price movement vs entry, time remaining, forecast alignment.\n"
-            'Return JSON only: {"action": "hold"|"close", "confidence": 0.0-1.0, "reasoning": "brief string"}'
+            "CRITICAL: You are an aggressive risk sentinel.\n"
+            f"Active Position: {json.dumps(payload)}\n\n"
+            "VULNERABILITY CHECK:\n"
+            "1. If the current price suggests a massive deviation from the forecast, analyze why.\n"
+            "2. If hours until resolution is very low and price is stalled, consider closing.\n"
+            "Return JSON only: {\"action\": \"hold\"|\"close\", \"confidence\": 0.0-1.0, \"reasoning\": \"brief string\"}"
         )
 
         response = _anthropic_create_message(
@@ -517,7 +532,11 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
     3. watchlist            — cheap but interesting (below watchlist threshold)
     4. reject               — price outside valid entry range or too expensive
     """
-    # If AI has already decided a bucket, use it.
+    # 1. AI-Driven Decision (Override)
+    if HAIKU_ENTRY_ENABLED and opportunity.get("ai_bucket"):
+        return {"bucket": opportunity["ai_bucket"], "reason": "ai_decision", "confidence": opportunity.get("ai_confidence", 1.0)}
+
+    # Legacy AI support (if any)
     if opportunity.get("ai_bucket"):
         return {"bucket": opportunity["ai_bucket"], "reason": "ai_decision", "confidence": 1.0}
 

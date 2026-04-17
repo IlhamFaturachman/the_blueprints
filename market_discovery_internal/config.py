@@ -312,15 +312,15 @@ AI_ENABLE_WEB_SEARCH = _env_bool("AI_ENABLE_WEB_SEARCH", False)
 AI_MONTHLY_BUDGET_USD = max(0.0, float(os.getenv("AI_MONTHLY_BUDGET_USD", "3.0")))
 AI_USAGE_LEDGER_FILE = os.getenv("AI_USAGE_LEDGER_FILE", "logs/ai_usage_ledger.json")
 
-# Sonnet entry gate
-SONNET_ENTRY_ENABLED = _env_bool("SONNET_ENTRY_ENABLED", False)
-SONNET_FAIL_OPEN = _env_bool("SONNET_FAIL_OPEN", False)
-SONNET_ENTRY_MIN_CONFIDENCE = float(os.getenv("SONNET_ENTRY_MIN_CONFIDENCE", "0.80"))
-SONNET_ENTRY_MODEL = os.getenv("SONNET_ENTRY_MODEL", "claude-sonnet-4-6")
-SONNET_ENTRY_MAX_TOKENS = max(64, int(os.getenv("SONNET_ENTRY_MAX_TOKENS", "180")))
-SONNET_ENTRY_MAX_CALLS_PER_DAY = max(0, int(os.getenv("SONNET_ENTRY_MAX_CALLS_PER_DAY", "2")))
-SONNET_ENTRY_CACHE_FILE = os.getenv("SONNET_ENTRY_CACHE_FILE", "logs/sonnet_entry_cache.json")
-SONNET_ENTRY_CACHE_TTL_HOURS = max(1.0, float(os.getenv("SONNET_ENTRY_CACHE_TTL_HOURS", "6")))
+# Haiku entry gate
+HAIKU_ENTRY_ENABLED = _env_bool("HAIKU_ENTRY_ENABLED", False)
+HAIKU_FAIL_OPEN = _env_bool("HAIKU_FAIL_OPEN", False)
+HAIKU_ENTRY_MIN_CONFIDENCE = float(os.getenv("HAIKU_ENTRY_MIN_CONFIDENCE", "0.80"))
+HAIKU_ENTRY_MODEL = os.getenv("HAIKU_ENTRY_MODEL", "claude-haiku-4-5-20251001")
+HAIKU_ENTRY_MAX_TOKENS = max(64, int(os.getenv("HAIKU_ENTRY_MAX_TOKENS", "180")))
+HAIKU_ENTRY_MAX_CALLS_PER_DAY = max(0, int(os.getenv("HAIKU_ENTRY_MAX_CALLS_PER_DAY", "2")))
+HAIKU_ENTRY_CACHE_FILE = os.getenv("HAIKU_ENTRY_CACHE_FILE", "logs/haiku_entry_cache.json")
+HAIKU_ENTRY_CACHE_TTL_HOURS = max(1.0, float(os.getenv("HAIKU_ENTRY_CACHE_TTL_HOURS", "6")))
 
 # Haiku monitor gate for open positions
 HAIKU_MONITOR_ENABLED = _env_bool("HAIKU_MONITOR_ENABLED", False)

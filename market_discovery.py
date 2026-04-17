@@ -81,7 +81,7 @@ from market_discovery_internal.forecasting import (
     forecast_still_valid, position_to_market
 )
 from market_discovery_internal.analysis import (
-    build_weather_evidence, is_weather_evidence_valid, _sonnet_entry_analysis,
+    build_weather_evidence, is_weather_evidence_valid, _haiku_entry_analysis,
     _haiku_position_monitor, decide_entry_bucket, _maybe_apply_ai_decision,
     _record_ai_usage_cost, resolve_station_with_ai
 )
