@@ -136,6 +136,17 @@ class BlueprintsDB:
             )
         """)
 
+        # Schema migrations — idempotent via try/except for each new column.
+        _migrations = [
+            "ALTER TABLE active_positions ADD COLUMN raw_json TEXT",
+        ]
+        for migration in _migrations:
+            try:
+                cursor.execute(migration)
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+
         conn.commit()
 
     def update_heartbeat(self, process_name):
