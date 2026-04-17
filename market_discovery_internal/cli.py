@@ -104,8 +104,8 @@ def run_main_paper_loop_mode(
                 # If WS was active but hasn't updated in X minutes, it's stale
                 if since_last > (ws_stale_detection_minutes * 60):
                     is_stale = True
-                    # Fallback to aggressive 15s polling
-                    current_interval = min(current_interval, 15)
+                    # Fallback to balanced 120s polling
+                    current_interval = min(current_interval, 120)
             
             use_aggressive = aggressive_mode or is_stale
             if is_stale:
