@@ -303,9 +303,13 @@ def run_paper_trading_cycle(
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
     global _HEARTBEAT_SENT
-    cycle_started = perf_counter_fn()
+    state_load_started = perf_counter_fn()
     now_dt = now_utc_fn()
+    state = load_paper_state_fn(path=state_path)
+    state_load_ms = elapsed_ms_fn(state_load_started)
 
+    state_meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+    
     # [MODUL L] Process Heartbeat
     print(f"--- CYCLE START: {now_dt.strftime('%H:%M:%S')} (Aggressive: {force_aggressive_scan}) ---", flush=True)
     
@@ -342,17 +346,10 @@ def run_paper_trading_cycle(
         except Exception as e:
             logger.error(f"[WATCHDOG] Error checking warmer heartbeat: {e}")
 
-    state_load_started = perf_counter_fn()
-    now = now_utc_fn()
-    state = load_paper_state_fn(path=state_path)
-    state_load_ms = elapsed_ms_fn(state_load_started)
-
-    state_meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
-    
     # [MODUL L] Initial UI Touch: Tell the Dashboard we are starting a cycle
     # Update timestamp and last_cycle_at even before the cycle finishes
-    state_meta["last_cycle_at"] = now.isoformat()
-    state["updated_at"] = now.isoformat()
+    state_meta["last_cycle_at"] = now_dt.isoformat()
+    state["updated_at"] = now_dt.isoformat()
     state["meta"] = state_meta
     save_paper_state_fn(state, path=state_path)
     
@@ -949,7 +946,9 @@ def _ensure_take_profit_target(position):
 
 def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     """Create a paper position from an opportunity candidate."""
-    from market_discovery_internal.pricing import check_liquidity_depth
+    from market_discovery_internal.pricing import (
+        check_liquidity_depth, calculate_depth_adjusted_stake
+    )
     
     # [MODUL E] Liquidity Depth Gate
     token_id = opportunity.get("token_id")
@@ -1353,6 +1352,18 @@ def append_opened_positions_from_candidates(
         if best_ask < min_bound or best_ask > max_bound:
             continue
 
+        # [MODUL L] Liquidity Awareness: Adjust stake based on depth and max 3% slippage
+        from market_discovery_internal.config import MAX_ACCEPTABLE_SLIPPAGE
+        from market_discovery_internal.pricing import calculate_depth_adjusted_stake
+        dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
+        
+        if dynamic_stake <= 0:
+            logger.warning(f"[LIQUIDITY] Skipping {token_id} - Insufficient depth for safe entry (Slippage Threat).")
+            continue
+            
+        if dynamic_stake < float(stake_usd):
+            logger.info(f"[LIQUIDITY] Scaling down stake for {token_id}: ${stake_usd} -> ${dynamic_stake}")
+
         entry_opportunity = {
             **opportunity,
             "entry_price": round(best_ask, 4),
@@ -1363,7 +1374,7 @@ def append_opened_positions_from_candidates(
         if best_bid > 0:
             entry_opportunity["entry_quote_best_bid"] = round(best_bid, 4)
 
-        position = build_paper_position(entry_opportunity, stake_usd=stake_usd)
+        position = build_paper_position(entry_opportunity, stake_usd=dynamic_stake)
         position["entry_bucket"] = bucket_name
         position["entry_bucket_reason"] = bucket.get("reason")
         position["entry_confidence_score"] = bucket.get("confidence")

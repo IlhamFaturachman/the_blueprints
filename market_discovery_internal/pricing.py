@@ -141,6 +141,57 @@ def check_liquidity_depth(token_id, target_stake_usd):
     except Exception:
         return False
 
+def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
+    """
+    [MODUL L] Dynamically adjust stake based on orderbook depth and spread.
+    Ensures we don't cross into prices that exceed our max slippage threshold.
+    Returns the adjusted stake in USD.
+    """
+    from market_discovery_internal.config import LIQUIDITY_DEPTH_MULTIPLIER, MARKET_MAX_SPREAD_GATE
+    
+    if not token_id: return base_stake
+    
+    url = f"{CLOB_BOOK_API}?token_id={token_id}"
+    try:
+        data = fetch_with_retry(url)
+        # Gamma CLOB book returns { "bids": [...], "asks": [...] }
+        asks = data.get("asks", [])
+        bids = data.get("bids", [])
+        
+        if not asks or not bids:
+            return 0.0 # Cannot verify liquidity, skip
+            
+        best_ask = float(asks[0][0])
+        best_bid = float(bids[0][0])
+        
+        # 1. Spread Gate
+        spread = best_ask - best_bid
+        if spread > MARKET_MAX_SPREAD_GATE:
+            return 0.0 # Excessive spread
+            
+        # 2. Depth Calculation within Slippage Boundary
+        # How much volume exists before price hits (best_ask * (1 + max_slippage_pct))
+        max_price_allowed = best_ask * (1.0 + max_slippage_pct)
+        
+        total_depth_usd = 0.0
+        for level in asks:
+            # level format: [price, size]
+            price = float(level[0])
+            size = float(level[1])
+            if price > max_price_allowed:
+                break
+            total_depth_usd += (price * size)
+            
+        # 3. Apply Multiplier Buffer
+        # We only take a portion of available depth to keep slippage under control
+        safe_depth = total_depth_usd / max(1.0, LIQUIDITY_DEPTH_MULTIPLIER)
+        
+        adjusted_stake = min(float(base_stake), safe_depth)
+        return round(max(0.0, adjusted_stake), 2)
+        
+    except Exception:
+        return 0.0
+
 def calculate_edge(market, forecast_temp):
     """
     Calculate the statistical edge of a market position compared to forecast.
