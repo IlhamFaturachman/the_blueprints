@@ -93,7 +93,8 @@ from market_discovery_internal.cycles import (
     enrich_discovery_markets, _ensure_take_profit_target, evaluate_hybrid_exit,
     update_paper_position, _position_confidence_score, close_paper_position,
     build_paper_position, build_open_position_inventory, build_entry_candidates,
-    append_opened_positions_from_candidates
+    append_opened_positions_from_candidates, compute_auto_tuner_adjustments,
+    build_profit_attribution_report,
 )
 from market_discovery_internal.cli import (
     parse_cli_mode_flags, run_main_discovery_mode, run_main_paper_report_mode,
@@ -149,9 +150,10 @@ def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
         ),
         filter_opportunities_fn=lambda enriched: sorted(
             [m for m in enriched
-             if float(m.get("yes_price", 1.0)) <= STRATEGY_MAX_YES_PRICE
-             and float(m.get("model_prob", 0.0)) >= STRATEGY_MIN_MODEL_PROB
-             and float(m.get("edge", -1.0)) >= STRATEGY_MIN_EDGE],
+             # [PACK B] Use per-market regime gates if available, else fall back to global config
+             if float(m.get("yes_price", 1.0)) <= float((m.get("regime_gates") or {}).get("max_price", STRATEGY_MAX_YES_PRICE))
+             and float(m.get("model_prob", 0.0)) >= float((m.get("regime_gates") or {}).get("min_prob", STRATEGY_MIN_MODEL_PROB))
+             and float(m.get("edge", -1.0)) >= float((m.get("regime_gates") or {}).get("min_edge", STRATEGY_MIN_EDGE))],
             key=lambda x: x.get("edge", 0), reverse=True
         ),
         daily_resolve_only=DAILY_RESOLVE_ONLY,

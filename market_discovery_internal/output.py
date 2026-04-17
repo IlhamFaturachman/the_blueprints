@@ -246,6 +246,28 @@ def print_paper_cycle_summary(cycle, safe_float_fn, paper_min_city_diversity):
         )
     print(f"  Aggressive scan    : {'on' if cycle.get('used_aggressive_scan') else 'off'}")
     print(f"  Empty temp cycles  : {cycle.get('empty_temperature_cycles', 0)}")
+    # [PACK B] Regime distribution
+    opps = discovery.get("opportunities") or []
+    if opps:
+        regime_counts = {}
+        for m in opps:
+            rc = m.get("regime_class", "neutral")
+            regime_counts[rc] = regime_counts.get(rc, 0) + 1
+        _regime_str = ", ".join(f"{k}={v}" for k, v in sorted(regime_counts.items()))
+        print(f"  Regime classes     : {_regime_str}")
+    # [PACK E] Auto-tuner summary
+    from market_discovery_internal.state_persistence import load_paper_state
+    from market_discovery_internal.config import PAPER_STATE_FILE
+    try:
+        _st = load_paper_state(PAPER_STATE_FILE)
+        _at = (_st.get("meta") or {}).get("auto_tuner") or {}
+        if _at and _at.get("blacklisted"):
+            print(f"  Tuner blacklist    : {', '.join(_at['blacklisted'])}")
+        elif _at.get("adjustments"):
+            _n_adj = sum(1 for v in _at["adjustments"].values() if v.get("adj_edge", 0) != 0)
+            print(f"  Tuner adjustments  : {_n_adj} cities adjusted")
+    except Exception:
+        pass
     performance = cycle.get("performance") if isinstance(cycle.get("performance"), dict) else {}
     if performance:
         _print_paper_cycle_performance_block(performance, safe_float_fn)

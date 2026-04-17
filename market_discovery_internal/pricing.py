@@ -192,14 +192,92 @@ def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
     except Exception:
         return 0.0
 
-def calculate_edge(market, forecast_temp):
+def _calibrated_prob(city, direction, horizon_bin, price_bin, raw_prob, min_samples=5):
+    """
+    [PACK A] Apply Bayesian shrinkage to raw model probability using historical calibration.
+
+    Shrinkage formula: calibrated = (hits + raw_prob * prior_weight) / (total + prior_weight)
+    - If total < min_samples: calibration has little effect (prior dominates).
+    - prior_weight = min_samples gives 50/50 blend at exactly min_samples observations.
+    - Returns (calibrated_prob, calibration_meta).
+    """
+    try:
+        from market_discovery_internal.database_manager import db
+        hits, total, brier_sum = db.get_calibration(city, direction, horizon_bin, price_bin)
+    except Exception:
+        hits, total, brier_sum = 0, 0, 0.0
+
+    prior_weight = float(min_samples)
+    calibrated = (hits + raw_prob * prior_weight) / (total + prior_weight)
+    calibrated = max(0.0, min(1.0, calibrated))
+
+    avg_brier = round(brier_sum / total, 4) if total > 0 else None
+    return round(calibrated, 4), {
+        "calibration_hits": hits,
+        "calibration_total": total,
+        "calibration_avg_brier": avg_brier,
+        "calibration_active": total >= min_samples,
+    }
+
+
+def compute_regime_score(market, weather_evidence=None):
+    """
+    [PACK B] Compute market regime class from spread, depth, and evidence quality.
+
+    Returns: ("good"|"neutral"|"stress", score_float, gate_thresholds_dict)
+    - good    (score >= 0.65): controlled relax — use base thresholds
+    - neutral (score >= 0.40): base thresholds
+    - stress  (score < 0.40):  tighten gates — raise min_prob, min_edge; lower max_price
+    """
+    # Spread component: 0→1 (tighter spread = better)
+    spread = market.get("gamma_spread")
+    if spread is not None:
+        try:
+            spread_score = max(0.0, 1.0 - float(spread) / MARKET_MAX_SPREAD_GATE)
+        except (TypeError, ValueError):
+            spread_score = 0.5
+    else:
+        spread_score = 0.5  # Unknown spread: neutral
+
+    # Depth component: is there enough depth for 2x stake? (best effort from volume_24hr)
+    vol24 = market.get("volume_24hr", 0.0)
+    try:
+        vol24 = float(vol24)
+        depth_score = min(1.0, vol24 / max(MARKET_MIN_VOLUME_24HR * 2, 1.0))
+    except (TypeError, ValueError):
+        depth_score = 0.5
+
+    # Evidence quality component (from weather evidence)
+    if weather_evidence and isinstance(weather_evidence, dict):
+        evidence_score = float(weather_evidence.get("quality_score", 0.5))
+    else:
+        evidence_score = 0.5
+
+    regime_score = (spread_score * 0.45 + depth_score * 0.30 + evidence_score * 0.25)
+    regime_score = round(max(0.0, min(1.0, regime_score)), 4)
+
+    if regime_score >= 0.65:
+        regime_class = "good"
+        gates = {"min_prob": 0.68, "min_edge": 0.18, "max_price": 0.65}
+    elif regime_score >= 0.40:
+        regime_class = "neutral"
+        gates = {"min_prob": 0.72, "min_edge": 0.22, "max_price": 0.60}
+    else:
+        regime_class = "stress"
+        gates = {"min_prob": 0.80, "min_edge": 0.28, "max_price": 0.55}
+
+    return regime_class, regime_score, gates
+
+
+def calculate_edge(market, forecast_temp, hours_until_resolve=None):
     """
     Calculate the statistical edge of a market position compared to forecast.
 
     Logic:
     - Above/Below: sigmoid model probability around threshold.
     - Exact: Gaussian probability around forecast.
-    - Edge = model_prob - (price + slippage_penalty)
+    - [PACK A] Calibrated probability applied via Bayesian shrinkage.
+    - Edge = calibrated_prob - (price + slippage_penalty)
 
     Slippage penalty (spread-aware):
       slippage_penalty = max(0.0175, gamma_spread / 2.0)
@@ -213,24 +291,44 @@ def calculate_edge(market, forecast_temp):
     price = market.get("yes_price")
     threshold = market.get("threshold")
     direction = market.get("direction")
+    city = str(market.get("city", "")).lower()
     forecast = float(forecast_temp)
 
-    model_prob = 0.0
+    raw_prob = 0.0
     if direction == "above":
         # Sigmoid: smooth gradient around threshold.
         # k=1.5 → at +1°C prob≈0.82, at +2°C prob≈0.95, at -1°C prob≈0.18
         k = 1.5
         diff = max(-50, min(50, (forecast - threshold)))
-        model_prob = 1.0 / (1.0 + math.exp(-k * diff))
+        raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
     elif direction == "below":
         k = 1.5
         diff = max(-50, min(50, (threshold - forecast)))
-        model_prob = 1.0 / (1.0 + math.exp(-k * diff))
+        raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
     elif direction == "exact":
         # Gaussian approximation: exp(-0.5 * ((x-mu)/sigma)^2)
         diff = abs(forecast - threshold)
         sigma = MODEL_EXACT_SIGMA_C
-        model_prob = math.exp(-0.5 * (diff / sigma)**2)
+        raw_prob = math.exp(-0.5 * (diff / sigma)**2)
+
+    # [PACK A] Calibration bins
+    _h = hours_until_resolve if hours_until_resolve is not None else market.get("hours_until_resolve")
+    if _h is not None:
+        try:
+            _h = float(_h)
+            horizon_bin = 1 if _h < 12 else (2 if _h < 24 else 3)
+        except (TypeError, ValueError):
+            horizon_bin = 2
+    else:
+        horizon_bin = 2
+
+    try:
+        price_bin = min(9, max(0, int(float(price) * 10)))
+    except (TypeError, ValueError):
+        price_bin = 5
+
+    calibrated, calib_meta = _calibrated_prob(city, str(direction), horizon_bin, price_bin, raw_prob)
+    model_prob = calibrated  # Use calibrated for edge calculation
 
     # [MODUL P] Spread-Aware Slippage Penalty
     # Use gamma_spread from parsed market dict if available; floor at 1.75%.
@@ -247,9 +345,13 @@ def calculate_edge(market, forecast_temp):
 
     return {
         "model_prob": round(model_prob, 4),
+        "raw_prob": round(raw_prob, 4),
         "edge": round(edge, 4),
         "forecast": forecast,
         "slippage_penalty_applied": round(slippage_penalty, 4),
+        "horizon_bin": horizon_bin,
+        "price_bin": price_bin,
+        **calib_meta,
     }
 
 def _enrich_markets_missing_prices(markets, max_workers=6):

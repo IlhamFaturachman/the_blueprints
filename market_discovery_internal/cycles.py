@@ -165,6 +165,17 @@ def enrich_discovery_markets(
             enriched_item["weather_evidence_valid"] = evidence_valid
             enriched_item["weather_evidence_quality_score"] = evidence.get("quality_score")
             enriched_item["weather_evidence_age_hours"] = evidence.get("age_hours")
+            # [PACK B] Compute market regime and attach gates
+            try:
+                from market_discovery_internal.pricing import compute_regime_score
+                r_class, r_score, r_gates = compute_regime_score(enriched_item, evidence)
+                enriched_item["regime_class"] = r_class
+                enriched_item["regime_score"] = r_score
+                enriched_item["regime_gates"] = r_gates
+            except Exception:
+                enriched_item["regime_class"] = "neutral"
+                enriched_item["regime_score"] = 0.5
+                enriched_item["regime_gates"] = {"min_prob": 0.72, "min_edge": 0.22, "max_price": 0.60}
             enriched.append(maybe_apply_ai_decision_fn(enriched_item))
     enrich_ms = elapsed_ms_fn(enrich_started)
 
@@ -396,6 +407,61 @@ def run_paper_trading_cycle(
             state_meta["circuit_breaker_alert_sent"] = False
 
     empty_temperature_cycles = int(state_meta.get("empty_temperature_cycles", 0) or 0)
+
+    # [PACK E] Auto-Tuner: compute per-city adjustments from trade history
+    try:
+        auto_tuner_state = compute_auto_tuner_adjustments()
+        blacklisted_cities = {c for c, v in auto_tuner_state.items() if v.get("blacklisted")}
+        if blacklisted_cities:
+            logger.warning(f"[AUTO-TUNER] Blacklisted cities this cycle: {blacklisted_cities}")
+        state_meta["auto_tuner"] = {
+            "computed_at": now_dt.isoformat(),
+            "adjustments": auto_tuner_state,
+            "blacklisted": list(blacklisted_cities),
+        }
+    except Exception as _e:
+        auto_tuner_state = {}
+        blacklisted_cities = set()
+        logger.warning(f"[AUTO-TUNER] Failed: {_e}")
+
+    # [PACK F] Weekly profit attribution report (once per 7 days)
+    try:
+        last_report_at_str = state_meta.get("last_attribution_report_at", "")
+        _do_report = True
+        if last_report_at_str:
+            from market_discovery_internal.reporting import parse_utc_datetime
+            _last_r = parse_utc_datetime(last_report_at_str)
+            if _last_r and (now_dt - _last_r).total_seconds() < 7 * 86400:
+                _do_report = False
+        if _do_report:
+            _report = build_profit_attribution_report()
+            if _report and _report.get("trades_analyzed", 0) > 0:
+                _leakers = _report.get("top_leakers_city", [])[:3]
+                _earners = _report.get("top_earners_city", [])[:3]
+                _reasons = _report.get("by_exit_reason", [])
+                _leak_text = "\n".join(
+                    f"  • {r['key']}: ${r['total_pnl']:+.2f} ({r['win_rate']*100:.0f}% WR, {r['count']} trades)"
+                    for r in _leakers
+                ) or "  (nok data)"
+                _earn_text = "\n".join(
+                    f"  • {r['key']}: ${r['total_pnl']:+.2f} ({r['win_rate']*100:.0f}% WR, {r['count']} trades)"
+                    for r in _earners
+                ) or "  (no data)"
+                _reason_text = "\n".join(
+                    f"  • {r['key']}: ${r['total_pnl']:+.2f} ({r['count']} trades)"
+                    for r in _reasons
+                ) or "  (no data)"
+                send_telegram_alert(
+                    f"📊 <b>WEEKLY PROFIT ATTRIBUTION REPORT</b> 📊\n\n"
+                    f"📉 <b>Top Leakers (City):</b>\n{_leak_text}\n\n"
+                    f"📈 <b>Top Earners (City):</b>\n{_earn_text}\n\n"
+                    f"🏁 <b>Exit Reasons:</b>\n{_reason_text}\n\n"
+                    f"<i>{_report['trades_analyzed']} trades analyzed</i>"
+                )
+                state_meta["last_attribution_report_at"] = now_dt.isoformat()
+                state_meta["last_attribution_report"] = _report
+    except Exception as _e:
+        logger.warning(f"[PACK-F] Attribution report failed: {_e}")
 
     auto_aggressive = (
         discovery_enable_auto_aggressive_scan
@@ -758,8 +824,19 @@ def run_paper_trading_cycle(
     available_slots = max(current_tier_max_slots - len(open_token_ids), 0)
 
     if effective_allow_new_entries:
+        # [PACK E] Filter blacklisted cities from candidates before entry
+        _filtered_candidates = entry_candidates
+        if blacklisted_cities:
+            _filtered_candidates = [
+                c for c in entry_candidates
+                if str(c.get("opportunity", {}).get("city", "")).lower() not in blacklisted_cities
+            ]
+            _n_filtered = len(entry_candidates) - len(_filtered_candidates)
+            if _n_filtered:
+                logger.warning(f"[AUTO-TUNER] Filtered {_n_filtered} candidates from blacklisted cities.")
+
         opened_this_cycle, opened_city_keys, _ = append_opened_positions_from_candidates_fn(
-            entry_candidates=entry_candidates,
+            entry_candidates=_filtered_candidates,
             next_open_positions=next_open_positions,
             open_token_ids=open_token_ids,
             open_city_counts=open_city_counts,
@@ -1077,26 +1154,53 @@ def evaluate_hybrid_exit(
     confidence_score=None,
 ):
     """
-    Hybrid exit strategy:
+    [PACK D] Advanced hybrid exit strategy:
      1) Take-profit at +100% from entry (2x by default).
-    2) Stop-loss when current price <= configured stop-loss price.
-    3) If within late window (H-2 by default):
-       - forecast valid + confidence >= min threshold -> hold to resolve
-       - otherwise -> sell
-    4) Otherwise hold and wait.
+     2) Stop-loss when current price <= configured stop-loss price.
+     3) [PACK D] Partial TP protection: at 1.5x entry, move stop to break-even.
+     4) [PACK D] Trailing stop: if price retraces 15%+ from peak after 20% profit.
+     5) [PACK D] Thesis decay exit: if H<2 and confidence < 0.45, exit.
+     6) If within late window (H-2 by default):
+        - forecast valid + confidence >= min threshold -> hold to resolve
+        - otherwise -> sell
+     7) Otherwise hold and wait.
     """
     price = float(current_yes_price)
     target_price = float(position.get("target_price", _compute_take_profit_price(position.get("entry_price"))))
-    stop_loss_price = float(position["stop_loss_price"])
+    stop_loss_price = float(position.get("stop_loss_price", 0.0))
+    entry_price = float(position.get("entry_price", price))
 
     if confidence_score is None:
         confidence_score = 1.0 if forecast_still_valid else 0.0
     confidence_score = max(0.0, min(float(confidence_score), 1.0))
     strategy = position.get("target_strategy", "swing")
-    
-    # [LOG] Crucial diagnostic to see why NYC might be closing
-    if "new york city" in str(position.get("city", "")).lower():
-        print(f"[STRATEGY-AUDIT] {position.get('city').upper()} | Strategy: {strategy} | Price: {price} | Target: {target_price}")
+
+    # [PACK D] Track peak price for trailing stop
+    peak_price = float(position.get("peak_price") or price)
+    updated_peak = max(peak_price, price)
+
+    # [PACK D] Partial TP: at 1.5x entry, lock in profit by moving stop to break-even
+    _PARTIAL_TP_MULT = 1.5 - 1e-9  # epsilon tolerance for float precision
+    partial_tp_taken = bool(position.get("partial_tp_taken", False))
+    if not partial_tp_taken and entry_price > 0 and price >= entry_price * _PARTIAL_TP_MULT:
+        # Move stop_loss to entry_price (break-even) to protect the profit
+        stop_loss_price = max(stop_loss_price, entry_price)
+        # (The updated peak and partial_tp_taken flag are returned in peak_updates)
+
+    # [PACK D] Trailing stop: trigger if price drops 15% from peak AND peak was 20%+ profitable
+    _TRAILING_TRIGGER = 1.20   # position must have been 20%+ profitable to arm trailing stop
+    _TRAILING_PCT = 0.15       # retrace 15% from peak triggers the stop
+    if (entry_price > 0
+            and updated_peak >= entry_price * _TRAILING_TRIGGER
+            and price < updated_peak * (1.0 - _TRAILING_PCT)):
+        return {
+            "action": "sell",
+            "reason": "trailing_stop",
+            "target_price": target_price,
+            "confidence_score": confidence_score,
+            "peak_price": round(updated_peak, 4),
+            "partial_tp_taken": partial_tp_taken or (price >= entry_price * 1.5),
+        }
 
     if price <= stop_loss_price:
         return {
@@ -1104,20 +1208,34 @@ def evaluate_hybrid_exit(
             "reason": "stop_loss",
             "target_price": target_price,
             "confidence_score": confidence_score,
+            "peak_price": round(updated_peak, 4),
+            "partial_tp_taken": partial_tp_taken,
         }
 
-    strategy = position.get("target_strategy", "swing")
     if price >= target_price and strategy == "swing":
         return {
             "action": "sell",
             "reason": "take_profit_100pct",
             "target_price": target_price,
             "confidence_score": confidence_score,
+            "peak_price": round(updated_peak, 4),
+            "partial_tp_taken": True,
         }
 
     hours = hours_until_resolve
     if hours is None:
         hours = _hours_until_resolve_from_end_date(position.get("end_date"), now_utc=now_utc)
+
+    # [PACK D] Thesis decay exit: late stage + low confidence → exit early
+    if hours is not None and hours <= 2.0 and confidence_score < 0.45:
+        return {
+            "action": "sell",
+            "reason": "thesis_decay_exit",
+            "target_price": target_price,
+            "confidence_score": confidence_score,
+            "peak_price": round(updated_peak, 4),
+            "partial_tp_taken": partial_tp_taken,
+        }
 
     if hours is not None and hours <= HYBRID_LATE_WINDOW_HOURS:
         if not forecast_still_valid:
@@ -1126,6 +1244,8 @@ def evaluate_hybrid_exit(
                 "reason": "late_window_forecast_invalid",
                 "target_price": target_price,
                 "confidence_score": confidence_score,
+                "peak_price": round(updated_peak, 4),
+                "partial_tp_taken": partial_tp_taken,
             }
 
         if confidence_score >= HYBRID_MIN_CONFIDENCE_TO_HOLD:
@@ -1134,6 +1254,8 @@ def evaluate_hybrid_exit(
                 "reason": "late_window_confidence_pass",
                 "target_price": target_price,
                 "confidence_score": confidence_score,
+                "peak_price": round(updated_peak, 4),
+                "partial_tp_taken": partial_tp_taken,
             }
 
         return {
@@ -1141,6 +1263,8 @@ def evaluate_hybrid_exit(
             "reason": "late_window_confidence_below_min",
             "target_price": target_price,
             "confidence_score": confidence_score,
+            "peak_price": round(updated_peak, 4),
+            "partial_tp_taken": partial_tp_taken,
         }
 
     return {
@@ -1148,17 +1272,25 @@ def evaluate_hybrid_exit(
         "reason": "await_target",
         "target_price": target_price,
         "confidence_score": confidence_score,
+        "peak_price": round(updated_peak, 4),
+        "partial_tp_taken": partial_tp_taken or (price >= entry_price * _PARTIAL_TP_MULT),
     }
 
 
 def close_paper_position(position, exit_price, reason, now_utc=None):
-    """Close an open paper position and compute realized PnL metrics."""
+    """Close an open paper position, compute realized PnL, and record calibration + history."""
     closed = {**position}
     resolved_at = now_utc or datetime.now(timezone.utc)
     price = float(exit_price)
     exit_value = round(price * float(closed["quantity"]), 4)
     pnl_usd = round(exit_value - float(closed["cost_basis"]), 4)
     roi_pct = round((pnl_usd / float(closed["cost_basis"])) * 100, 4) if closed["cost_basis"] else 0.0
+
+    # [PACK F] Compute spread cost attribution at close
+    entry_price = float(closed.get("entry_price", 0.0))
+    entry_bid = float(closed.get("entry_quote_best_bid") or 0.0)
+    qty = float(closed.get("quantity", 0.0))
+    spread_cost = round((entry_price - entry_bid) * qty, 4) if entry_bid > 0 else 0.0
 
     closed.update(
         {
@@ -1170,8 +1302,27 @@ def close_paper_position(position, exit_price, reason, now_utc=None):
             "realized_roi_pct": roi_pct,
             "closed_at": resolved_at.isoformat(),
             "close_reason": reason,
+            "spread_cost_usd": spread_cost,                   # [PACK F] attribution
+            "city_cluster": closed.get("city", "unknown"),   # [PACK F] attribution
         }
     )
+
+    # [PACK A] Record calibration outcome + [PACK F] persist trade history
+    outcome = 1 if price >= 0.9 else (0 if price <= 0.1 else None)
+    if outcome is not None:
+        try:
+            city = str(closed.get("city", "")).lower()
+            direction = str(closed.get("direction", ""))
+            horizon_bin = closed.get("horizon_bin", 2)
+            price_bin = closed.get("price_bin", 5)
+            raw_prob = float(closed.get("raw_prob") or closed.get("entry_model_prob") or 0.5)
+            db.update_calibration(city, direction, horizon_bin, price_bin, outcome, raw_prob)
+        except Exception:
+            pass
+    try:
+        db.record_trade_history(closed)
+    except Exception:
+        pass
 
     return closed
 
@@ -1199,6 +1350,11 @@ def update_paper_position(
         "last_price": float(current_yes_price),
         "last_confidence_score": decision.get("confidence_score"),
     }
+    # [PACK D] Persist trailing stop state
+    if "peak_price" in decision:
+        updated["peak_price"] = decision["peak_price"]
+    if "partial_tp_taken" in decision:
+        updated["partial_tp_taken"] = decision["partial_tp_taken"]
 
     if decision["action"] == "sell":
         updated = close_paper_position(
@@ -1394,6 +1550,34 @@ def append_opened_positions_from_candidates(
         if dynamic_stake < float(stake_usd):
             logger.info(f"[LIQUIDITY] Scaling down stake for {token_id}: ${stake_usd} -> ${dynamic_stake}")
 
+        # [PACK B] Regime gate: apply per-market regime thresholds
+        regime_class = opportunity.get("regime_class", "neutral")
+        regime_gates = opportunity.get("regime_gates") or {"min_prob": 0.72, "min_edge": 0.22, "max_price": 0.60}
+        _r_min_prob = float(regime_gates.get("min_prob", 0.72))
+        _r_min_edge = float(regime_gates.get("min_edge", 0.22))
+        _r_max_price = float(regime_gates.get("max_price", 0.60))
+        _r_model_prob = float(opportunity.get("model_prob", 0.0))
+        _r_edge = float(opportunity.get("edge", 0.0))
+        if _r_model_prob < _r_min_prob or _r_edge < _r_min_edge or best_ask > _r_max_price:
+            logger.debug(f"[REGIME-{regime_class.upper()}] Skipping {token_id}: "
+                         f"prob={_r_model_prob:.3f}<{_r_min_prob:.3f} or "
+                         f"edge={_r_edge:.3f}<{_r_min_edge:.3f} or "
+                         f"price={best_ask:.3f}>{_r_max_price:.3f}")
+            continue
+
+        # [PACK C] Risk-weighted sizing: scale stake by model confidence
+        _confidence = float(opportunity.get("model_prob", 0.70))
+        _base_confidence = 0.70  # normalize around 70% base
+        _risk_multiplier = max(0.5, min(1.5, _confidence / _base_confidence))
+        risk_weighted_stake = round(dynamic_stake * _risk_multiplier, 2)
+        # Re-check dust floor after risk weighting
+        if risk_weighted_stake < MIN_STAKE_THRESHOLD:
+            risk_weighted_stake = dynamic_stake  # fall back to unweighted
+
+        # [PACK C] Correlation cap: if city already has an open position, reduce stake 30%
+        if city_key and open_city_counts.get(city_key, 0) >= 1:
+            risk_weighted_stake = round(risk_weighted_stake * 0.70, 2)
+
         entry_opportunity = {
             **opportunity,
             "entry_price": round(best_ask, 4),
@@ -1404,12 +1588,21 @@ def append_opened_positions_from_candidates(
         if best_bid > 0:
             entry_opportunity["entry_quote_best_bid"] = round(best_bid, 4)
 
-        position = build_paper_position(entry_opportunity, stake_usd=dynamic_stake)
+        position = build_paper_position(entry_opportunity, stake_usd=risk_weighted_stake)
         position["entry_bucket"] = bucket_name
         position["entry_bucket_reason"] = bucket.get("reason")
         position["entry_confidence_score"] = bucket.get("confidence")
         position["entry_ai_status"] = opportunity.get("ai_status", "off")
-        
+        # [PACK A] Store calibration bins for later outcome recording
+        position["horizon_bin"] = opportunity.get("horizon_bin", 2)
+        position["price_bin"] = opportunity.get("price_bin", 5)
+        position["raw_prob"] = opportunity.get("raw_prob", opportunity.get("model_prob"))
+        # [PACK B] Regime context
+        position["entry_regime_class"] = regime_class
+        position["entry_regime_score"] = opportunity.get("regime_score", 0.5)
+        # [PACK C] Sizing audit trail
+        position["risk_multiplier"] = round(_risk_multiplier, 4)
+
         if opportunity.get("ai_bucket") is not None:
             position["entry_ai_bucket"] = opportunity.get("ai_bucket")
         if opportunity.get("ai_confidence") is not None:
@@ -1426,3 +1619,136 @@ def append_opened_positions_from_candidates(
         available_slots -= 1
 
     return opened_this_cycle, opened_city_keys, available_slots
+
+
+# ---------------------------------------------------------------------------
+# [PACK E] Auto-Tuner Activation
+# ---------------------------------------------------------------------------
+
+def compute_auto_tuner_adjustments(min_trades=3):
+    """
+    [PACK E] Compute per-city edge/prob adjustments from recent trade history.
+
+    Logic:
+    - Win rate > AUTO_TUNER_AGGRESSIVE_WIN_RATE → relax min_edge by EDGE_RELAX (reward)
+    - Win rate < AUTO_TUNER_CAUTION_WIN_RATE    → penalize min_edge by EDGE_PENALTY (tighten)
+    - Continuous consecutive stop-loss rate > BLACKLIST threshold → blacklist city for this cycle
+
+    Returns: {city: {"adj_edge": float, "adj_prob": float, "blacklisted": bool, "win_rate": float, "n": int}}
+    """
+    from market_discovery_internal.config import (
+        AUTO_TUNER_ENABLED, AUTO_TUNER_MIN_TRADES, AUTO_TUNER_EDGE_RELAX,
+        AUTO_TUNER_EDGE_PENALTY, AUTO_TUNER_AGGRESSIVE_WIN_RATE,
+        AUTO_TUNER_CAUTION_WIN_RATE, AUTO_TUNER_BLACKLIST_PNL,
+        AUTO_TUNER_BLACKLIST_STOP_LOSS_RATE,
+    )
+    if not AUTO_TUNER_ENABLED:
+        return {}
+
+    min_t = max(min_trades, AUTO_TUNER_MIN_TRADES)
+    adjustments = {}
+
+    try:
+        from market_discovery_internal.config import TARGET_CITIES
+        cities = list(TARGET_CITIES.keys())
+    except Exception:
+        return {}
+
+    for city in cities:
+        try:
+            trades = db.get_trade_history_for_city(city, limit=20)
+        except Exception:
+            continue
+        if len(trades) < min_t:
+            continue
+
+        wins = sum(1 for t in trades if float(t.get("pnl_usd", 0.0)) > 0)
+        stop_losses = sum(1 for t in trades if "stop_loss" in str(t.get("close_reason", "")))
+        n = len(trades)
+        win_rate = wins / n
+
+        # Blacklist check: too many stop losses + negative avg PnL
+        avg_pnl = sum(float(t.get("pnl_usd", 0.0)) for t in trades) / n
+        blacklisted = (stop_losses / n >= AUTO_TUNER_BLACKLIST_STOP_LOSS_RATE
+                       and avg_pnl <= AUTO_TUNER_BLACKLIST_PNL)
+
+        if win_rate >= AUTO_TUNER_AGGRESSIVE_WIN_RATE:
+            adj_edge = -AUTO_TUNER_EDGE_RELAX   # relax (more opportunities)
+            adj_prob = -AUTO_TUNER_EDGE_RELAX
+        elif win_rate < AUTO_TUNER_CAUTION_WIN_RATE:
+            adj_edge = AUTO_TUNER_EDGE_PENALTY   # penalize (tighter gate)
+            adj_prob = AUTO_TUNER_EDGE_PENALTY * 0.5
+        else:
+            adj_edge = 0.0
+            adj_prob = 0.0
+
+        if blacklisted:
+            adj_edge = 1.0  # effectively block this city
+            adj_prob = 1.0
+
+        adjustments[city] = {
+            "adj_edge": round(adj_edge, 4),
+            "adj_prob": round(adj_prob, 4),
+            "win_rate": round(win_rate, 4),
+            "n": n,
+            "blacklisted": blacklisted,
+        }
+
+    return adjustments
+
+
+# ---------------------------------------------------------------------------
+# [PACK F] Champion-Challenger & Profit Attribution
+# ---------------------------------------------------------------------------
+
+def build_profit_attribution_report(limit=200):
+    """
+    [PACK F] Build profit attribution report grouped by city, bucket, and exit reason.
+
+    Returns a dict with top leakers and top earners.
+    """
+    try:
+        trades = db.get_recent_trade_history(limit=limit)
+    except Exception:
+        return {}
+
+    if not trades:
+        return {}
+
+    # Group by city
+    by_city = {}
+    by_bucket = {}
+    by_exit_reason = {}
+
+    for t in trades:
+        pnl = float(t.get("pnl_usd", 0.0) or 0.0)
+        city = str(t.get("city") or "unknown").lower()
+        bucket = str(t.get("entry_bucket") or "unknown")
+        reason = str(t.get("close_reason") or "unknown")
+
+        for group, key in [(by_city, city), (by_bucket, bucket), (by_exit_reason, reason)]:
+            if key not in group:
+                group[key] = {"total_pnl": 0.0, "count": 0, "wins": 0}
+            group[key]["total_pnl"] = round(group[key]["total_pnl"] + pnl, 4)
+            group[key]["count"] += 1
+            if pnl > 0:
+                group[key]["wins"] += 1
+
+    def _sorted_desc(d):
+        return sorted(
+            [{"key": k, **v, "win_rate": round(v["wins"] / v["count"], 3) if v["count"] else 0}
+             for k, v in d.items()],
+            key=lambda x: x["total_pnl"]
+        )
+
+    city_sorted = _sorted_desc(by_city)
+    bucket_sorted = _sorted_desc(by_bucket)
+    reason_sorted = _sorted_desc(by_exit_reason)
+
+    return {
+        "top_leakers_city": city_sorted[:5],        # worst cities (negative PnL first)
+        "top_earners_city": list(reversed(city_sorted))[:5],
+        "by_exit_reason": reason_sorted,
+        "by_entry_bucket": bucket_sorted,
+        "trades_analyzed": len(trades),
+    }

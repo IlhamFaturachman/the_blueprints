@@ -154,9 +154,32 @@ class BlueprintsDB:
             )
         """)
 
+        # 9. [PACK A] Probability Calibration Warehouse
+        # Tracks prediction accuracy per (city, direction, horizon_bin, price_bin).
+        # horizon_bin: 1=<12h, 2=12-24h, 3=24+h to resolve at entry.
+        # price_bin: floor(yes_price * 10) → 0-9 (0-10%, 10-20%, ..., 90-100%).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS calibration_stats (
+                city TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                horizon_bin INTEGER NOT NULL,
+                price_bin INTEGER NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 0,
+                total INTEGER NOT NULL DEFAULT 0,
+                brier_sum REAL NOT NULL DEFAULT 0.0,
+                PRIMARY KEY (city, direction, horizon_bin, price_bin)
+            )
+        """)
+
         # Schema migrations — idempotent via try/except for each new column.
         _migrations = [
             "ALTER TABLE active_positions ADD COLUMN raw_json TEXT",
+            "ALTER TABLE trade_history ADD COLUMN direction TEXT",
+            "ALTER TABLE trade_history ADD COLUMN entry_bucket TEXT",
+            "ALTER TABLE trade_history ADD COLUMN horizon_bin INTEGER",
+            "ALTER TABLE trade_history ADD COLUMN price_bin INTEGER",
+            "ALTER TABLE trade_history ADD COLUMN entry_model_prob REAL",
+            "ALTER TABLE trade_history ADD COLUMN outcome INTEGER",
         ]
         for migration in _migrations:
             try:
@@ -364,6 +387,107 @@ class BlueprintsDB:
         """, (day_key, call_kind))
         conn.commit()
         return True
+
+    # --- [PACK A] Probability Calibration ---
+
+    def get_calibration(self, city, direction, horizon_bin, price_bin):
+        """Return (hits, total, brier_sum) for a calibration key. Returns (0,0,0.0) if missing."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT hits, total, brier_sum FROM calibration_stats "
+            "WHERE city=? AND direction=? AND horizon_bin=? AND price_bin=?",
+            (str(city).lower(), str(direction), int(horizon_bin), int(price_bin))
+        ).fetchone()
+        if row:
+            return int(row["hits"]), int(row["total"]), float(row["brier_sum"])
+        return 0, 0, 0.0
+
+    def update_calibration(self, city, direction, horizon_bin, price_bin, outcome, model_prob):
+        """Record one prediction outcome into the calibration table.
+        outcome: 1 if YES resolved, 0 if NO resolved.
+        model_prob: the raw model probability at entry.
+        """
+        brier = (float(model_prob) - float(outcome)) ** 2
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT INTO calibration_stats (city, direction, horizon_bin, price_bin, hits, total, brier_sum)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            ON CONFLICT(city, direction, horizon_bin, price_bin)
+            DO UPDATE SET
+                hits = hits + excluded.hits,
+                total = total + 1,
+                brier_sum = brier_sum + excluded.brier_sum
+        """, (str(city).lower(), str(direction), int(horizon_bin), int(price_bin),
+              int(outcome), brier))
+        conn.commit()
+
+    def get_trade_history_for_city(self, city, limit=30):
+        """Return recent closed trades for a city (for auto-tuner)."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT pnl_usd, close_reason, raw_json FROM trade_history "
+            "WHERE city = ? ORDER BY id DESC LIMIT ?",
+            (str(city).lower(), int(limit))
+        ).fetchall()
+        result = []
+        for r in rows:
+            try:
+                obj = json.loads(r["raw_json"]) if r["raw_json"] else {}
+            except Exception:
+                obj = {}
+            obj.setdefault("pnl_usd", r["pnl_usd"])
+            obj.setdefault("close_reason", r["close_reason"])
+            result.append(obj)
+        return result
+
+    def get_recent_trade_history(self, limit=200):
+        """Return last N trades across all cities for profit attribution."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT raw_json, pnl_usd, city, close_reason FROM trade_history ORDER BY id DESC LIMIT ?",
+            (int(limit),)
+        ).fetchall()
+        result = []
+        for r in rows:
+            try:
+                obj = json.loads(r["raw_json"]) if r["raw_json"] else {}
+            except Exception:
+                obj = {}
+            obj.setdefault("pnl_usd", r["pnl_usd"])
+            obj.setdefault("city", r["city"])
+            obj.setdefault("close_reason", r["close_reason"])
+            result.append(obj)
+        return result
+
+    def record_trade_history(self, position):
+        """Persist a closed position to trade_history with calibration fields."""
+        conn = self._get_conn()
+        pnl = float(position.get("realized_pnl_usd", 0.0))
+        roi = float(position.get("realized_roi_pct", 0.0))
+        exit_price = float(position.get("exit_price", 0.0))
+        outcome = 1 if exit_price >= 0.9 else (0 if exit_price <= 0.1 else None)
+        conn.execute("""
+            INSERT INTO trade_history
+            (token_id, city, date, pnl_usd, roi_pct, close_reason, closed_at,
+             direction, entry_bucket, horizon_bin, price_bin, entry_model_prob, outcome, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            position.get("token_id"),
+            str(position.get("city", "")).lower(),
+            position.get("date"),
+            pnl, roi,
+            position.get("close_reason"),
+            position.get("closed_at"),
+            position.get("direction"),
+            position.get("entry_bucket"),
+            position.get("horizon_bin"),
+            position.get("price_bin"),
+            position.get("entry_model_prob"),
+            outcome,
+            json.dumps(position),
+        ))
+        conn.commit()
+        return outcome
 
 
 # Singleton instance
