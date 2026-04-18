@@ -234,11 +234,56 @@ Saat tinggal 2 jam atau kurang sebelum pasar tutup jam 19:00 WIB, bot evaluasi:
 Jika tidak ada satupun kondisi terpenuhi → bot **diam dan tunggu** siklus berikutnya.
 
 ### 7.3 Penutupan Berbasis AI (Haiku Monitor)
-Claude Haiku memantau posisi terbuka dengan membaca data lengkap: harga entry, harga saat ini, jam tersisa sebelum resolve, prediksi suhu, dan arah pasar. Haiku memberikan keputusan "hold" atau "close" beserta tingkat keyakinan dan alasan singkat. Contoh keputusan nyata dari Haiku:
 
-> *"CRITICAL MISMATCH: Entered at 0.0606 (implied 94% prob YES) but current 0.05 price (98% prob NO) suggests massive adverse information or model failure. With only 9.5 hours to resolution and price stalled at extreme opposite end, holding exposes remaining capital to near-certain loss. Entry thesis invalidated by market repricing."*
+Claude Haiku memantau posisi terbuka setiap 1 jam dan menerima konteks lengkap untuk membuat keputusan yang akurat:
+
+**Data yang diterima Haiku saat monitor:**
+
+| Field | Keterangan |
+|-------|-----------|
+| `market_question` | Pertanyaan pasar lengkap |
+| `entry_price` | Harga saat posisi dibuka |
+| `current_yes_price` | Harga pasar sekarang |
+| `pnl_pct` | Untung/rugi saat ini dalam persen |
+| `hours_until_resolve` | Jam tersisa sebelum resolve |
+| `entry_model_prob` | Keyakinan bot saat masuk |
+| `entry_edge` | Edge yang dihitung saat masuk |
+| `forecast_temp_at_entry_c` | Prediksi cuaca waktu posisi dibuka |
+| `forecast_temp_now_c` | Prediksi cuaca **sekarang** (terbaru) |
+| `forecast_drift_c` | Selisih — berapa derajat forecast bergeser |
+
+**Cara Haiku memutuskan hold atau close:**
+
+1. `forecast_drift_c` bergerak melawan thesis (misal direction=above tapi forecast turun) → sinyal kuat close
+2. `pnl_pct` < -30% DAN forecast drift melawan → close
+3. `pnl_pct` < -30% tapi forecast tidak berubah → market panic sementara, hati-hati jangan buru-buru close
+4. `hours_until_resolve` ≤ 2 jam DAN masih rugi dalam → close, potong kerugian
+5. `hours_until_resolve` ≤ 2 jam DAN posisi untung atau flat → tahan sampai resolve
+6. Kalau tidak yakin → default hold, jangan close posisi yang tidak jelas ruginya
+
+Contoh keputusan nyata dari Haiku (dari log server):
+
+> *"CRITICAL MISMATCH: Entered at 0.0606 (implied 94% prob YES) but current 0.05 price (98% prob NO) suggests massive adverse information or model failure. With only 9.5 hours to resolution and price stalled at extreme opposite end, holding exposes remaining capital to near-certain loss."*
 
 Haiku hanya bisa memveto — tidak bisa memaksa bot membuka posisi baru.
+
+### 7.4 Review AI Sebelum Masuk Posisi (Haiku Entry)
+
+Sebelum membuka posisi, Haiku juga melakukan sanity check terakhir. Data yang dikirim:
+
+- Pertanyaan pasar, kota, tanggal, arah, threshold
+- Harga pasar saat ini, model_prob, edge, hours_until_resolve
+- Prediksi suhu dan sumbernya
+
+**Urutan cek Haiku sebelum entry:**
+
+1. Apakah `forecast_temp_c` masuk akal untuk kota dan tanggal tersebut?
+2. Apakah `hours_until_resolve` cukup? Jika <6 jam, sangat skeptis
+3. Apakah arah + threshold konsisten dengan forecast? (misal direction=above threshold=20 tapi forecast=14 → model_prob harusnya rendah)
+4. Jika `edge` < 0.15 atau `model_prob` < 0.55 → skip
+5. Jika semua lolos → enter
+
+Haiku entry dibatasi **2 panggilan per hari** karena formula bot sendiri sudah sangat selektif — Haiku hanya sebagai lapisan terakhir.
 
 ---
 
@@ -306,13 +351,13 @@ Bot menggunakan Claude Haiku (model AI ringan dari Anthropic) untuk tiga fungsi:
 
 | Fungsi | Kapan Dipanggil | Interval | Batas Per Hari |
 |--------|----------------|----------|----------------|
-| **Entry Review** | Sebelum buka posisi baru — second opinion | Per kandidat | 2 panggilan |
-| **Position Monitor** | Pantau posisi terbuka secara aktif | **Setiap 1 jam per posisi** | **80 panggilan** |
-| **Market Sensing** | Analisis kondisi pasar umum | Per siklus | 50 panggilan |
+| **Entry Review** | Sanity check terakhir sebelum buka posisi | Per kandidat | 2 panggilan |
+| **Position Monitor** | Pantau posisi terbuka — hold atau close? | **Setiap 1 jam per posisi** | **80 panggilan** |
+| **Market Sensing** | Identifikasi kode stasiun cuaca ICAO dari deskripsi pasar | Per pasar baru | 50 panggilan |
 
-Interval monitor sengaja diperpendek ke 1 jam (sebelumnya 12 jam) karena pasar weather Polymarket volatile — posisi hidup 8–14 jam dan perlu dicek sesering mungkin. Dengan 5 posisi terbuka, Haiku bisa cek tiap posisi hingga **14 kali sepanjang hidupnya**.
+Interval monitor sengaja 1 jam (sebelumnya 12 jam) karena posisi hidup 8–14 jam — dengan interval 1 jam, tiap posisi bisa dicek hingga **14 kali sepanjang hidupnya**. Ketiga fungsi menerima konteks spesifik berbeda dan punya prompt yang berbeda — bukan satu prompt generik.
 
-Biaya estimasi: **$0.14 per hari** dengan monitoring penuh, atau sekitar **$0.99 per minggu**. Dengan sisa kredit $3.69, cukup untuk **~26 hari**. Haiku dipilih bukan Sonnet karena tugas ini tidak butuh reasoning kompleks — cukup baca data dan putuskan hold/close.
+Biaya estimasi: **$0.14 per hari** dengan monitoring penuh. Dengan sisa kredit $3.69, cukup untuk **~26 hari**.
 
 Catatan penting: Haiku bekerja per siklus (~5 menit), bukan real-time. Dan Haiku hanya bisa **memveto** — tidak bisa membuka posisi baru sendiri.
 
