@@ -64,24 +64,34 @@ def load_paper_state(path=None):
     # Load cycle journal (Last 100 for UI)
     metrics = db.get_latest_metrics(limit=100)
 
+    base_wallet = float(portfolio.get('base_wallet') or 5.0)
+    # [ACCOUNTING FIX] Compute cash from first principles: base_wallet + realized_pnl - open_cost_basis
+    # This ensures cash is always accurate regardless of prior accounting bugs.
+    realized_pnl_total = sum(float(h.get('realized_pnl_usd', 0.0) or 0.0) for h in history)
+    open_cost_basis = sum(float(p.get('cost_basis', 0.0) or 0.0) for p in positions)
+    cash = round(base_wallet + realized_pnl_total - open_cost_basis, 4)
+
     state = {
         "positions": positions,
         "history": history,
         "cycle_journal": metrics,
         "updated_at": portfolio.get('updated_at'),
         "meta": {
-            "base_wallet": portfolio.get('base_wallet'),
-            "cash": portfolio.get('cash'),
-            "current_wallet": portfolio.get('cash') + sum(p.get('cost_basis', 0) for p in positions),
+            "base_wallet": base_wallet,
+            "cash": cash,
+            "current_wallet": round(cash + open_cost_basis, 4),
             "acceptance_metrics_rolling": {
-                "closed_realized_pnl_total_usd": portfolio.get('total_pnl', 0.0)
+                "closed_realized_pnl_total_usd": realized_pnl_total
             }
         },
     }
-    
+
     # Sync additional meta keys if they exist in the latest metric
     if metrics:
         state["meta"].update(metrics[0].get("meta", {}))
+        # Re-apply computed cash after metric merge to prevent stale override
+        state["meta"]["cash"] = cash
+        state["meta"]["current_wallet"] = round(cash + open_cost_basis, 4)
 
     return state
 
@@ -126,14 +136,14 @@ def save_paper_state(state, path=None):
             continue
         opened_at = trade.get("opened_at", "")
         exists = conn.execute(
-            "SELECT 1 FROM trade_history WHERE token_id = ? AND closed_at = ?",
-            (token_id, trade.get("closed_at", "")),
+            "SELECT 1 FROM trade_history WHERE token_id = ? AND opened_at = ?",
+            (token_id, opened_at),
         ).fetchone()
         if not exists:
             conn.execute(
                 """INSERT INTO trade_history
-                   (token_id, city, date, pnl_usd, roi_pct, close_reason, closed_at, raw_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (token_id, city, date, pnl_usd, roi_pct, close_reason, closed_at, opened_at, raw_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     token_id,
                     trade.get("city"),
@@ -142,6 +152,7 @@ def save_paper_state(state, path=None):
                     trade.get("realized_roi_pct"),
                     trade.get("close_reason"),
                     trade.get("closed_at"),
+                    opened_at,
                     json.dumps(trade),
                 ),
             )

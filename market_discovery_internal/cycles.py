@@ -640,6 +640,7 @@ def run_paper_trading_cycle(
                 forced_closed["haiku_monitor_reasoning"] = str(monitor_result.get("reasoning") or "")
                 closed_this_cycle.append(forced_closed)
                 next_history.append(forced_closed)
+                state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("exit_value", 0.0)), 4)
                 haiku_monitor_forced_exits += 1
                 continue
 
@@ -661,8 +662,9 @@ def run_paper_trading_cycle(
             )
             closed_this_cycle.append(forced_closed)
             next_history.append(forced_closed)
+            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("exit_value", 0.0)), 4)
             continue
-            
+
         if not forecast_valid:
             forced_closed = close_paper_position_fn(
                 position=position,
@@ -672,6 +674,7 @@ def run_paper_trading_cycle(
             )
             closed_this_cycle.append(forced_closed)
             next_history.append(forced_closed)
+            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("exit_value", 0.0)), 4)
             continue
 
         confidence_score = position_confidence_score_fn(position, current_yes_price, forecast_valid)
@@ -697,11 +700,15 @@ def run_paper_trading_cycle(
         if updated_position.get("status") == "closed":
             closed_this_cycle.append(updated_position)
             next_history.append(updated_position)
-            
+            # [ACCOUNTING] Credit cash with exit proceeds when position closes in main cycle
+            exit_value = float(updated_position.get("exit_value", 0.0))
+            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + exit_value, 4)
+
             # [MODUL N] Telegram Notification for Closure using Template
             pnl = float(updated_position.get("realized_pnl_usd", 0.0))
             roi = float(updated_position.get("realized_roi_pct", 0.0))
-            
+            _cash_display = float(state_meta.get("cash", 0.0))
+
             msg = load_telegram_template(
                 category="execution",
                 type_name="exit",
@@ -712,7 +719,7 @@ def run_paper_trading_cycle(
                 pnl_usd=f"{pnl:+.2f}",
                 pnl_pct=f"{roi:+.1f}",
                 returned_amount=f"{float(updated_position.get('cost_basis', 0)) + pnl:.2f}",
-                cash=f"{wallet_after_position_management:.2f}"
+                cash=f"{_cash_display:.2f}"
             )
             send_telegram_alert(msg)
         else:
@@ -853,6 +860,10 @@ def run_paper_trading_cycle(
             fetch_orderbook_quote_fn=_get_orderbook_quote,
             is_paper_trading=True,
         )
+        # [ACCOUNTING] Debit cash for each newly opened position
+        for pos in opened_this_cycle:
+            state_meta["cash"] = round(float(state_meta.get("cash", wallet_after_position_management)) - float(pos.get("cost_basis", 0.0)), 4)
+
         # [MODUL N] Telegram Notification for Entries
         for pos in opened_this_cycle:
             # [MODUL K] Immediate Persistence: Save to DB before alerting

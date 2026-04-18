@@ -261,6 +261,11 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                         positions.pop(i)
                         state["positions"] = positions
                         state.setdefault("history", []).append(closed)
+                        # [ACCOUNTING] Credit cash with exit proceeds
+                        exit_value = float(closed.get("exit_value", 0.0))
+                        state.setdefault("meta", {})["cash"] = round(
+                            float(state["meta"].get("cash", 0.0)) + exit_value, 4
+                        )
                         changed = True
                         print(f"[WS-EXIT] {pos.get('city','?').upper()} | {reason} @ {bid_price:.4f} | Strategy: {strategy}")
                         if broadcaster:

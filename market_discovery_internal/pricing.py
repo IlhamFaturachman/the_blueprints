@@ -161,8 +161,8 @@ def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
         if not asks or not bids:
             return 0.0 # Cannot verify liquidity, skip
             
-        best_ask = float(asks[0][0])
-        best_bid = float(bids[0][0])
+        best_ask = float(asks[0]['price']) if isinstance(asks[0], dict) else float(asks[0][0])
+        best_bid = float(bids[0]['price']) if isinstance(bids[0], dict) else float(bids[0][0])
         
         # 1. Spread Gate
         spread = best_ask - best_bid

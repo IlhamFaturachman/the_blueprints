@@ -103,9 +103,15 @@ class BlueprintsDB:
                 roi_pct REAL,
                 close_reason TEXT,
                 closed_at TEXT,
+                opened_at TEXT,
                 raw_json TEXT
             )
         """)
+        # Migration: add opened_at column for idempotency if table already exists without it
+        try:
+            cursor.execute("ALTER TABLE trade_history ADD COLUMN opened_at TEXT")
+        except Exception:
+            pass  # Column already exists
 
         # 5. Cycle Metrics (For Dashboard UI)
         cursor.execute("""
@@ -462,22 +468,33 @@ class BlueprintsDB:
     def record_trade_history(self, position):
         """Persist a closed position to trade_history with calibration fields."""
         conn = self._get_conn()
+        token_id = position.get("token_id")
+        opened_at = position.get("opened_at", "")
+        # Idempotency guard: block duplicate close records for the same position instance
+        if token_id and opened_at:
+            exists = conn.execute(
+                "SELECT 1 FROM trade_history WHERE token_id = ? AND opened_at = ?",
+                (token_id, opened_at)
+            ).fetchone()
+            if exists:
+                return None
         pnl = float(position.get("realized_pnl_usd", 0.0))
         roi = float(position.get("realized_roi_pct", 0.0))
         exit_price = float(position.get("exit_price", 0.0))
         outcome = 1 if exit_price >= 0.9 else (0 if exit_price <= 0.1 else None)
         conn.execute("""
             INSERT INTO trade_history
-            (token_id, city, date, pnl_usd, roi_pct, close_reason, closed_at,
+            (token_id, city, date, pnl_usd, roi_pct, close_reason, closed_at, opened_at,
              direction, entry_bucket, horizon_bin, price_bin, entry_model_prob, outcome, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            position.get("token_id"),
+            token_id,
             str(position.get("city", "")).lower(),
             position.get("date"),
             pnl, roi,
             position.get("close_reason"),
             position.get("closed_at"),
+            opened_at,
             position.get("direction"),
             position.get("entry_bucket"),
             position.get("horizon_bin"),
