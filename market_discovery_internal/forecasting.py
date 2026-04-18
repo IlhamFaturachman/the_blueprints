@@ -375,51 +375,49 @@ def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_fo
 
     eligible = len(unique_keys)
     min_required = max(0, int(min_keys))
-    workers = min(max(1, int(max_workers)), eligible) if eligible else 0
-
-    if eligible < min_required or workers <= 1:
+    if eligible < min_required:
         return {
             "eligible": eligible,
             "attempted": 0,
             "successful": 0,
             "failed": 0,
-            "workers": workers,
+            "workers": 0,
             "skipped": True,
         }
+
+    # Group keys by date to perform bulk fetches
+    by_date = {}
+    for city, date, icao in unique_keys:
+        if date not in by_date:
+            by_date[date] = []
+        by_date[date].append(city)
 
     stats = {
         "eligible": eligible,
         "attempted": eligible,
         "successful": 0,
         "failed": 0,
-        "workers": workers,
+        "workers": 1,
         "skipped": False,
     }
 
-    count = 0
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_key = {
-            executor.submit(fetch_forecast_fn, city, date, icao_override=icao): (city, date, icao)
-            for city, date, icao in unique_keys
-        }
-        for future in as_completed(future_to_key):
-            key = future_to_key[future]
-            city, date, icao = key
-            count += 1
-            # [MODUL L] Per-city live feedback via print (flush=True)
-            print(f"[MODUL-K] {count}/{eligible} complete: {city} ({date})", flush=True)
-            
-            try:
-                forecast_temp = future.result()
-            except Exception:
-                forecast_temp = None
-
-            if forecast_temp is None:
-                stats["failed"] += 1
-                continue
-
-            cache[key] = forecast_temp
-            stats["successful"] += 1
+    for date, cities in by_date.items():
+        try:
+            # [MODUL U] Bulk Fetch: 1 hit per date instead of N hits
+            print(f"[MODUL-K] Prefetching {len(cities)} cities for {date} (Bulk Mode)...")
+            results = _fetch_bulk_forecasts(cities, date)
+            for city in cities:
+                key = (city, date, None) # Bulk doesn't handle ICAO yet
+                if results.get(city) is not None:
+                    cache[key] = ForecastTemp(results[city], "open-meteo (bulk)")
+                    stats["successful"] += 1
+                else:
+                    # Optional: Fallback to individual fetch if bulk failed for one?
+                    # For now, we trust bulk or fail.
+                    stats["failed"] += 1
+        except Exception as e:
+            print(f"[MODUL-U] Prefetch bulk error for {date}: {e}")
+            stats["failed"] += len(cities)
 
     return stats
 
