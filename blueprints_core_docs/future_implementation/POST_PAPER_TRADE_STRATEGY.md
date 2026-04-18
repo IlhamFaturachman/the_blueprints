@@ -128,4 +128,56 @@ SETELAH 7 HARI PAPER TRADE:
 
 ---
 
+## Skenario Darurat: Masih 0 Opps Besok Pagi (05:00–11:00 WIB)
+
+Kalau setelah golden window besok bot masih 0 opportunities, lakukan investigasi berurutan:
+
+### Cek 1: Apakah forecast berhasil?
+```bash
+ssh -i ~/.ssh/id_ed25519_blueprints root@103.253.244.158 \
+"tail -50 /opt/the_blueprints/logs/paper_loop.out | grep -E 'MODUL K|forecast|Prefetch|slots'"
+```
+Yang dicari: `Prefetching forecasts for X unique slots` — kalau X = 0 terus, berarti parsing market gagal atau semua market di-skip (too_early/too_close).
+
+### Cek 2: Apakah ada market yang di-parse?
+```bash
+ssh -i ~/.ssh/id_ed25519_blueprints root@103.253.244.158 \
+"tail -20 /opt/the_blueprints/logs/unmatched_markets.log-20260419"
+```
+Kalau log penuh → market tidak match kota target. Kalau kosong → parsing OK tapi filter lain yang kill.
+
+### Cek 3: Apakah edge cukup?
+Tambahkan log sementara atau jalankan inspect mode:
+```bash
+ssh -i ~/.ssh/id_ed25519_blueprints root@103.253.244.158 \
+"cd /opt/the_blueprints && venv/bin/python3 market_discovery.py --inspect"
+```
+Lihat edge dan model_prob yang dihasilkan per market. Kalau semua edge < 0.20 → threshold perlu diturunkan lagi.
+
+### Jika Cek 1–3 semua OK tapi tetap 0 opps → Phase 1 Improvements
+
+Urutan implementasi (dari paling cepat dan aman):
+
+**A. Turunkan STRATEGY_MIN_EDGE dari 0.20 → 0.15**
+Di `config.py` line ~300. Estimasi effort: 2 menit. Langsung push + pull server.
+Tradeoff: bot masuk ke trade yang tipis edge-nya, win rate mungkin lebih rendah.
+
+**B. Per-region sigma untuk model Gaussian (exact markets)**
+Sekarang `MODEL_EXACT_SIGMA_C = 1.5` flat semua kota.
+Kota tropis (Singapore, KL, Jakarta, Bangkok) → cuaca lebih stabil → sigma 1.0
+Kota 4 musim (London, NYC, Toronto, Seoul) → lebih unpredictable → sigma 2.0
+Estimasi effort: ~20 menit, ubah 1 fungsi di `pricing.py`.
+
+**C. Time-of-day confidence weighting**
+Jam 05:00–08:00 WIB (14–11h sebelum resolve) → model masih uncertain → edge threshold lebih longgar
+Jam 08:00–11:00 WIB (11–8h sebelum resolve) → forecast lebih akurat → bisa pakai threshold normal
+Estimasi effort: ~30 menit, tambah parameter ke `calculate_edge()`.
+
+**D. Tambah sumber forecast independen (Tomorrow.io)**
+Butuh API key gratis di tomorrow.io, lalu tambah sebagai sumber ketiga.
+Kalau 3 sumber sepakat → confidence naik, lebih banyak opportunities lolos.
+Estimasi effort: ~1 jam, butuh testing.
+
+---
+
 *Dokumen ini dibuat berdasarkan analisis arsitektur bot, data Polymarket aktif, dan pattern market discovery per 2026-04-18.*
