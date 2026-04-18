@@ -1,5 +1,5 @@
 # THE BLUEPRINTS — Panduan Lengkap Bot Trading Cuaca
-**Versi:** 1.0 | **Tanggal:** 18 April 2026 | **Mode aktif:** Paper Trading
+**Versi:** 1.1 | **Tanggal:** 19 April 2026 | **Mode aktif:** Paper Trading
 
 ---
 
@@ -219,8 +219,11 @@ Jika prediksi cuaca tidak lagi valid (Open-Meteo dan wttr.in tiba-tiba tidak sep
 **4. Trailing Stop — Proteksi Keuntungan di Break-Even**
 Aktif jika posisi pernah naik +20% atau lebih dari harga beli. Setelah itu, jika harga turun kembali ke harga entry (titik beli awal) → bot jual di break-even (tidak untung, tidak rugi). Ini mencegah posisi yang pernah bagus berubah jadi kerugian, sekaligus memberi ruang bagi pasar yang fluktuatif untuk bergerak naik-turun-naik tanpa keluar terlalu dini.
 
-**5. Stop Loss Biasa**
-Jika harga turun ke 80% dari harga entry → potong rugi. Contoh: beli di $0.30 → stop loss di $0.24.
+**5. Stop Loss Biasa (Hard Stop)**
+Jika harga turun ke **55%** dari harga entry → potong rugi (sebelumnya 80%, diturunkan 19 April 2026 untuk memberi ruang spread). Contoh: beli di $0.30 → stop loss di $0.165.
+
+> [!IMPORTANT]
+> **Cooldown 2 Jam**: Stop Loss otomatis ini tidak akan aktif selama **2 jam pertama** sejak posisi dibuka. Ini memberikan waktu bagi pasar untuk melewati fase fluktuasi awal tanpa keluar terlalu dini.
 
 **6. Take Profit +100%**
 Target standar: 2x harga entry. Beli $0.30 → target $0.60. Jika tercapai → jual, ambil untung.
@@ -402,6 +405,8 @@ Bot memiliki antarmuka web yang dapat diakses di browser (`http://103.253.244.15
 | Modal | $1.00 USD per posisi (simulasi), maks 5 posisi terbuka |
 | Threshold keyakinan | 60% |
 | Threshold edge minimum | 20% |
+| Stop Loss Multiplier | **0.55 (45% cap)** |
+| Cooldown Stop Loss | **120 menit (2 jam)** |
 | Data historis | ✅ Lengkap — 31 kota siap |
 | Golden window | 05:00–11:00 WIB setiap hari |
 | Claude Haiku | ✅ Aktif — entry, monitor, sensing |
