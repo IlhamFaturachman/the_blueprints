@@ -1,18 +1,24 @@
-🚀 <b>NEW POSITION OPENED</b> 🚀
+🚀 <b>NEW POSITION OPENED</b>
 
-<b>Market:</b> {market_name}
-<b>Sentiment:</b> <b>{outcome}</b>
+📍 <b>{city}</b> · <i>{date}</i>
+🎯 <b>{target_desc}</b>
+❓ <i>{market_name}</i>
 
-🧠 <b>AI Rationale:</b>
-AI mendeteksi kemungkinan target tercapai sebesar <b>{prob}%</b>. Strategi dikategorikan sebagai <b>{strategy}</b> karena harga saat ini (${price}) memberikan peluang profit yang sangat sehat.
+🧠 <b>Model Analysis:</b>
+{meter}
+├ Prob: <b>{prob}%</b> | Edge: <b>{edge}%</b>
+├ Strategy: <code>{strategy}</code>
+└ Forecast: <b>{forecast}°C</b> | Resolves in: <b>{hours_left}</b>
 
 📊 <b>Trade Details:</b>
-├ 💵 <b>Stake:</b> ${stake}
-├ 🏷️ <b>Entry Price:</b> ${price}
-└ 🎯 <b>Take Profit:</b> ${tp}
+├ 💵 Entry Price: <b>${price}</b>
+├ 📉 Stop Loss:   <b>${stop_loss}</b>
+├ 📈 Take Profit: <b>${tp}</b>
+├ 🎲 Shares: <b>{quantity}</b>
+├ 💸 Cost Basis: <b>${stake}</b>
+└ 🏷️ Entry Fee:  <b>${entry_fee}</b>
 
 🏦 <b>Accounting:</b>
-├ 🔴 <b>Cash Debited:</b> -${stake}
-└ 💳 <b>Remaining Liquid Cash:</b> <b>${cash}</b>
+└ 💳 Cash Remaining: <b>${cash}</b>
 
 🔗 <a href='{url}'>Lihat di Polymarket</a>

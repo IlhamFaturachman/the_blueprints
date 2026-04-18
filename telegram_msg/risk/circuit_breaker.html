@@ -1,14 +1,15 @@
-⚡ <b>CIRCUIT BREAKER: SYSTEM HALTED</b> ⚡
+⛔ <b>CIRCUIT BREAKER TRIPPED</b> ⛔
 
-⚠️ <b>Reason:</b> {reason_text}
+<b>Bot telah menghentikan semua entry baru.</b>
 
-📉 <b>Financial Status:</b>
-├ 💸 <b>Daily Realized Loss:</b> -${current_loss}
-├ 🛑 <b>Max Daily Limit:</b> -${limit_amount}
-└ 🏦 <b>Final Safe Balance:</b> ${cash}
+📉 <b>Drawdown Report:</b>
+├ 💸 Daily Loss:       <b>-${current_loss}</b>
+├ 🛑 Max Limit (15%):  <b>-${limit_amount}</b>
+├ 📊 Baseline Wallet:  <b>${baseline}</b>
+└ 🏦 Current Balance:  <b>${cash}</b>
 
-🛡️ <b>Protokol Keamanan:</b>
-Bot telah berhenti membuka posisi baru secara total untuk melindungi sisa modal Anda.
+🛡️ <b>Protokol Aktif:</b>
+Posisi yang sudah terbuka tetap dipantau.
+Tidak ada entry baru sampai hari berikutnya (reset UTC midnight).
 
-🔄 <b>Action Needed:</b>
-Audit manual diperlukan sebelum trading bisa dilanjutkan (Reset manual sisa modal ke $5.00 atau terima kondisi sekarang).
+⚠️ <i>Jika ingin reset manual: gunakan Kill Switch di dashboard lalu restart bot.</i>

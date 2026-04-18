@@ -1,16 +1,18 @@
-📊 <b>DAILY ACCOUNTABILITY REPORT</b> 📊
-<i>Periode: {date_str}</i>
-
-✅ <b>Operational Health:</b>
-- Status: <b>{status}</b>
-- Integrity: {integrity_pct}% (Anti-Drift)
-- Log Status: {log_status}
+📊 <b>DAILY REPORT</b>
+<i>{date_str}</i>
 
 💰 <b>PnL Performance:</b>
-- Total Trades: {total_trades}
-- Win Rate: {win_rate}%
-- Net Daily PnL: {pnl_emoji} {pnl_usd}
+├ Total Trades:  <b>{total_trades}</b>
+├ Win Rate:      <b>{win_rate}%</b>  (W:{wins} / L:{losses})
+├ Net Daily PnL: <b>{pnl_emoji} ${pnl_usd}</b>
+├ Total Fees:    <b>-${total_fees}</b>
+└ Net After Fee: <b>{pnl_emoji} ${net_pnl}</b>
 
-🏦 <b>Final Reconciliation:</b>
-- Wallet Balance: ${cash}
-- Sync Status: <b>{sync_status}</b>
+🏦 <b>Wallet:</b>
+├ Opening: <b>${baseline}</b>
+└ Closing: <b>${cash}</b>
+
+✅ <b>System Health:</b>
+├ Status: <b>{status}</b>
+├ Cycles Run: {cycles_run}
+└ Uptime: {uptime}

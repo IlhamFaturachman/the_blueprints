@@ -711,18 +711,41 @@ def run_paper_trading_cycle(
             pnl = float(updated_position.get("realized_pnl_usd", 0.0))
             roi = float(updated_position.get("realized_roi_pct", 0.0))
             _cash_display = float(state_meta.get("cash", 0.0))
-
+            _exit_slug = updated_position.get("market_slug", "")
+            _exit_url = f"https://polymarket.com/event/{_exit_slug}" if _exit_slug else "https://polymarket.com"
+            _exit_fee = float(updated_position.get("exit_fee_usd", 0.0))
+            _net_exit = float(updated_position.get("net_exit_value", float(updated_position.get("exit_value", 0.0))))
+            _entry_price = float(updated_position.get("entry_price", 0.0))
+            _exit_price = float(updated_position.get("exit_price", 0.0))
+            _exit_value = float(updated_position.get("exit_value", 0.0))
+            _entry_fee = float(updated_position.get("entry_fee_usd", 0.0))
+            _opened_at = updated_position.get("opened_at")
+            _closed_at = updated_position.get("closed_at")
+            try:
+                from market_discovery_internal.reporting import parse_utc_datetime as _pudt
+                _dur_s = int((datetime.now(timezone.utc) - _pudt(_opened_at)).total_seconds()) if _opened_at else 0
+                _dur_h, _dur_m = _dur_s // 3600, (_dur_s % 3600) // 60
+                _duration_str = f"{_dur_h}h {_dur_m}m" if _dur_h else f"{_dur_m}m"
+            except Exception:
+                _duration_str = "N/A"
+            _tpl_name = "exit_profit" if pnl > 0 else "exit_loss"
             msg = load_telegram_template(
                 category="execution",
-                type_name="exit",
+                type_name=_tpl_name,
                 market_name=updated_position.get('market_question', 'Unknown'),
-                result_emoji="✅" if pnl > 0 else "❌",
-                result_text="PROFIT" if pnl > 0 else "LOSS",
-                pnl_emoji="🟢" if pnl > 0 else "🔴",
-                pnl_usd=f"{pnl:+.2f}",
-                pnl_pct=f"{roi:+.1f}",
-                returned_amount=f"{float(updated_position.get('cost_basis', 0)) + pnl:.2f}",
-                cash=f"{_cash_display:.2f}"
+                city=updated_position.get('city', 'N/A').upper(),
+                date=updated_position.get('date', ''),
+                entry_price=f"{_entry_price:.4f}",
+                exit_price=f"{_exit_price:.4f}",
+                exit_value=f"{_exit_value:.4f}",
+                exit_fee=f"{_exit_fee:.4f}",
+                net_exit=f"{_net_exit:.4f}",
+                pnl_usd=f"{pnl:+.4f}",
+                roi=f"{roi:+.2f}",
+                duration=_duration_str,
+                close_reason=(updated_position.get('close_reason') or 'unknown').replace('_', ' ').upper(),
+                cash=f"{_cash_display:.4f}",
+                url=_exit_url,
             )
             send_telegram_alert(msg)
         else:
@@ -796,6 +819,7 @@ def run_paper_trading_cycle(
                 reason_text="Max Daily Drawdown (15%) Reached",
                 current_loss=f"{_daily_loss:.2f}",
                 limit_amount=f"{_drawdown_limit:.2f}",
+                baseline=f"{_daily_baseline:.2f}",
                 cash=f"{wallet_after_position_management:.2f}"
             )
             send_telegram_alert(msg)
@@ -906,17 +930,32 @@ def run_paper_trading_cycle(
             city_upper = pos.get('city', 'N/A').upper()
             
             sensor_label = f" ({pos.get('icao_code')})" if pos.get('icao_code') else ""
+            _entry_prob = float(pos.get('entry_model_prob', 0))
+            _entry_edge = float(pos.get('entry_edge', 0))
+            _entry_meter = "🟢" * int(_entry_prob * 5) + "⚪" * (5 - int(_entry_prob * 5))
+            _entry_fee_amt = float(pos.get('entry_fee_usd', 0.0))
+            _entry_shares_cost = float(pos.get('shares_cost', pos.get('cost_basis', 0)))
             msg = load_telegram_template(
                 category="execution",
                 type_name="entry",
                 market_name=pos.get('market_question', 'N/A'),
+                city=pos.get('city', 'N/A').upper(),
+                date=pos.get('date', ''),
+                target_desc=target_desc,
                 outcome=f"{pos.get('direction', 'YES').upper()} (Target {pos.get('threshold')}{pos.get('unit')})",
-                prob=f"{float(pos.get('entry_model_prob', 0))*100:.1f}",
+                prob=f"{_entry_prob*100:.1f}",
+                edge=f"{_entry_edge*100:.1f}",
+                meter=_entry_meter,
                 strategy=pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper(),
+                forecast=f"{pos.get('forecast_temp_c', 'N/A')}",
+                hours_left=hours_label,
                 price=f"{pos.get('entry_price', 0):.4f}",
-                stake=f"{pos.get('cost_basis', 0):.2f}",
+                stop_loss=f"{pos.get('stop_loss_price', 0):.4f}",
                 tp=f"{pos.get('target_price', 0):.4f}",
-                cash=f"{wallet_after_position_management:.2f}",
+                quantity=f"{pos.get('quantity', 0):.2f}",
+                stake=f"{_entry_shares_cost:.4f}",
+                entry_fee=f"{_entry_fee_amt:.4f}",
+                cash=f"{float(state_meta.get('cash', wallet_after_position_management)):.4f}",
                 url=link
             )
             send_telegram_alert(msg)
