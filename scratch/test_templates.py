@@ -1,66 +1,73 @@
-import os
 import sys
+import os
+import time
 
-# Add project root
+# Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from market_discovery_internal.utils import load_telegram_template
+from market_discovery_internal.utils import load_telegram_template, send_telegram_alert
+
+def send_test(name, msg):
+    print(f"--- Sending {name} ---")
+    res = send_telegram_alert(msg)
+    if res:
+        print(f"[{name.upper()}]: SENT SUCCESS")
+    else:
+        print(f"[{name.upper()}]: FAILED TO SEND")
+    time.sleep(1.5) # Safe gap
 
 def test_templates():
-    print("--- Testing Telegram Templates (Fixed Suite) ---")
-    
-    # 1. Test Entry
+    # 1. Test Startup
+    startup_msg = load_telegram_template(
+        category="system",
+        type_name="startup",
+        commit_hash="9341b6b",
+        env_name="PRODUCTION",
+        timestamp="2026-04-18 12:00:00"
+    )
+    send_test("startup", startup_msg)
+
+    # 2. Test Entry
     entry_msg = load_telegram_template(
         category="execution",
         type_name="entry",
-        market_name="Market Uji Coba Premium",
-        outcome="YES (Target 33.0C)",
-        prob="98.5",
+        market_name="Market Zero-Flaw Audit",
+        outcome="YES",
+        prob="99.0",
         strategy="SWING",
-        price="0.5500",
-        stake="2.50",
-        tp="0.9900",
-        cash="110.20",
+        price="0.50",
+        stake="5.0",
+        tp="1.0",
+        cash="100.0",
         url="https://polymarket.com"
     )
-    print("\n[ENTRY]: OK" if "[N/A]" not in entry_msg else f"\n[ENTRY] MISSING VARS: {entry_msg}")
-    
-    # 2. Test Exit
+    send_test("entry", entry_msg)
+
+    # 3. Test Exit
     exit_msg = load_telegram_template(
         category="execution",
         type_name="exit",
-        market_name="Market Uji Coba Premium",
+        market_name="Market Zero-Flaw Audit",
         result_emoji="✅",
         result_text="PROFIT",
         pnl_emoji="🟢",
-        pnl_usd="+0.45",
-        pnl_pct="+15.0",
-        returned_amount="2.95",
-        cash="112.50"
+        pnl_usd="+1.0",
+        pnl_pct="20.0",
+        returned_amount="6.0",
+        cash="106.0"
     )
-    print("[EXIT]: OK" if "[N/A]" not in exit_msg else f"[EXIT] MISSING VARS: {exit_msg}")
-
-    # 3. Test Circuit Breaker
-    cb_msg = load_telegram_template(
-        category="risk",
-        type_name="circuit_breaker",
-        reason_text="Max Daily Drawdown (15%) Reached",
-        current_loss="2.55",
-        limit_amount="2.00",
-        cash="98.45"
-    )
-    print("[CIRCUIT]: OK" if "[N/A]" not in cb_msg else f"[CIRCUIT] MISSING VARS: {cb_msg}")
+    send_test("exit", exit_msg)
 
     # 4. Test Risk Guard
     rg_msg = load_telegram_template(
         category="risk",
         type_name="risk_guard",
-        market_name="Market Risiko Tinggi",
-        risk_type="LIQUIDITY_SHOCK",
-        details="Slippage > 5% detected.",
-        action="SKIPPED"
+        timestamp="12:00:00",
+        risk_type="MAX_EXPOSURE",
+        details="Exposure reached $50.00 limits",
+        action="PAUSING_NEW_TRADES"
     )
-    print("[RISK_GUARD]: OK" if "[N/A]" not in rg_msg else f"[RISK_GUARD] MISSING VARS: {rg_msg}")
+    send_test("risk_guard", rg_msg)
 
     # 5. Test Tier Update
     tu_msg = load_telegram_template(
@@ -71,7 +78,7 @@ def test_templates():
         current_stake_usd=5.00,
         max_slots=15
     )
-    print("[TIER_UPDATE]: OK" if "[N/A]" not in tu_msg else f"[TIER_UPDATE] MISSING VARS: {tu_msg}")
+    send_test("tier_update", tu_msg)
 
     # 6. Test Summary
     summary_msg = load_telegram_template(
@@ -88,7 +95,7 @@ def test_templates():
         cash="115.50",
         sync_status="SYNCED"
     )
-    print("[SUMMARY]: OK" if "[N/A]" not in summary_msg else f"[SUMMARY] MISSING VARS: {summary_msg}")
+    send_test("summary", summary_msg)
 
 if __name__ == "__main__":
     test_templates()
