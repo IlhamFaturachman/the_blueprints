@@ -47,9 +47,13 @@ def send_telegram_alert(message, is_html=True):
         "disable_web_page_preview": True
     }
     try:
-        requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, timeout=5)
+        response.raise_for_status()
         return True
-    except Exception:
+    except Exception as e:
+        print(f"[TELEGRAM ERROR] {str(e)}")
+        if 'response' in locals() and response is not None:
+             print(f"[TELEGRAM RESP] {response.text}")
         return False
 
 def fetch_with_retry(url, params=None, headers=None, max_retries=3, fail_fast_on_429=False):
