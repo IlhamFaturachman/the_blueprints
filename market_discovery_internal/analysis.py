@@ -253,18 +253,26 @@ def _haiku_entry_analysis(opportunity):
             "threshold": opportunity.get("threshold"),
             "unit": opportunity.get("unit"),
             "current_yes_price": opportunity.get("yes_price"),
+            "model_prob": opportunity.get("model_prob"),
+            "edge": opportunity.get("edge"),
+            "hours_until_resolve": opportunity.get("hours_until_resolve"),
             "forecast_temp_c": opportunity.get("forecast_temp_c"),
             "forecast_source": opportunity.get("forecast_source"),
         }
-        
+
         prompt = (
-            "SYSTEM: You are a clinical, paranoid weather trading auditor. Return ONLY a JSON object.\n"
-            "TASKS:\n"
-            "1. Scrutinize the payload below for anomalies (impossible temps, missing units, stale metadata).\n"
-            "2. Decide if the trade is 'enter' or 'skip'.\n"
-            "3. If ANY anomaly or extreme inconsistency exists, you MUST 'skip'.\n\n"
+            "SYSTEM: You are a paranoid weather trading auditor. Return ONLY a JSON object.\n"
+            "CONTEXT: A bot calculated model_prob and edge using weather forecasts vs market price. "
+            "Your job is a final sanity check — not to re-calculate edge, but to catch anomalies the formula misses.\n\n"
+            "CHECK IN ORDER:\n"
+            "1. Is forecast_temp_c physically plausible for this city and date? Flag impossible values.\n"
+            "2. Is hours_until_resolve enough to act? If <6h, be very skeptical.\n"
+            "3. Does the direction+threshold make sense given forecast_temp_c? "
+            "(e.g. direction=above threshold=20 but forecast=14 means model_prob should be low — if high, something is wrong.)\n"
+            "4. If edge < 0.15 or model_prob < 0.55, skip — margin too thin.\n"
+            "5. If all checks pass, enter.\n\n"
             f"PAYLOAD: {json.dumps(payload)}\n\n"
-            "FORMAT: {\"recommendation\": \"enter\"/\"skip\", \"confidence\": 0.0-1.0, \"reasoning\": \"brief string\"}"
+            "Return ONLY: {\"recommendation\": \"enter\"|\"skip\", \"confidence\": 0.0-1.0, \"reasoning\": \"brief string\"}"
         )
         
         response = _anthropic_create_message(client, model=HAIKU_ENTRY_MODEL, max_tokens=HAIKU_ENTRY_MAX_TOKENS, prompt=prompt)
@@ -401,6 +409,12 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
             except (TypeError, ValueError):
                 pass
 
+        entry_price = position.get("entry_price")
+        try:
+            pnl_pct = round(((float(current_yes_price) - float(entry_price)) / float(entry_price)) * 100, 1) if entry_price else None
+        except (TypeError, ValueError):
+            pnl_pct = None
+
         payload = {
             "city": position.get("city"),
             "market_question": position.get("market_question"),
@@ -408,25 +422,31 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
             "threshold": position.get("threshold"),
             "unit": position.get("unit"),
             "target_date": position.get("date"),
-            "entry_price": position.get("entry_price"),
+            "entry_price": entry_price,
             "current_yes_price": round(float(current_yes_price), 4) if current_yes_price is not None else None,
+            "pnl_pct": pnl_pct,
             "hours_until_resolve": round(float(hours_until_resolve), 1) if hours_until_resolve is not None else None,
             "entry_model_prob": position.get("entry_model_prob"),
+            "entry_edge": position.get("entry_edge"),
             "forecast_temp_at_entry_c": entry_forecast,
             "forecast_temp_now_c": current_forecast_temp_c,
             "forecast_drift_c": forecast_drift,
         }
 
         prompt = (
-            "CRITICAL: You are an aggressive risk sentinel for a weather prediction market.\n"
-            f"Active Position: {json.dumps(payload)}\n\n"
-            "VULNERABILITY CHECK:\n"
-            "1. forecast_drift_c shows how much the weather forecast has shifted since entry. "
-            "A large drift away from threshold is a strong signal the thesis is broken.\n"
-            "2. If current_yes_price has dropped far from entry_price AND forecast has drifted against thesis, close.\n"
-            "3. If forecast_drift_c is small/None but price dropped sharply, it may be temporary market panic — be cautious before closing.\n"
-            "4. If hours_until_resolve is very low (<3h) and confidence is weak, prefer closing.\n"
-            "Return JSON only: {\"action\": \"hold\"|\"close\", \"confidence\": 0.0-1.0, \"reasoning\": \"brief string\"}"
+            "You are a risk sentinel for a weather prediction market. Return ONLY a JSON object.\n"
+            "CONTEXT: A bot opened this position based on a weather forecast vs market price edge. "
+            "You must decide: hold or close? Base your decision on the signals below.\n\n"
+            "DECISION RULES:\n"
+            "1. forecast_drift_c = how much forecast shifted since entry. "
+            "Drift that moves AGAINST the thesis (e.g. direction=above but forecast dropped) = strong close signal.\n"
+            "2. pnl_pct < -30% AND forecast drifted against thesis → close.\n"
+            "3. pnl_pct < -30% BUT forecast_drift_c is small/None → market panic, NOT thesis failure → hold or cautious.\n"
+            "4. hours_until_resolve <= 2 AND pnl_pct still deeply negative → close, cut losses.\n"
+            "5. hours_until_resolve <= 2 AND position profitable OR flat → hold to resolve.\n"
+            "6. If unsure, default to hold — do NOT close profitable or flat positions without clear reason.\n\n"
+            f"POSITION: {json.dumps(payload)}\n\n"
+            "Return ONLY: {\"action\": \"hold\"|\"close\", \"confidence\": 0.0-1.0, \"reasoning\": \"brief string\"}"
         )
 
         response = _anthropic_create_message(
