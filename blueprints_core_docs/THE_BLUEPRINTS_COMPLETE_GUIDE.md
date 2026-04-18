@@ -158,6 +158,44 @@ Bot menerapkan aturan ketat untuk menghindari terlalu terkonsentrasi di satu tem
 ### 6.3 Ukuran Posisi
 Saat ini dalam mode paper trading, setiap posisi menggunakan **$5 USD** (simulasi). Dalam live trading nanti, ukuran posisi bisa disesuaikan berdasarkan besarnya edge — semakin besar keunggulan, semakin besar taruhan (Kelly Criterion).
 
+### 6.4 Bagaimana Bot Memilih 5 dari 90 Peluang?
+
+Bayangkan bot menemukan 90 peluang yang sudah lolos filter edge dan probabilitas. Bukan berarti semua langsung dibeli — ada proses seleksi ketat berikutnya:
+
+**Tahap 1 — Klasifikasi Bucket**
+Setiap peluang diberi label:
+- `reject` — harga di luar rentang valid (terlalu mahal atau terlalu murah) → **langsung dibuang**
+- `watchlist` — harga terlalu murah (<$0.05), potensi profit terlalu kecil → **dibuang, hanya dipantau**
+- `enter_swing` — harga OK, edge OK → **kandidat**
+- `enter_hold_candidate` — edge DAN probabilitas keduanya sangat tinggi → **kandidat prioritas utama**
+
+Sebagian besar dari 90 peluang gugur di tahap ini.
+
+**Tahap 2 — Anti-Korelasi: Satu Kota, Satu Hari, Satu Posisi**
+Dari kandidat yang tersisa, berlaku aturan: satu kota + satu tanggal hanya boleh menghasilkan **1 posisi**. Jika London 19 April punya 3 bucket yang lolos, hanya yang terbaik yang diambil. Sisanya dibuang.
+
+Ini mencegah kerugian ganda jika prediksi cuaca satu kota meleset.
+
+**Tahap 3 — Ranking**
+Kandidat yang lolos diurutkan berdasarkan tiga kriteria secara berurutan:
+1. **Confidence** (probabilitas model tertinggi) — prioritas utama
+2. **Edge terbesar** — selisih keyakinan vs harga pasar
+3. **Harga YES lebih murah** — harga lebih rendah = ruang keuntungan lebih besar
+
+**Tahap 4 — Slot Tersedia**
+Bot hanya membuka posisi sebanyak slot yang tersedia (`PAPER_MAX_OPEN_POSITIONS`, default: 3). Jika sudah ada 1 posisi terbuka, hanya 2 slot tersisa yang diisi dari ranking terbaik.
+
+**Tahap 5 — Review Claude Haiku**
+Setiap kandidat final dikirim ke Claude Haiku untuk "second opinion". Haiku bisa memveto keputusan bot jika ada sesuatu yang mencurigakan. Jika diveto, slot tersebut tidak terisi.
+
+**Contoh nyata:**
+```
+Bucket 17°C ($0.750) → reject (terlalu mahal, >batas maksimum)
+Bucket 18°C ($0.051) → watchlist (terlalu murah, hanya dipantau)
+Bucket 16°C ($0.217) → enter_swing ✓ → masuk ranking → Haiku approve → BELI
+```
+Meskipun pasar "mayoritas" bilang 17°C adalah jawaban benar (harga $0.750), bot justru menemukan nilai di bucket lain yang dianggap pasar kurang mungkin — itulah sumber edge-nya.
+
 ---
 
 ## 7. Cara Bot Mengelola & Menutup Posisi
