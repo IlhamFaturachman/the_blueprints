@@ -581,15 +581,15 @@ def run_paper_trading_cycle(
         if bid_val <= 0.01 and entry_price > 0.05:
             bid_val = 0.0
 
+        # [LIVE-LIKE] Exit evaluation always uses bid (what you'd receive selling on CLOB).
+        # Mid-price was optimistic and not representative of real execution price.
+        # WS exit path already uses bid — align main cycle to match.
         ask_sane_limit = max(entry_price * 3.0, 0.60)  # ask above 3x entry or 60c is rogue
 
-        if bid_val > 0 and ask_val > 0 and ask_val <= ask_sane_limit:
-            # Both sides are reasonable — use mid-price
-            current_yes_price = (bid_val + ask_val) / 2.0
-        elif bid_val > 0:
-            # Use bid (conservative: what you could sell for)
+        if bid_val > 0:
             current_yes_price = bid_val
         elif ask_val > 0 and ask_val <= ask_sane_limit:
+            # No bid available — fall back to sane ask as reference only
             current_yes_price = ask_val
         else:
             last_price = position.get("last_price")
@@ -1085,9 +1085,11 @@ def _ensure_take_profit_target(position):
 def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     """Create a paper position from an opportunity candidate."""
     from market_discovery_internal.pricing import (
-        calculate_depth_adjusted_stake
+        calculate_depth_adjusted_stake,
+        calculate_taker_fee,
     )
-    
+    from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE
+
     token_id = opportunity.get("token_id")
     # Liquidity depth check moved to append_opened_positions_from_candidates
     entry_price = _safe_float(opportunity.get("entry_price"), _safe_float(opportunity.get("yes_price"), 0.0))
@@ -1100,7 +1102,9 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     effective_price = round(entry_price * 1.01, 4)
 
     quantity = round(float(stake_usd) / effective_price, 6)
-    cost_basis = round(quantity * effective_price, 4)
+    shares_cost = round(quantity * effective_price, 4)
+    entry_fee_usd = calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
+    cost_basis = round(shares_cost + entry_fee_usd, 4)
     target_price = _compute_take_profit_price(effective_price)
     entry_yes_reference = _safe_float(opportunity.get("yes_price"), effective_price)
     entry_price_source = str(opportunity.get("entry_price_source") or "yes_price")
@@ -1122,6 +1126,8 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         "entry_price_source": entry_price_source,
         "entry_yes_reference": entry_yes_reference,
         "quantity": quantity,
+        "shares_cost": shares_cost,
+        "entry_fee_usd": entry_fee_usd,
         "cost_basis": cost_basis,
         "target_price": target_price,
         "target_price_low": target_price,
@@ -1312,11 +1318,17 @@ def evaluate_hybrid_exit(
 
 def close_paper_position(position, exit_price, reason, now_utc=None):
     """Close an open paper position, compute realized PnL, and record calibration + history."""
+    from market_discovery_internal.pricing import calculate_taker_fee
+    from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE
+
     closed = {**position}
     resolved_at = now_utc or datetime.now(timezone.utc)
     price = float(exit_price)
-    exit_value = round(price * float(closed["quantity"]), 4)
-    pnl_usd = round(exit_value - float(closed["cost_basis"]), 4)
+    quantity = float(closed["quantity"])
+    exit_value = round(price * quantity, 4)
+    exit_fee_usd = calculate_taker_fee(quantity, price, POLYMARKET_TAKER_FEE_RATE)
+    net_exit_value = round(exit_value - exit_fee_usd, 4)
+    pnl_usd = round(net_exit_value - float(closed["cost_basis"]), 4)
     roi_pct = round((pnl_usd / float(closed["cost_basis"])) * 100, 4) if closed["cost_basis"] else 0.0
 
     # [PACK F] Compute spread cost attribution at close
@@ -1331,6 +1343,8 @@ def close_paper_position(position, exit_price, reason, now_utc=None):
             "last_price": price,
             "exit_price": price,
             "exit_value": exit_value,
+            "exit_fee_usd": exit_fee_usd,
+            "net_exit_value": net_exit_value,
             "realized_pnl_usd": pnl_usd,
             "realized_roi_pct": roi_pct,
             "closed_at": resolved_at.isoformat(),
@@ -1571,11 +1585,9 @@ def append_opened_positions_from_candidates(
         from market_discovery_internal.config import MAX_ACCEPTABLE_SLIPPAGE, MIN_STAKE_THRESHOLD
         from market_discovery_internal.pricing import calculate_depth_adjusted_stake
 
-        if is_paper_trading:
-            # Bypass CLOB depth check for paper mode to avoid weather market pricing anomalies
-            dynamic_stake = float(stake_usd)
-        else:
-            dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
+        # [LIVE-LIKE] Always check real CLOB depth — no paper bypass.
+        # The original "weather anomaly" was a dict/list format bug (now fixed in pricing.py).
+        dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
 
         if dynamic_stake <= 0:
             logger.warning(f"[LIQUIDITY] Skipping {token_id} - Insufficient depth for safe entry (Slippage Threat).")

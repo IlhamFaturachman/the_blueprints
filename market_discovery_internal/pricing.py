@@ -399,3 +399,14 @@ def _extract_market_list(data):
     if isinstance(data, dict):
         return data.get("markets", data.get("data", []))
     return []
+
+
+def calculate_taker_fee(quantity: float, price: float, fee_rate: float = 0.05) -> float:
+    """
+    Compute Polymarket taker fee for a trade.
+    Formula from docs: fee = C × feeRate × p × (1-p)
+    C = quantity (shares), p = price (0-1 range)
+    """
+    if quantity <= 0 or price <= 0 or price >= 1.0:
+        return 0.0
+    return round(quantity * fee_rate * price * (1.0 - price), 6)
