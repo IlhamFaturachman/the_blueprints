@@ -1266,11 +1266,14 @@ def evaluate_hybrid_exit(
         # (The updated peak and partial_tp_taken flag are returned in peak_updates)
 
     # [PACK D] Trailing stop: trigger if price drops 15% from peak AND peak was 20%+ profitable
+    # AND price is back at or below entry — avoids premature exit on normal market oscillation.
+    # Regular stop_loss handles downside below entry independently.
     _TRAILING_TRIGGER = 1.20   # position must have been 20%+ profitable to arm trailing stop
     _TRAILING_PCT = 0.15       # retrace 15% from peak triggers the stop
     if (entry_price > 0
             and updated_peak >= entry_price * _TRAILING_TRIGGER
-            and price < updated_peak * (1.0 - _TRAILING_PCT)):
+            and price < updated_peak * (1.0 - _TRAILING_PCT)
+            and price <= entry_price):
         return {
             "action": "sell",
             "reason": "trailing_stop",
