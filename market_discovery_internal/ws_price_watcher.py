@@ -251,8 +251,22 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                     strategy = pos.get("target_strategy", "swing")
                     
                     reason = None
-                    if bid_price <= stop: 
-                        reason = "stop_loss"
+                    if bid_price <= stop:
+                        # [AUDIT] Fix B: 2h cooldown for price-based Stop Loss
+                        # This prevents "noise" exits during the initial spread friction.
+                        opened_at_str = pos.get("opened_at")
+                        can_sl_fire = True
+                        if opened_at_str:
+                            try:
+                                opened_at = datetime.fromisoformat(opened_at_str)
+                                age_hours = (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600
+                                if age_hours < 2:
+                                    can_sl_fire = False
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        if can_sl_fire:
+                            reason = "stop_loss"
                     elif bid_price >= target and strategy == "swing":
                         reason = "take_profit_100pct"
 
