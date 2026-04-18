@@ -8,19 +8,31 @@ import requests
 
 from market_discovery_internal.config import LOG_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
-def send_telegram_alert(message):
-    """[MODUL N] Send push notification via Telegram Bot API with HTML escaping."""
+def load_telegram_template(category, type_name, **kwargs):
+    """Load a telegram message template from telegram_msg/{category}/{type_name}.html and format it."""
+    base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "telegram_msg")
+    file_path = os.path.join(base_dir, category, f"{type_name}.html")
+    
+    if not os.path.exists(file_path):
+        return f"Error: Template {category}/{type_name} not found."
+    
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            template = f.read()
+        return template.format(**kwargs)
+    except Exception as e:
+        return f"Error formatting template {category}/{type_name}: {str(e)}"
+
+def send_telegram_alert(message, is_html=True):
+    """[MODUL N] Send push notification via Telegram Bot API."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
-    
-    # Escape HTML special characters to prevent Telegram parsing errors
-    safe_message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": str(TELEGRAM_CHAT_ID),
-        "text": safe_message,
-        "parse_mode": "HTML",
+        "text": message,
+        "parse_mode": "HTML" if is_html else None,
         "disable_web_page_preview": False
     }
     try:

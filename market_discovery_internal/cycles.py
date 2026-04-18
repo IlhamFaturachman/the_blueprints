@@ -3,7 +3,7 @@ import time
 import os
 import threading
 from datetime import datetime, timezone
-from market_discovery_internal.utils import _safe_float, _safe_div, _clamp, send_telegram_alert
+from market_discovery_internal.utils import _safe_float, _safe_div, _clamp, send_telegram_alert, load_telegram_template
 from market_discovery_internal.config import (
     HYBRID_TAKE_PROFIT_MIN_PRICE, HYBRID_TAKE_PROFIT_MULTIPLIER,
     HYBRID_STOP_LOSS_MULTIPLIER, HYBRID_LATE_WINDOW_HOURS,
@@ -698,18 +698,21 @@ def run_paper_trading_cycle(
             closed_this_cycle.append(updated_position)
             next_history.append(updated_position)
             
-            # [MODUL N] Telegram Notification for Closure
+            # [MODUL N] Telegram Notification for Closure using Template
             pnl = float(updated_position.get("realized_pnl_usd", 0.0))
             roi = float(updated_position.get("realized_roi_pct", 0.0))
-            emoji = "✅" if pnl > 0 else "❌"
-            result_text = "CUAN" if pnl > 0 else "LOSS"
-            msg = (
-                f"{emoji} <b>POSITION CLOSED: {result_text}</b> {emoji}\n\n"
-                f"📍 <b>City</b>: {updated_position.get('city')}\n"
-                f"❓ <b>Market</b>: {updated_position.get('market_question')}\n"
-                f"💰 <b>PnL</b>: <b>USD {pnl:+.2f} ({roi:+.1f}%)</b>\n"
-                f"📉 <b>Exit Price</b>: USD {updated_position.get('exit_price'):.4f}\n"
-                f"🏁 <b>Reason</b>: {updated_position.get('close_reason', 'unknown')}"
+            
+            msg = load_telegram_template(
+                category="execution",
+                type_name="exit",
+                market_name=updated_position.get('market_question', 'Unknown'),
+                result_emoji="✅" if pnl > 0 else "❌",
+                result_text="PROFIT" if pnl > 0 else "LOSS",
+                pnl_emoji="🟢" if pnl > 0 else "🔴",
+                pnl_usd=f"{pnl:+.2f}",
+                pnl_pct=f"{roi:+.1f}",
+                returned_amount=f"{float(updated_position.get('cost_basis', 0)) + pnl:.2f}",
+                cash=f"{wallet_after_position_management:.2f}"
             )
             send_telegram_alert(msg)
         else:
@@ -777,13 +780,15 @@ def run_paper_trading_cycle(
         effective_allow_new_entries = False
         effective_entry_gate_reason = "circuit_breaker_tripped"
         if not state_meta.get("circuit_breaker_alert_sent"):
-            send_telegram_alert(
-                f"⚡ <b>CIRCUIT BREAKER: HALTED</b> ⚡\n\n"
-                f"⚠️ <b>Reason</b>: Max Daily Drawdown (15%) Reached\n"
-                f"📊 <b>Baseline</b>: USD {_daily_baseline:.2f} → <b>Now</b>: USD {wallet_after_position_management:.2f}\n"
-                f"📉 <b>Daily Loss</b>: USD {_daily_loss:.2f} / ${_drawdown_limit:.2f} limit\n\n"
-                f"Protokol risiko aktif: bot berhenti buka posisi baru sampai reset harian."
+            msg = load_telegram_template(
+                category="risk",
+                type_name="circuit_breaker",
+                reason_text="Max Daily Drawdown (15%) Reached",
+                current_loss=f"{_daily_loss:.2f}",
+                limit_amount=f"{_drawdown_limit:.2f}",
+                cash=f"{wallet_after_position_management:.2f}"
             )
+            send_telegram_alert(msg)
             state_meta["circuit_breaker_alert_sent"] = True
 
     # [MODUL D] Compounding & Slot Expansion (Updated Tiers)
@@ -811,14 +816,15 @@ def run_paper_trading_cycle(
     # Notify on Tier Change
     prev_tier = state_meta.get("current_tier", 1)
     if new_tier != prev_tier:
-        send_telegram_alert(
-            f"📊 <b>SYSTEM TIER: UPDATE</b> 📊\n\n"
-            f"📈 <b>New Level</b>: <b>TIER {new_tier}</b>\n"
-            f"💰 <b>Vault Balance</b>: USD {wallet_after_position_management:.2f}\n"
-            f"⚔️ <b>Stake per Pos</b>: USD {current_stake_usd:.2f}\n"
-            f"📦 <b>Max Slots</b>: {current_tier_max_slots}\n\n"
-            f"Strategi penempatan disesuaikan otomatis."
+        msg = load_telegram_template(
+            category="system",
+            type_name="tier_update",
+            new_tier=new_tier,
+            wallet_balance=wallet_after_position_management,
+            current_stake_usd=current_stake_usd,
+            max_slots=current_tier_max_slots
         )
+        send_telegram_alert(msg)
     state_meta["current_tier"] = new_tier
 
     available_slots = max(current_tier_max_slots - len(open_token_ids), 0)
@@ -886,17 +892,18 @@ def run_paper_trading_cycle(
             city_upper = pos.get('city', 'N/A').upper()
             
             sensor_label = f" ({pos.get('icao_code')})" if pos.get('icao_code') else ""
-            msg = (
-                f"🚀 <b>NEW ENTRY: {city_upper}{sensor_label}</b> 🚀\n\n"
-                f"Bot mengambil posisi <b>YES</b> pada target {target_desc}.\n\n"
-                f"📊 <b>Analisis Terintegrasi:</b>\n"
-                f"Open-Meteo Ensemble yakin sebesar <b>{prob_pct}</b> bahwa target ini akan tercapai. <b>Sensor: {pos.get('icao_code', 'City Default')}</b>.\n\n"
-                f"📝 <b>Alasan Bot (Bucket):</b>\n"
-                f"Masuk kategori <b>{pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper()}</b> karena {reason}\n\n"
-                f"💵 <b>Stake</b>: USD {pos.get('cost_basis'):.2f}\n"
-                f"🏷️ <b>Price</b>: USD {pos.get('entry_price'):.4f} (TP: {pos.get('target_price', 0):.4f})\n"
-                f"⏳ <b>Resolves</b>: {hours_label}\n\n"
-                f"🔗 <a href='{link}'>Lihat di Polymarket</a>"
+            msg = load_telegram_template(
+                category="execution",
+                type_name="entry",
+                market_name=pos.get('market_question', 'N/A'),
+                outcome=f"{pos.get('direction', 'YES').upper()} (Target {pos.get('threshold')}{pos.get('unit')})",
+                prob=f"{float(pos.get('entry_model_prob', 0))*100:.1f}",
+                strategy=pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper(),
+                price=f"{pos.get('entry_price', 0):.4f}",
+                stake=f"{pos.get('cost_basis', 0):.2f}",
+                tp=f"{pos.get('target_price', 0):.4f}",
+                cash=f"{wallet_after_position_management:.2f}",
+                url=link
             )
             send_telegram_alert(msg)
     else:

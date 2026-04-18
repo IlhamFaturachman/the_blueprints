@@ -429,13 +429,14 @@ def _main_protected():
         _start_background_services()
         try:
             from market_discovery_internal.command_server import check_kill_flag
-            from market_discovery_internal.utils import send_telegram_alert
+            from market_discovery_internal.utils import send_telegram_alert, load_telegram_template
 
             def _on_kill():
-                send_telegram_alert(
-                    "🛑 <b>[MODUL J] Emergency Kill-Switch Activated</b>\n"
-                    "Bot dihentikan via Dashboard. Semua posisi terbuka tetap di state.json."
+                msg = load_telegram_template(
+                    category="system",
+                    type_name="kill_switch"
                 )
+                send_telegram_alert(msg)
 
             # Enterprise Logic: Monitor WS health and adjust polling interval
             run_main_paper_loop_mode(
