@@ -848,6 +848,13 @@ def run_paper_trading_cycle(
         )
         # [MODUL N] Telegram Notification for Entries
         for pos in opened_this_cycle:
+            # [MODUL K] Immediate Persistence: Save to DB before alerting
+            try:
+                db.add_position(pos)
+                logger.info(f"[PERSISTENCE] Successfully saved new entry for {pos.get('city')} to SQLite.")
+            except Exception as e:
+                logger.error(f"[PERSISTENCE] FAILED to save new entry for {pos.get('city')}: {e}")
+
             # Brainstorming: Add Link, Reason, Forecast Context, and Resolution Time
             slug = pos.get('market_slug')
             link = f"https://polymarket.com/event/{slug}" if slug else "N/A"
@@ -858,7 +865,14 @@ def run_paper_trading_cycle(
             from market_discovery_internal.reporting import parse_utc_datetime
             now_utc = datetime.now(timezone.utc)
             end_dt = parse_utc_datetime(pos.get('end_date'))
-            hours_left = round((end_dt - now_utc).total_seconds() / 3600, 1) if end_dt else "N/A"
+            
+            # Handle potentially negative or None resolution time gracefully in alerts
+            if end_dt:
+                diff_sec = (end_dt - now_utc).total_seconds()
+                hours_left = round(diff_sec / 3600, 1)
+                hours_label = f"{hours_left}h lagi" if hours_left > 0 else "⚡ Resolving NOW"
+            else:
+                hours_label = "N/A"
             
             # Confidence Meter Visual
             prob = float(pos.get('entry_model_prob', 0))
@@ -880,7 +894,7 @@ def run_paper_trading_cycle(
                 f"Masuk kategori <b>{pos.get('entry_bucket', 'SWING').replace('_candidate', '').upper()}</b> karena {reason}\n\n"
                 f"💵 <b>Stake</b>: USD {pos.get('cost_basis'):.2f}\n"
                 f"🏷️ <b>Price</b>: USD {pos.get('entry_price'):.4f} (TP: {pos.get('target_price', 0):.4f})\n"
-                f"⏳ <b>Resolves</b>: {hours_left}h lagi\n\n"
+                f"⏳ <b>Resolves</b>: {hours_label}\n\n"
                 f"🔗 <a href='{link}'>Lihat di Polymarket</a>"
             )
             send_telegram_alert(msg)

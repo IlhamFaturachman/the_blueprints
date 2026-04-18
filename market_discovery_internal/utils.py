@@ -29,19 +29,23 @@ def send_telegram_alert(message):
     except Exception:
         return False
 
-def fetch_with_retry(url, params=None, headers=None, max_retries=3):
+def fetch_with_retry(url, params=None, headers=None, max_retries=3, fail_fast_on_429=False):
     """
     GET a URL and return parsed JSON. Retries up to max_retries times
     with exponential backoff (1s, 2s, 4s) on any request error.
-    Raises the last exception if all retries are exhausted.
+    
+    [MODUL U] If fail_fast_on_429=True, it will not retry on 429 errors 
+    at all, raising the error immediately to prevent cycle blocking.
     """
     last_error = None
     for attempt in range(max_retries):
         try:
             response = requests.get(url, params=params, headers=headers, timeout=10)
             if response.status_code == 429:
-                # [MODUL U] Smart Backoff: Archive API is extremely strict.
-                # First 429: 30s, Second: 60s, Third: 120s
+                if fail_fast_on_429:
+                    raise requests.HTTPError(f"429 Client Error: Too Many Requests (Fail-Fast) for url: {url}", response=response)
+                
+                # Default backoff behavior (for non-weather or aggregated calls)
                 backoff = 30 * (2 ** attempt)
                 print(f"[RETRY] Rate limit hit (429). Cooling down for {backoff}s before retry {attempt+1}/{max_retries}...")
                 last_error = requests.HTTPError(f"429 Client Error: Too Many Requests for url: {url}", response=response)

@@ -24,6 +24,26 @@ class _CommandHandler(BaseHTTPRequestHandler):
         self._send_cors_headers(200)
         self.end_headers()
 
+    def do_GET(self):
+        if self.path == "/api/state":
+            try:
+                import json
+                from market_discovery_internal.state_persistence import load_paper_state
+                state = load_paper_state()
+                body = json.dumps(state, default=str).encode()
+                self._send_cors_headers(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self._send_cors_headers(500)
+                self.end_headers()
+                self.wfile.write(f'{{"status":"error","message":"{e}"}}'.encode())
+        else:
+            self._send_cors_headers(404)
+            self.end_headers()
+
     def do_POST(self):
         if self.path == "/api/kill":
             # Auth guard: require X-Kill-Token header
@@ -61,7 +81,7 @@ class _CommandHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self, code):
         self.send_response(code)
         self.send_header("Access-Control-Allow-Origin", _CORS_ORIGIN)
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Kill-Token")
 
     def log_message(self, format, *args):

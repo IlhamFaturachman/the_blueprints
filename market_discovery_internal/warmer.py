@@ -3,7 +3,9 @@ import threading
 from datetime import datetime, timedelta, timezone
 from market_discovery_internal.config import TARGET_CITIES
 from market_discovery_internal.database_manager import db
-from market_discovery_internal.forecasting import fetch_forecast, _fetch_historical_average
+from market_discovery_internal.forecasting import (
+    _fetch_bulk_historical_weather, _fetch_bulk_forecasts
+)
 
 class GudangDataWarmer:
     """
@@ -35,46 +37,48 @@ class GudangDataWarmer:
 
     def perform_warming_cycle(self):
         print(f"--- [WARMER] Warming Cycle Start: {datetime.now().strftime('%H:%M:%S')} ---")
-        # [MODUL L] Update Heartbeat Pulse
-        db.update_heartbeat("warmer")
         
-        # We warm the next 7 days for all cities
-        dates = [(datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(8)]
+        # We warm the next 10 days for all cities (increased window for buffer)
+        dates = [(datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(11)]
         cities = list(TARGET_CITIES.keys())
         
-        total_tasks = len(cities) * len(dates)
-        processed = 0
+        for date in dates:
+            # [MODUL L] Heartbeat Pulse per date (Granular monitoring)
+            db.update_heartbeat("warmer")
+            
+            try:
+                month_day = date[5:]
+                
+                # 1. Identify missing historical data for this date across all cities
+                missing_hist_cities = []
+                for city in cities:
+                    if not db.get_weather(city, month_day):
+                        missing_hist_cities.append(city)
+                
+                if missing_hist_cities:
+                    print(f"[WARMER] Fetching bulk historical for {len(missing_hist_cities)} cities on {date}...")
+                    _fetch_bulk_historical_weather(missing_hist_cities, date)
+                    # Aggregation Muzzle: Only 1 request per date instead of 31.
+                    time.sleep(30.0) 
+                
+                # 2. Identify missing forecasts for this date across all cities
+                missing_forecast_cities = []
+                for city in cities:
+                    # TTL 2 hours for warmer
+                    if not db.get_cached_forecast(city, date, ttl_seconds=7200):
+                        missing_forecast_cities.append(city)
+                
+                if missing_forecast_cities:
+                    print(f"[WARMER] Fetching bulk forecast for {len(missing_forecast_cities)} cities on {date}...")
+                    _fetch_bulk_forecasts(missing_forecast_cities, date)
+                    time.sleep(10.0)
 
-        for city in cities:
-            for date in dates:
-                try:
-                    month_day = date[5:]
-                    
-                    # 1. Warm Historical (Priming for Wave 1 & 2)
-                    hist = db.get_weather(city, month_day)
-                    if not hist:
-                        # _fetch_historical_average (allow_live=True) saves to DB
-                        _fetch_historical_average(city, date, allow_live=True)
-                        # Ultra-Stealth Throttle: Archive API is stricter than Forecast API
-                        time.sleep(25.0) 
-
-                    # 2. Warm Forecast (Discovery Cache)
-                    # TTL 2 hours for warmer (more relaxed than discovery cycle)
-                    cached = db.get_cached_forecast(city, date, ttl_seconds=7200)
-                    if not cached:
-                        # fetch_forecast already saves verified result to DB
-                        fetch_forecast(city, date)
-                        # Standard Throttle
-                        time.sleep(5.0)
-
-                    processed += 1
-                    if processed % 10 == 0:
-                        print(f"[WARMER] Progress: {processed}/{total_tasks} data points warmed.")
-                except Exception as e:
-                    if "429" in str(e):
-                        print(f"[WARMER] Circuit Breaker Tripped (429 detected). Aborting cycle for safety: {e}")
-                        return
-                    print(f"[WARMER] Point-specific error ({city}/{date}): {e}")
+            except Exception as e:
+                if "429" in str(e):
+                    print(f"[WARMER] Circuit Breaker Tripped (429 detected). Cooling down cycle: {e}")
+                    time.sleep(300) # Wait 5 mins before next date
+                    continue
+                print(f"[WARMER] Date-specific error ({date}): {e}")
 
         print(f"--- [WARMER] Warming Cycle Complete: {datetime.now().strftime('%H:%M:%S')} ---")
 

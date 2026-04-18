@@ -10,7 +10,7 @@ from market_discovery_internal.config import (
     TARGET_CITIES, OPEN_METEO_API, OPEN_METEO_HISTORICAL_API,
     CONSENSUS_MAX_ERROR_C, HISTORICAL_DEVIATION_C, ANOMALY_LOG_FILE
 )
-from market_discovery_internal.utils import fetch_with_retry
+from market_discovery_internal.utils import fetch_with_retry, send_telegram_alert
 
 class ForecastTemp(float):
     """Float wrapper to store the oracle source."""
@@ -48,48 +48,81 @@ def _fetch_historical_average(city, date, allow_live=True):
     if not allow_live:
         return entry.get("max_temp") if entry else None
 
+    # Fallback to single fetch if bulk is not used or fails
     try:
-        year = int(date.split("-")[0])
-        # Fetch a 10-year window ending last year
-        start_date = f"{year-10}-{month_day}"
-        end_date = f"{year-1}-{month_day}"
-
-        # [MODUL DB] Wave 2 Priming: Fetching both temperature and precipitation
-        params = {
-            "latitude": coords["lat"], "longitude": coords["lon"],
-            "start_date": start_date, "end_date": end_date,
-            "daily": ["temperature_2m_max", "precipitation_sum"], 
-            "timezone": "auto"
-        }
-        
-        # [MODUL U] Rebalanced Persistence: 8 retries for stealth load
-        res = fetch_with_retry(OPEN_METEO_HISTORICAL_API, params=params, max_retries=8)
-        if res is None:
-            raise ValueError("All retries exhausted for historical fetch (429 or Timeout)")
-            
-        daily = res.get("daily", {})
-        times = daily.get("time", [])
-        temps = daily.get("temperature_2m_max", [])
-        precips = daily.get("precipitation_sum", [])
-
-        # Filter for the same month and day across the decade
-        matches_temp = [t for ts, t in zip(times, temps) if ts.endswith(month_day) and t is not None]
-        matches_precip = [p for ts, p in zip(times, precips) if ts.endswith(month_day) and p is not None]
-        
-        avg_temp = round(sum(matches_temp) / len(matches_temp), 1) if matches_temp else None
-        avg_precip = round(sum(matches_precip) / len(matches_precip), 2) if matches_precip else None
-
-        if avg_temp is not None:
-            # Save both to the Warehouse
-            db.save_weather(city, month_day, max_temp=avg_temp, precip=avg_precip)
-
-        return avg_temp
+        results = _fetch_bulk_historical_weather([city], date)
+        return results.get(city)
     except Exception as e:
-        print(f"[MODUL-K] Historical fetch error: {e}")
-        # Return stale cached value if available (better than None)
+        print(f"[MODUL-K] Historical fetch fallback error for {city}: {e}")
         if entry:
             return entry.get("max_temp")
         return None
+
+def _fetch_bulk_historical_weather(cities, date):
+    """[MODUL U] Aggregated fetch for multiple cities in one API call.
+    Reduces 429 risk by collapsing 31 requests into 1.
+    """
+    if not cities or not date:
+        return {}
+
+    month_day = date[5:]
+    year = int(date.split("-")[0])
+    start_date = f"{year-10}-{month_day}"
+    end_date = f"{year-1}-{month_day}"
+
+    lats = []
+    lons = []
+    valid_cities = []
+    for city in cities:
+        coords = TARGET_CITIES.get(city)
+        if coords:
+            lats.append(str(coords["lat"]))
+            lons.append(str(coords["lon"]))
+            valid_cities.append(city)
+
+    if not valid_cities:
+        return {}
+
+    params = {
+        "latitude": ",".join(lats),
+        "longitude": ",".join(lons),
+        "start_date": start_date,
+        "end_date": end_date,
+        "daily": ["temperature_2m_max", "precipitation_sum"],
+        "timezone": "auto"
+    }
+
+    try:
+        # Use a more conservative retry for bulk
+        res = fetch_with_retry(OPEN_METEO_HISTORICAL_API, params=params, max_retries=3)
+        if not res:
+            return {}
+
+        results = {}
+        # Open-Meteo returns a list of daily dicts or a dict with lists if multiple locations
+        data_list = res if isinstance(res, list) else [res]
+        
+        for i, data in enumerate(data_list):
+            city = valid_cities[i]
+            daily = data.get("daily", {})
+            times = daily.get("time", [])
+            temps = daily.get("temperature_2m_max", [])
+            precips = daily.get("precipitation_sum", [])
+
+            matches_temp = [t for ts, t in zip(times, temps) if ts.endswith(month_day) and t is not None]
+            matches_precip = [p for ts, p in zip(times, precips) if ts.endswith(month_day) and p is not None]
+            
+            avg_temp = round(sum(matches_temp) / len(matches_temp), 1) if matches_temp else None
+            avg_precip = round(sum(matches_precip) / len(matches_precip), 2) if matches_precip else None
+
+            if avg_temp is not None:
+                db.save_weather(city, month_day, max_temp=avg_temp, precip=avg_precip)
+                results[city] = avg_temp
+        
+        return results
+    except Exception as e:
+        print(f"[MODUL-U] Bulk historical fetch error: {e}")
+        return {}
 
 def _log_anomaly(city, date, forecast, historical, source="anomaly"):
     """Log rejected anomalous or non-consensus forecasts for transparency."""
@@ -389,6 +422,61 @@ def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_fo
             stats["successful"] += 1
 
     return stats
+
+
+def _fetch_bulk_forecasts(cities, date):
+    """[MODUL U] Aggregated forecast fetch for multiple cities.
+    Fetches the daily max temperature forecast for multiple coordinates in 1 request.
+    """
+    if not cities or not date:
+        return {}
+
+    lats = []
+    lons = []
+    valid_cities = []
+    for city in cities:
+        coords = TARGET_CITIES.get(city)
+        if coords:
+            lats.append(str(coords["lat"]))
+            lons.append(str(coords["lon"]))
+            valid_cities.append(city)
+
+    if not valid_cities:
+        return {}
+
+    params = {
+        "latitude": ",".join(lats),
+        "longitude": ",".join(lons),
+        "daily": "temperature_2m_max",
+        "timezone": "auto",
+        "forecast_days": 10  # Cover the full warming window
+    }
+
+    try:
+        res = fetch_with_retry(OPEN_METEO_API, params=params, max_retries=3)
+        if not res:
+            return {}
+
+        results = {}
+        data_list = res if isinstance(res, list) else [res]
+        
+        for i, data in enumerate(data_list):
+            city = valid_cities[i]
+            daily = data.get("daily", {})
+            times = daily.get("time", [])
+            temps = daily.get("temperature_2m_max", [])
+            
+            if date in times:
+                val = temps[times.index(date)]
+                if val is not None:
+                    # Save to Warehouse Cache
+                    db.save_cached_forecast(city, date, val, "open-meteo (bulk)")
+                    results[city] = val
+        
+        return results
+    except Exception as e:
+        print(f"[MODUL-U] Bulk forecast fetch error: {e}")
+        return {}
 
 
 def forecast_still_valid(

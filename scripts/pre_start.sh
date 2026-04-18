@@ -9,14 +9,19 @@ BK_DIR="/opt/the_blueprints/logs/backups"
 echo "[PRE-START $(date +'%H:%M:%S.%N')] Starting pre-flight checks."
 
 # 1. PID Cleanup (Anti-Ghost)
+# Aggressive pkill to clear any detached background processes
+echo "[PRE-START] Neutralizing any potential ghost processes..."
+pkill -9 -f "market_discovery" 2>/dev/null
+pkill -9 -f "warmer.py" 2>/dev/null
+
 if [ -f "$PF" ]; then
     OLD=$(cat "$PF" 2>/dev/null)
     if [ -n "$OLD" ] && kill -0 "$OLD" 2>/dev/null; then
-        echo "[PRE-START] ACTIVE INSTANCE DETECTED (PID: $OLD)."
-    else
-        echo "[PRE-START] GHOST INSTANCE DETECTED ($OLD). Force-removing $PF."
-        rm -f "$PF"
+        echo "[PRE-START] WARNING: ACTIVE INSTANCE STILL DETECTED (PID: $OLD) after pkill. Retrying..."
+        kill -9 "$OLD" 2>/dev/null
+        sleep 1
     fi
+    rm -f "$PF"
 fi
 
 # 2. Database Backup (Corruption Shield)

@@ -2,6 +2,18 @@ import json
 import os
 from market_discovery_internal.database_manager import db
 
+def _default_meta():
+    """Build a default meta dict from config, evaluated lazily at call time."""
+    from market_discovery_internal.config import PAPER_BASE_WALLET
+    return {
+        "base_wallet": PAPER_BASE_WALLET,
+        "cash": PAPER_BASE_WALLET,
+        "current_wallet": PAPER_BASE_WALLET,
+        "daily_session": {},
+        "auto_tuner": {},
+        "acceptance_metrics_rolling": {"closed_realized_pnl_total_usd": 0.0},
+    }
+
 _EMPTY_STATE = {
     "positions": [],
     "history": [],
@@ -23,10 +35,19 @@ def load_paper_state(path=None):
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    loaded = json.load(f)
+                # Inject meta defaults for any keys missing from the stored state
+                defaults = _default_meta()
+                loaded.setdefault("meta", {})
+                for k, v in defaults.items():
+                    loaded["meta"].setdefault(k, v)
+                return loaded
             except Exception:
                 pass
-        return dict(_EMPTY_STATE)
+        # File missing — return fresh state with config-based defaults
+        empty = dict(_EMPTY_STATE)
+        empty["meta"] = _default_meta()
+        return empty
 
     # [MODUL DB] Migration to Single Source of Truth (SQLite)
     portfolio = db.get_portfolio()
@@ -129,8 +150,13 @@ def save_paper_state(state, path=None):
     # 5. Mirror to JSON (Mirrored Copy for Dashboard/Manual Debug)
     if path:
         try:
+            # Inject meta defaults so the JSON mirror is self-consistent for readers
+            mirror = dict(state)
+            defaults = _default_meta()
+            mirror["meta"] = dict(defaults)
+            mirror["meta"].update(state.get("meta") or {})
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
+                json.dump(mirror, f, indent=2)
             # Ensure it's world-readable for the nginx-served dashboard
             os.chmod(path, 0o644)
         except:

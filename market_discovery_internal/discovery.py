@@ -92,6 +92,31 @@ def fetch_markets(inspect=False, aggressive_scan=False):
 
 from market_discovery_internal.database_manager import db
 
+
+def filter_enriched_opportunities(
+    enriched,
+    max_yes_price=STRATEGY_MAX_YES_PRICE,
+    min_model_prob=STRATEGY_MIN_MODEL_PROB,
+    min_edge=STRATEGY_MIN_EDGE,
+):
+    """Filter already-enriched market dicts using gates (global or per-market regime_gates).
+
+    Returns list sorted by edge descending.
+    This is the public API used by tests and the paper cycle filter lambda.
+    """
+    result = []
+    for m in enriched:
+        gates = m.get("regime_gates") or {}
+        mp = float(gates.get("max_price", max_yes_price))
+        prob = float(gates.get("min_prob", min_model_prob))
+        edge = float(gates.get("min_edge", min_edge))
+        if (float(m.get("yes_price", 1.0)) <= mp
+                and float(m.get("model_prob", 0.0)) >= prob
+                and float(m.get("edge", -1.0)) >= edge):
+            result.append(m)
+    return sorted(result, key=lambda x: x.get("edge", 0), reverse=True)
+
+
 def filter_opportunities(
     markets,
     now_utc=None,

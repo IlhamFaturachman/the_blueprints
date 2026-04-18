@@ -86,7 +86,7 @@ from market_discovery_internal.analysis import (
     _record_ai_usage_cost, resolve_station_with_ai
 )
 from market_discovery_internal.discovery import (
-    fetch_markets, filter_opportunities
+    fetch_markets, filter_enriched_opportunities as filter_opportunities
 )
 from market_discovery_internal.cycles import (
     run_discovery_cycle, run_paper_trading_cycle, parse_discovery_markets,
@@ -113,7 +113,14 @@ from market_discovery_internal.reporting import (
     build_paper_state_report, build_cycle_journal_entry,
     build_rolling_acceptance_metrics, build_rolling_city_coverage_metrics,
     build_city_coverage_metrics, build_cycle_acceptance_metrics,
-    parse_utc_datetime
+    parse_utc_datetime,
+    normalize_rolling_acceptance_metrics, normalize_rolling_city_coverage_metrics,
+    normalize_last_cycle_performance, normalize_recent_journal_entries,
+    build_journal_retention_payload, build_journal_anomaly_counters,
+)
+from market_discovery_internal.config import (
+    PAPER_REPORT_ANOMALY_STREAK_ALERT, PAPER_REPORT_REJECT_DOMINANT_RATIO,
+    PAPER_REPORT_RETENTION_WARN_THRESHOLD,
 )
 from market_discovery_internal.state_persistence import (
     load_paper_state, save_paper_state
@@ -122,6 +129,44 @@ from market_discovery_internal.state_persistence import (
 # ---------------------------------------------------------------------------
 # Dependency Wiring (Glue Logic)
 # ---------------------------------------------------------------------------
+
+def wired_print_paper_state_report(state, state_path, recent_entries, output_format, now_utc=None):
+    """Bridge function that injects all DI args into print_paper_state_report."""
+    from datetime import datetime, timezone as _tz
+    _now = now_utc or datetime.now(_tz.utc)
+
+    def _build_report_fn(state, state_path, recent_entries, now_utc):
+        return build_paper_state_report(
+            state=state,
+            state_path=state_path,
+            recent_entries=recent_entries,
+            now_utc=now_utc,
+            safe_float_fn=_safe_float,
+            safe_div_fn=_safe_div,
+            paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
+            paper_journal_max_entries=PAPER_JOURNAL_MAX_ENTRIES,
+            paper_report_retention_warn_threshold=PAPER_REPORT_RETENTION_WARN_THRESHOLD,
+            normalize_rolling_acceptance_metrics_fn=normalize_rolling_acceptance_metrics,
+            normalize_rolling_city_coverage_metrics_fn=normalize_rolling_city_coverage_metrics,
+            normalize_last_cycle_performance_fn=normalize_last_cycle_performance,
+            normalize_recent_journal_entries_fn=normalize_recent_journal_entries,
+            build_journal_retention_payload_fn=build_journal_retention_payload,
+            build_journal_anomaly_counters_fn=build_journal_anomaly_counters,
+            paper_report_anomaly_streak_alert=PAPER_REPORT_ANOMALY_STREAK_ALERT,
+            paper_report_reject_dominant_ratio=PAPER_REPORT_REJECT_DOMINANT_RATIO,
+        )
+
+    return print_paper_state_report(
+        state=state,
+        state_path=state_path,
+        recent_entries=recent_entries,
+        output_format=output_format,
+        now_utc=_now,
+        build_paper_state_report_fn=_build_report_fn,
+        safe_float_fn=_safe_float,
+        paper_min_city_diversity=PAPER_MIN_CITY_DIVERSITY,
+    )
+
 
 def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
     """Bridge function to inject all dependencies into the internal discovery loop."""
@@ -148,14 +193,8 @@ def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
             discovery_forecast_prefetch_min_keys=DISCOVERY_FORECAST_PREFETCH_MIN_KEYS,
             discovery_forecast_prefetch_max_workers=DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS,
         ),
-        filter_opportunities_fn=lambda enriched: sorted(
-            [m for m in enriched
-             # [PACK B] Use per-market regime gates if available, else fall back to global config
-             if float(m.get("yes_price", 1.0)) <= float((m.get("regime_gates") or {}).get("max_price", STRATEGY_MAX_YES_PRICE))
-             and float(m.get("model_prob", 0.0)) >= float((m.get("regime_gates") or {}).get("min_prob", STRATEGY_MIN_MODEL_PROB))
-             and float(m.get("edge", -1.0)) >= float((m.get("regime_gates") or {}).get("min_edge", STRATEGY_MIN_EDGE))],
-            key=lambda x: x.get("edge", 0), reverse=True
-        ),
+        # [PACK B] Use filter_enriched_opportunities — respects per-market regime_gates
+        filter_opportunities_fn=filter_opportunities,
         daily_resolve_only=DAILY_RESOLVE_ONLY,
         daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE
     )
@@ -175,7 +214,8 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         run_discovery_cycle_fn=wired_run_discovery_cycle,
         prefetch_forecasts_fn=lambda **kwargs: prefetch_forecasts(fetch_forecast_fn=fetch_forecast, **kwargs),
         ensure_take_profit_target_fn=_ensure_take_profit_target, 
-        forecast_still_valid_fn=lambda **kwargs: forecast_still_valid(
+        forecast_still_valid_fn=lambda *args, **kwargs: forecast_still_valid(
+            *args,
             fetch_forecast_with_cache_fn=lambda city, date, cache, **k: fetch_forecast_with_cache(city, date, cache, fetch_forecast_fn=fetch_forecast, **k),
             build_weather_evidence_fn=build_weather_evidence,
             is_weather_evidence_valid_fn=is_weather_evidence_valid,
@@ -380,7 +420,7 @@ def _main_protected():
         run_main_paper_report_mode(
             paper_report_json_mode=flags["paper_report_json_mode"],
             load_paper_state_fn=load_paper_state,
-            print_paper_state_report_fn=print_paper_state_report,
+            print_paper_state_report_fn=wired_print_paper_state_report,
             paper_state_file=PAPER_STATE_FILE
         )
         return

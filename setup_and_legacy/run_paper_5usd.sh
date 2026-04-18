@@ -18,10 +18,12 @@ case "$mode" in
 esac
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# project_root is one level above setup_and_legacy/
+project_root="$(cd -- "$script_dir/.." && pwd)"
 
-if [[ -f "$script_dir/.env" ]]; then
+if [[ -f "$project_root/.env" ]]; then
   set -a
-  source "$script_dir/.env"
+  source "$project_root/.env"
   set +a
 fi
 
@@ -29,10 +31,10 @@ if [[ -n "${PYTHON_BIN:-}" ]]; then
   python_bin="$PYTHON_BIN"
 elif command -v python >/dev/null 2>&1; then
   python_bin="python"
-elif [[ -x "$script_dir/.venv/bin/python" ]]; then
-  python_bin="$script_dir/.venv/bin/python"
-elif [[ -x "$script_dir/venv/bin/python" ]]; then
-  python_bin="$script_dir/venv/bin/python"
+elif [[ -x "$project_root/.venv/bin/python" ]]; then
+  python_bin="$project_root/.venv/bin/python"
+elif [[ -x "$project_root/venv/bin/python" ]]; then
+  python_bin="$project_root/venv/bin/python"
 else
   echo "ERROR: Python interpreter not found. Set PYTHON_BIN or create .venv/venv." >&2
   exit 1
@@ -62,4 +64,4 @@ HAIKU_MONITOR_MAX_CALLS_PER_DAY="${HAIKU_MONITOR_MAX_CALLS_PER_DAY:-6}" \
 HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT="${HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT:-0.75}" \
 STRATEGY_EXACT_MIN_EDGE="${STRATEGY_EXACT_MIN_EDGE:-0.02}" \
 STRATEGY_EXACT_MIN_MODEL_PROB="${STRATEGY_EXACT_MIN_MODEL_PROB:-0.10}" \
-"$python_bin" "$script_dir/market_discovery.py" "$mode" "$@" < /dev/null
+"$python_bin" "$project_root/market_discovery.py" "$mode" "$@" < /dev/null

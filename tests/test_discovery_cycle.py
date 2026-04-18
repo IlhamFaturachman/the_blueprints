@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from market_discovery import run_discovery_cycle
+from market_discovery import wired_run_discovery_cycle as run_discovery_cycle
 
 
 def make_parsed_market(token_id, city="new york city", date="2026-04-15", yes_price=0.20):
@@ -9,12 +9,13 @@ def make_parsed_market(token_id, city="new york city", date="2026-04-15", yes_pr
         "date": date,
         "end_date": "2026-04-15T20:00:00+00:00",
         "market_question": f"Will {city.title()} exceed 75F?",
-        "threshold": 75.0,
-        "unit": "F",
+        "threshold": 24.0,  # °C — close to forecast 25°C so sigmoid prob ≈ 0.82
+        "unit": "C",
         "direction": "above",
         "yes_price": yes_price,
         "token_id": token_id,
         "hours_until_resolve": 6.0,
+        "icao_explicit": True,  # Skip AI station resolution
     }
 
 

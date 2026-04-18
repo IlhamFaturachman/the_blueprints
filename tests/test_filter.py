@@ -38,8 +38,9 @@ def test_rejects_model_prob_below_070():
 
 
 def test_accepts_boundary_values():
+    # Pass explicit thresholds to be independent of .env overrides
     markets = [make_opp(0.34, 0.70)]
-    result = filter_opportunities(markets)
+    result = filter_opportunities(markets, max_yes_price=0.34, min_model_prob=0.70, min_edge=0.20)
     assert len(result) == 1
 
 

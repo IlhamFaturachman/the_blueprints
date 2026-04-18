@@ -23,13 +23,13 @@ def test_run_main_paper_loop_mode_retries_after_error_then_continues():
             "max_bound": 0.3,
         }
 
-    def print_summary(cycle):
+    def print_summary(cycle, safe_float_fn, paper_min_city_diversity):
         assert isinstance(cycle, dict)
         calls["summary"] += 1
 
     def sleep_fn(seconds):
         sleep_calls.append(seconds)
-        if len(sleep_calls) >= 2:
+        if len(sleep_calls) >= 3:
             raise KeyboardInterrupt()
 
     def report_error(error, consecutive_errors, retry_in_seconds):
@@ -49,7 +49,7 @@ def test_run_main_paper_loop_mode_retries_after_error_then_continues():
 
     assert calls["run"] == 2
     assert calls["summary"] == 1
-    assert sleep_calls == [7, 300]
+    assert sleep_calls == [30, 7, 300]
     assert reported == [("RuntimeError", 1, 7)]
 
 
