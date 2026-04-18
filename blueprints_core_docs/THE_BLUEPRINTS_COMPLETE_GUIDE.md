@@ -203,16 +203,42 @@ Meskipun pasar "mayoritas" bilang 17°C adalah jawaban benar (harga $0.750), bot
 ### 7.1 Pemantauan Harga Real-Time
 Setelah posisi terbuka, bot memantau harga melalui WebSocket — koneksi langsung yang mendapat update harga dalam hitungan detik, bukan menunggu siklus berikutnya.
 
-### 7.2 Kondisi Penutupan Posisi
-Bot menutup posisi jika salah satu kondisi terpenuhi:
+### 7.2 Tujuh Kondisi Penutupan Posisi (Hybrid Exit)
 
-- **Take Profit** — harga naik signifikan dari harga beli, bot "ambil untung" lebih awal
-- **Stop Loss** — harga turun di bawah batas tertentu, bot "potong kerugian" sebelum makin parah
-- **Waktu Habis** — pasar akan segera berakhir (resolve), bot keluar dan menunggu hasil resmi
-- **Rekomendasi AI** — bot menggunakan Claude Haiku (AI) untuk menganalisis kondisi pasar dan memberikan rekomendasi apakah sebaiknya keluar lebih awal
+Bot mengevaluasi tujuh kondisi setiap siklus, berurutan dari prioritas tertinggi:
+
+**1. Haiku Monitor — Forced Exit (Prioritas Tertinggi)**
+Sebelum semua logika lain diperiksa, Claude Haiku menganalisis setiap posisi terbuka. Haiku dipanggil maksimal tiap 12 jam per posisi (bukan real-time), dengan batas 6 panggilan per hari untuk semua posisi. Jika Haiku memberi sinyal "close" dengan keyakinan ≥75% → posisi langsung ditutup paksa.
+
+**2. Exit Sniper — Harga Tembus $0.90**
+Jika harga YES tiba-tiba melonjak ke $0.90 atau lebih, bot langsung jual saat itu juga tanpa menunggu. Harga setinggi itu berarti pasar sudah hampir pasti — lebih baik ambil untung sekarang sebelum ada pembalikan.
+
+**3. Sniper Stop Loss — Forecast Cuaca Rusak**
+Jika prediksi cuaca tidak lagi valid (Open-Meteo dan wttr.in tiba-tiba tidak sepakat, atau prediksi bergeser drastis) → bot langsung tutup posisi. Alasan: dasar keputusan masuk sudah tidak berlaku.
+
+**4. Trailing Stop — Proteksi Keuntungan di Break-Even**
+Aktif jika posisi pernah naik +20% atau lebih dari harga beli. Setelah itu, jika harga turun kembali ke harga entry (titik beli awal) → bot jual di break-even (tidak untung, tidak rugi). Ini mencegah posisi yang pernah bagus berubah jadi kerugian, sekaligus memberi ruang bagi pasar yang fluktuatif untuk bergerak naik-turun-naik tanpa keluar terlalu dini.
+
+**5. Stop Loss Biasa**
+Jika harga turun ke 80% dari harga entry → potong rugi. Contoh: beli di $0.30 → stop loss di $0.24.
+
+**6. Take Profit +100%**
+Target standar: 2x harga entry. Beli $0.30 → target $0.60. Jika tercapai → jual, ambil untung.
+
+**7. Late Window Logic (≤2 Jam Sebelum Resolve)**
+Saat tinggal 2 jam atau kurang sebelum pasar tutup jam 19:00 WIB, bot evaluasi:
+- Haiku masih yakin ≥75% DAN forecast valid → **tahan sampai resolve** (biarkan pasar settle sendiri)
+- Yakin <75% atau forecast tidak valid → **jual sekarang**
+- Yakin <45% (sangat rendah) → **"Thesis Decay Exit"** — jual meskipun belum rugi
+
+Jika tidak ada satupun kondisi terpenuhi → bot **diam dan tunggu** siklus berikutnya.
 
 ### 7.3 Penutupan Berbasis AI (Haiku Monitor)
-Secara berkala, Claude Haiku menganalisis setiap posisi terbuka dan memberikan skor kepercayaan. Jika skor turun di bawah ambang tertentu, bot mempertimbangkan untuk keluar meskipun belum mencapai target profit.
+Claude Haiku memantau posisi terbuka dengan membaca data lengkap: harga entry, harga saat ini, jam tersisa sebelum resolve, prediksi suhu, dan arah pasar. Haiku memberikan keputusan "hold" atau "close" beserta tingkat keyakinan dan alasan singkat. Contoh keputusan nyata dari Haiku:
+
+> *"CRITICAL MISMATCH: Entered at 0.0606 (implied 94% prob YES) but current 0.05 price (98% prob NO) suggests massive adverse information or model failure. With only 9.5 hours to resolution and price stalled at extreme opposite end, holding exposes remaining capital to near-certain loss. Entry thesis invalidated by market repricing."*
+
+Haiku hanya bisa memveto — tidak bisa memaksa bot membuka posisi baru.
 
 ---
 
@@ -274,14 +300,28 @@ Setiap 2 jam, komponen terpisah (Warmer) mengambil data cuaca historis untuk tan
 ### 10.3 WebSocket Price Watcher
 Komponen terpisah yang menjaga koneksi langsung ke Polymarket untuk mendapat update harga real-time posisi yang sedang terbuka. Jika koneksi terputus, sistem otomatis mencoba menyambung kembali.
 
-### 10.4 Telegram Notifikasi
+### 10.4 AI — Claude Haiku
+
+Bot menggunakan Claude Haiku (model AI ringan dari Anthropic) untuk tiga fungsi:
+
+| Fungsi | Kapan Dipanggil | Batas Per Hari |
+|--------|----------------|----------------|
+| **Entry Review** | Sebelum buka posisi baru — second opinion | 2 panggilan |
+| **Position Monitor** | Pantau posisi terbuka, tiap 12 jam per posisi | 6 panggilan |
+| **Market Sensing** | Analisis kondisi pasar umum | 50 panggilan |
+
+Biaya sangat rendah: estimasi **$0.03–0.04 per hari**, atau sekitar $0.26 untuk 7 hari penuh. Haiku dipilih bukan Sonnet karena tugas ini tidak butuh reasoning kompleks — cukup baca data dan putuskan hold/close.
+
+Catatan penting: Haiku bekerja per siklus (~5 menit), bukan real-time. Dan Haiku hanya bisa **memveto** — tidak bisa membuka posisi baru sendiri.
+
+### 10.5 Telegram Notifikasi
 Bot mengirim notifikasi ke Telegram untuk kejadian penting:
 - Posisi baru dibuka
 - Posisi ditutup (beserta hasil profit/rugi)
 - Peringatan sistem (misalnya koneksi bermasalah)
 - Laporan harian
 
-### 10.5 Server
+### 10.6 Server
 Bot berjalan di VPS (Virtual Private Server) di Jakarta dengan alamat `103.253.244.158`, aktif 24 jam sehari. Dikelola sebagai layanan sistem (systemd) yang otomatis restart jika terjadi crash.
 
 ---
@@ -312,11 +352,14 @@ Bot memiliki antarmuka web yang dapat diakses di browser (`http://103.253.244.15
 |----------|--------|
 | Bot | ✅ Aktif berjalan di server |
 | Mode | 📄 Paper Trading (simulasi, bukan uang nyata) |
-| Modal | $5.00 USD (simulasi) |
-| Threshold keyakinan | 60% (baru diturunkan dari 70%) |
+| Modal | $1.00 USD per posisi (simulasi), maks 5 posisi terbuka |
+| Threshold keyakinan | 60% |
+| Threshold edge minimum | 20% |
 | Data historis | ✅ Lengkap — 31 kota siap |
 | Golden window | 05:00–11:00 WIB setiap hari |
-| Trade pertama | Menunggu golden window besok pagi |
+| Claude Haiku | ✅ Aktif — entry, monitor, sensing |
+| Trailing stop | Break-even guard — hanya exit jika harga kembali ke harga beli |
+| AI budget | ~$0.03–0.04/hari (Haiku), estimasi cukup 3+ minggu |
 
 ### Roadmap 7 Hari Paper Trade (Apr 18–25)
 
