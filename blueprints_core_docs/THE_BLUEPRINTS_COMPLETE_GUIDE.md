@@ -208,7 +208,7 @@ Setelah posisi terbuka, bot memantau harga melalui WebSocket — koneksi langsun
 Bot mengevaluasi tujuh kondisi setiap siklus, berurutan dari prioritas tertinggi:
 
 **1. Haiku Monitor — Forced Exit (Prioritas Tertinggi)**
-Sebelum semua logika lain diperiksa, Claude Haiku menganalisis setiap posisi terbuka. Haiku dipanggil maksimal tiap 12 jam per posisi (bukan real-time), dengan batas 6 panggilan per hari untuk semua posisi. Jika Haiku memberi sinyal "close" dengan keyakinan ≥75% → posisi langsung ditutup paksa.
+Sebelum semua logika lain diperiksa, Claude Haiku menganalisis setiap posisi terbuka. Haiku dipanggil maksimal **setiap 1 jam per posisi**, dengan batas 80 panggilan per hari untuk semua posisi. Jika Haiku memberi sinyal "close" dengan keyakinan ≥75% → posisi langsung ditutup paksa.
 
 **2. Exit Sniper — Harga Tembus $0.90**
 Jika harga YES tiba-tiba melonjak ke $0.90 atau lebih, bot langsung jual saat itu juga tanpa menunggu. Harga setinggi itu berarti pasar sudah hampir pasti — lebih baik ambil untung sekarang sebelum ada pembalikan.
@@ -304,13 +304,15 @@ Komponen terpisah yang menjaga koneksi langsung ke Polymarket untuk mendapat upd
 
 Bot menggunakan Claude Haiku (model AI ringan dari Anthropic) untuk tiga fungsi:
 
-| Fungsi | Kapan Dipanggil | Batas Per Hari |
-|--------|----------------|----------------|
-| **Entry Review** | Sebelum buka posisi baru — second opinion | 2 panggilan |
-| **Position Monitor** | Pantau posisi terbuka, tiap 12 jam per posisi | 6 panggilan |
-| **Market Sensing** | Analisis kondisi pasar umum | 50 panggilan |
+| Fungsi | Kapan Dipanggil | Interval | Batas Per Hari |
+|--------|----------------|----------|----------------|
+| **Entry Review** | Sebelum buka posisi baru — second opinion | Per kandidat | 2 panggilan |
+| **Position Monitor** | Pantau posisi terbuka secara aktif | **Setiap 1 jam per posisi** | **80 panggilan** |
+| **Market Sensing** | Analisis kondisi pasar umum | Per siklus | 50 panggilan |
 
-Biaya sangat rendah: estimasi **$0.03–0.04 per hari**, atau sekitar $0.26 untuk 7 hari penuh. Haiku dipilih bukan Sonnet karena tugas ini tidak butuh reasoning kompleks — cukup baca data dan putuskan hold/close.
+Interval monitor sengaja diperpendek ke 1 jam (sebelumnya 12 jam) karena pasar weather Polymarket volatile — posisi hidup 8–14 jam dan perlu dicek sesering mungkin. Dengan 5 posisi terbuka, Haiku bisa cek tiap posisi hingga **14 kali sepanjang hidupnya**.
+
+Biaya estimasi: **$0.14 per hari** dengan monitoring penuh, atau sekitar **$0.99 per minggu**. Dengan sisa kredit $3.69, cukup untuk **~26 hari**. Haiku dipilih bukan Sonnet karena tugas ini tidak butuh reasoning kompleks — cukup baca data dan putuskan hold/close.
 
 Catatan penting: Haiku bekerja per siklus (~5 menit), bukan real-time. Dan Haiku hanya bisa **memveto** — tidak bisa membuka posisi baru sendiri.
 
