@@ -199,9 +199,9 @@ PAPER_BASE_WALLET = max(
 PAPER_MIN_CITY_DIVERSITY = max(1, int(os.getenv("PAPER_MIN_CITY_DIVERSITY", "5")))
 PAPER_ENTRY_MIN_PRICE = float(os.getenv("PAPER_ENTRY_MIN_PRICE", "0.05"))
 PAPER_ENTRY_MAX_PRICE = float(os.getenv("PAPER_ENTRY_MAX_PRICE", "0.65"))
-MAX_ACCEPTABLE_SLIPPAGE = float(os.getenv("MAX_ACCEPTABLE_SLIPPAGE", "0.03"))
-LIQUIDITY_DEPTH_MULTIPLIER = float(os.getenv("LIQUIDITY_DEPTH_MULTIPLIER", "2.0"))
-MIN_STAKE_THRESHOLD = float(os.getenv("MIN_STAKE_THRESHOLD", "1.0"))  # Hard floor — skip dust stakes below USD 1.00
+MAX_ACCEPTABLE_SLIPPAGE = float(os.getenv("MAX_ACCEPTABLE_SLIPPAGE", "0.05"))
+LIQUIDITY_DEPTH_MULTIPLIER = float(os.getenv("LIQUIDITY_DEPTH_MULTIPLIER", "1.0"))
+MIN_STAKE_THRESHOLD = float(os.getenv("MIN_STAKE_THRESHOLD", "0.50"))  # Hard floor — skip dust stakes below USD 0.50
 
 # Exact-bracket market liquidity gate (uses Gamma bestAsk/spread fields)
 MARKET_MAX_SPREAD_GATE = float(os.getenv("MARKET_MAX_SPREAD_GATE", "0.12"))

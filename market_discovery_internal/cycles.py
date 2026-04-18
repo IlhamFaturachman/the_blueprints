@@ -1507,6 +1507,27 @@ def append_opened_positions_from_candidates(
     opened_this_cycle = []
     opened_city_keys = set()
 
+    # [MODUL L] Parallel Liquidity Prefetching
+    # We pre-fetch orderbook depth for all candidates in parallel to avoid sequential API bottlenecks.
+    candidates_to_check = entry_candidates[:50] # Check top 50 candidates
+    liquidity_cache = {}
+    
+    if callable(fetch_orderbook_quote_fn):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        max_workers = 10 # 10 workers to stay safe with rate limits
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_token = {
+                executor.submit(calculate_depth_adjusted_stake, c["opportunity"].get("token_id"), stake_usd, MAX_ACCEPTABLE_SLIPPAGE): c["opportunity"].get("token_id")
+                for c in candidates_to_check
+            }
+            for future in as_completed(future_to_token):
+                token_id = future_to_token[future]
+                try:
+                    liquidity_cache[str(token_id)] = future.result()
+                except Exception:
+                    liquidity_cache[str(token_id)] = 0.0
+
     for candidate in entry_candidates:
         if available_slots <= 0:
             break
@@ -1516,6 +1537,13 @@ def append_opened_positions_from_candidates(
         bucket_name = candidate["bucket_name"]
         city_key = candidate["city_key"]
         token_id = opportunity.get("token_id")
+        
+        # Pull cached depth-adjusted stake
+        dynamic_stake = liquidity_cache.get(str(token_id))
+        
+        # Fallback for candidates beyond the first 50 or if prefetch failed
+        if dynamic_stake is None:
+            dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
 
         if str(token_id) in open_token_ids:
             continue
@@ -1544,10 +1572,7 @@ def append_opened_positions_from_candidates(
         if best_ask < min_bound or best_ask > max_bound:
             continue
 
-        # [MODUL L] Liquidity Awareness: Adjust stake based on depth and max 3% slippage
-        from market_discovery_internal.config import MAX_ACCEPTABLE_SLIPPAGE, MIN_STAKE_THRESHOLD
-        from market_discovery_internal.pricing import calculate_depth_adjusted_stake
-        dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
+        # Liquidity check already performed via prefetch or fallback above
 
         if dynamic_stake <= 0:
             logger.warning(f"[LIQUIDITY] Skipping {token_id} - Insufficient depth for safe entry (Slippage Threat).")
