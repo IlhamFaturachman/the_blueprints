@@ -294,7 +294,7 @@ PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS = max(
 # Discovery gate: aligned with PAPER_ENTRY_MAX_PRICE so no valid candidate is
 # discarded before it reaches the entry bucket stage.
 STRATEGY_MAX_YES_PRICE = float(os.getenv("STRATEGY_MAX_YES_PRICE", "0.65"))
-STRATEGY_MIN_MODEL_PROB = float(os.getenv("STRATEGY_MIN_MODEL_PROB", "0.70"))
+STRATEGY_MIN_MODEL_PROB = float(os.getenv("STRATEGY_MIN_MODEL_PROB", "0.60"))
 # Min edge lowered: binary model gives edge = 1.0 - price, so at $0.65 edge = 0.35.
 # 0.20 allows prices up to $0.80 through the gate without killing good setups.
 STRATEGY_MIN_EDGE = float(os.getenv("STRATEGY_MIN_EDGE", "0.20"))
