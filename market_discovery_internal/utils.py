@@ -18,9 +18,11 @@ class SafeFormatter(string.Formatter):
 def load_telegram_template(category: str, type_name: str, **kwargs) -> str:
     """
     Loads an HTML template and injects variables safely.
-    Path: telegram_msg/{category}/{type_name}.html
+    Uses absolute pathing relative to project root.
     """
-    template_path = os.path.join("telegram_msg", category, f"{type_name}.html")
+    # Get the project root (one level up from market_discovery_internal/)
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    template_path = os.path.join(base_dir, "telegram_msg", category, f"{type_name}.html")
     
     if not os.path.exists(template_path):
         return f"⚠️ Template not found: {template_path}"
