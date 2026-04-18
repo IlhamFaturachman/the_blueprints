@@ -61,10 +61,13 @@ def run_main_paper_loop_mode(
     except Exception as e:
         print(f"[BOOT] Log rotator failed to start: {e}")
 
-    # [MODUL DB] Gudang Data Warmer Integration
+    # [MODUL DB] Gudang Data Warmer Integration (runs in background daemon thread)
     try:
+        import threading
         from market_discovery_internal.warmer import warmer
-        warmer.start()
+        warmer_thread = threading.Thread(target=warmer.start, name="GudangDataWarmer", daemon=True)
+        warmer_thread.start()
+        print("[BOOT] Data Warmer started in background thread.", flush=True)
     except Exception as e:
         print(f"[BOOT] Data Warmer failed to start: {e}")
 
