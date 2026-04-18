@@ -612,10 +612,13 @@ def run_paper_trading_cycle(
         monitor_result = None
         if callable(haiku_position_monitor_fn):
             try:
+                _cache_key = (position.get("city"), position.get("date"), position.get("icao_code"))
+                current_forecast_temp = position_forecast_cache.get(_cache_key)
                 monitor_result = haiku_position_monitor_fn(
                     position,
                     current_yes_price=current_yes_price,
                     hours_until_resolve=hours_until_resolve,
+                    current_forecast_temp_c=current_forecast_temp,
                 )
             except TypeError:
                 # Backward-compat: support monitor callbacks that accept only position.

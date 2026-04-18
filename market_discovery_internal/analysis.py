@@ -367,7 +367,7 @@ def _get_haiku_monitor_cache():
 def _save_haiku_monitor_cache(cache):
     _save_json_blob(HAIKU_MONITOR_CACHE_FILE, cache)
 
-def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolve=None):
+def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolve=None, current_forecast_temp_c=None):
     """Use Claude Haiku to monitor an open position for unexpected risks."""
     if not HAIKU_MONITOR_ENABLED or not ANTHROPIC_API_KEY:
         return {"action": "hold", "confidence": 1.0}
@@ -393,6 +393,14 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
         from anthropic import Anthropic
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
+        entry_forecast = position.get("forecast_temp_c")
+        forecast_drift = None
+        if current_forecast_temp_c is not None and entry_forecast is not None:
+            try:
+                forecast_drift = round(float(current_forecast_temp_c) - float(entry_forecast), 2)
+            except (TypeError, ValueError):
+                pass
+
         payload = {
             "city": position.get("city"),
             "market_question": position.get("market_question"),
@@ -404,15 +412,20 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
             "current_yes_price": round(float(current_yes_price), 4) if current_yes_price is not None else None,
             "hours_until_resolve": round(float(hours_until_resolve), 1) if hours_until_resolve is not None else None,
             "entry_model_prob": position.get("entry_model_prob"),
-            "forecast_temp_c": position.get("forecast_temp_c"),
+            "forecast_temp_at_entry_c": entry_forecast,
+            "forecast_temp_now_c": current_forecast_temp_c,
+            "forecast_drift_c": forecast_drift,
         }
 
         prompt = (
-            "CRITICAL: You are an aggressive risk sentinel.\n"
+            "CRITICAL: You are an aggressive risk sentinel for a weather prediction market.\n"
             f"Active Position: {json.dumps(payload)}\n\n"
             "VULNERABILITY CHECK:\n"
-            "1. If the current price suggests a massive deviation from the forecast, analyze why.\n"
-            "2. If hours until resolution is very low and price is stalled, consider closing.\n"
+            "1. forecast_drift_c shows how much the weather forecast has shifted since entry. "
+            "A large drift away from threshold is a strong signal the thesis is broken.\n"
+            "2. If current_yes_price has dropped far from entry_price AND forecast has drifted against thesis, close.\n"
+            "3. If forecast_drift_c is small/None but price dropped sharply, it may be temporary market panic — be cautious before closing.\n"
+            "4. If hours_until_resolve is very low (<3h) and confidence is weak, prefer closing.\n"
             "Return JSON only: {\"action\": \"hold\"|\"close\", \"confidence\": 0.0-1.0, \"reasoning\": \"brief string\"}"
         )
 
