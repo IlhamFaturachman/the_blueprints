@@ -382,29 +382,32 @@ def run_paper_trading_cycle(
         except Exception as e:
             logger.error(f"[WATCHDOG] Error checking warmer heartbeat: {e}")
 
+    # [DAILY RESET] Check BEFORE updating last_cycle_at so we compare previous vs now
+    _prev_cycle_at_raw = state_meta.get("last_cycle_at")
+    now_utc = datetime.now(timezone.utc)
+    if _prev_cycle_at_raw:
+        from market_discovery_internal.reporting import parse_utc_datetime
+        _prev_cycle_dt = parse_utc_datetime(_prev_cycle_at_raw)
+        if _prev_cycle_dt and _prev_cycle_dt.date() < now_utc.date():
+            # New day — reset daily session baseline to current actual wallet
+            _daily_sess = state_meta.get("daily_session") or {}
+            if isinstance(_daily_sess, dict):
+                _current_total = float(state_meta.get("current_wallet", PAPER_BASE_WALLET))
+                _daily_sess["baseline_wallet"] = _current_total
+                state_meta["daily_session"] = _daily_sess
+                logger.info(f"[DAILY-RESET] New day detected. CB baseline reset to ${_current_total:.2f}")
+            state_meta["circuit_breaker_alert_sent"] = False
+    elif not state_meta.get("daily_session", {}).get("baseline_wallet"):
+        # Fresh start — initialize daily_session baseline from current_wallet
+        _current_total = float(state_meta.get("current_wallet", PAPER_BASE_WALLET))
+        state_meta["daily_session"] = {"baseline_wallet": _current_total}
+        logger.info(f"[DAILY-RESET] Fresh session initialized. CB baseline = ${_current_total:.2f}")
+
     # [MODUL L] Initial UI Touch: Tell the Dashboard we are starting a cycle
-    # Update timestamp and last_cycle_at even before the cycle finishes
     state_meta["last_cycle_at"] = now_dt.isoformat()
     state["updated_at"] = now_dt.isoformat()
     state["meta"] = state_meta
     save_paper_state_fn(state, path=state_path)
-    
-    # [DAILY RESET] reset baseline_wallet at 00:00 UTC
-    last_cycle_at_raw = state_meta.get("last_cycle_at")
-    now_utc = datetime.now(timezone.utc)
-    if last_cycle_at_raw:
-        from market_discovery_internal.reporting import parse_utc_datetime
-        last_cycle_dt = parse_utc_datetime(last_cycle_at_raw)
-        if last_cycle_dt and last_cycle_dt.date() < now_utc.date():
-            # Reset daily session for the new day
-            daily_session = state_meta.get("daily_session") or {}
-            if isinstance(daily_session, dict):
-                current_total = float(state_meta.get("current_wallet", PAPER_BASE_WALLET))
-                daily_session["baseline_wallet"] = current_total
-                state_meta["daily_session"] = daily_session
-                logger.info(f"Daily session reset: new baseline is ${current_total:.2f}")
-            # Reset circuit breaker flag so a new day starts with a clean gate
-            state_meta["circuit_breaker_alert_sent"] = False
 
     empty_temperature_cycles = int(state_meta.get("empty_temperature_cycles", 0) or 0)
 
