@@ -19,18 +19,24 @@ def load_telegram_template(category: str, type_name: str, **kwargs) -> str:
     """
     Loads an HTML template and injects variables safely.
     Uses absolute pathing relative to project root.
+    Dynamic values are HTML-escaped so < > & chars don't break Telegram HTML parsing.
     """
-    # Get the project root (one level up from market_discovery_internal/)
+    import html as _html
+    # HTML-escape all string kwargs so special chars in dynamic values are safe
+    safe_kwargs = {
+        k: _html.escape(str(v)) if isinstance(v, str) else v
+        for k, v in kwargs.items()
+    }
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     template_path = os.path.join(base_dir, "telegram_msg", category, f"{type_name}.html")
-    
+
     if not os.path.exists(template_path):
         return f"⚠️ Template not found: {template_path}"
-    
+
     try:
         with open(template_path, "r") as f:
             template_content = f.read()
-            return SafeFormatter().format(template_content, **kwargs)
+            return SafeFormatter().format(template_content, **safe_kwargs)
     except Exception as e:
         return f"❌ Error rendering template {category}/{type_name}: {str(e)}"
 
