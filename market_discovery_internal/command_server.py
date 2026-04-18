@@ -25,7 +25,30 @@ class _CommandHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/api/state":
+        if self.path.startswith("/api/logs"):
+            try:
+                import json, collections
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                n = min(200, max(10, int(qs.get("n", ["100"])[0])))
+                log_path = os.path.join(os.path.dirname(KILL_FLAG_FILE), "..", "logs", "paper_loop.out")
+                log_path = os.path.abspath(log_path)
+                if os.path.exists(log_path):
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                        lines = collections.deque(f, n)
+                    body = json.dumps({"lines": list(lines)}).encode()
+                else:
+                    body = json.dumps({"lines": ["[Log file not found]"]}).encode()
+                self._send_cors_headers(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self._send_cors_headers(500)
+                self.end_headers()
+                self.wfile.write(f'{{"lines":["Error reading logs: {e}"]}}'.encode())
+        elif self.path == "/api/state":
             try:
                 import json
                 from market_discovery_internal.state_persistence import load_paper_state

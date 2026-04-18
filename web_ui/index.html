@@ -103,6 +103,20 @@
         .ws-reconnecting { color: #f59e0b; animation: pulse 1.5s infinite; }
         .ws-disconnected { color: var(--error); }
         .data-age { color: #94a3b8; font-family: monospace; font-size: 0.8rem; }
+
+        /* Log feed */
+        .log-feed { background: #0a0c0f; border: 1px solid var(--border); border-radius: 12px; padding: 16px; font-family: 'Courier New', monospace; font-size: 0.78rem; color: #a0aec0; max-height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+        .log-feed .log-err { color: #f87171; }
+        .log-feed .log-warn { color: #fbbf24; }
+        .log-feed .log-ok { color: #34d399; }
+        .log-feed .log-info { color: #60a5fa; }
+        .cb-open { color: var(--success); font-weight: 700; }
+        .cb-closed { color: var(--error); font-weight: 700; }
+        .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+        .pill-green { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+        .pill-red { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
+        .pill-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
+        .pill-blue { background: rgba(99,102,241,0.15); color: #818cf8; border: 1px solid rgba(99,102,241,0.3); }
         
         .flash-up { animation: flashUp 1.5s cubic-bezier(0.4, 0, 0.2, 1); }
         .flash-down { animation: flashDown 1.5s cubic-bezier(0.4, 0, 0.2, 1); }
@@ -167,11 +181,12 @@
         </div>
     </header>
 
+    <!-- Row 1: Core financials + time -->
     <div class="grid" id="statsGrid">
         <div class="card">
             <h3>💳 Portfolio Value</h3>
             <div class="value" id="valWallet"><div class="skeleton"></div></div>
-            <div class="small-value" id="valWalletMode">Mode: Paper / Demo ($5 Init)</div>
+            <div class="small-value" id="valWalletMode">Base: - | Cash: -</div>
         </div>
         <div class="card">
             <h3>📈 Total Floating PnL</h3>
@@ -184,9 +199,9 @@
             <div class="small-value" id="valClosed">Closed deals: -</div>
         </div>
         <div class="card">
-            <h3>⏱️ Last Updated</h3>
-            <div class="value" id="valLastRun" style="font-size: 1.4rem; padding-top: 10px;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valCoverage">City coverage met: -</div>
+            <h3>🏆 Win Rate</h3>
+            <div class="value" id="valWinRate" style="font-size:1.8rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valWinMeta">W: - | L: - | Avg PnL: -</div>
         </div>
         <div class="card">
             <h3>🎯 Daily Target (UTC)</h3>
@@ -194,19 +209,43 @@
             <div class="small-value" id="valDailyGate">Gate: -</div>
         </div>
         <div class="card">
-            <h3>🧠 Self-Learning</h3>
-            <div class="value" id="valTuner" style="font-size: 1.3rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valTunerMeta">Cities: -</div>
+            <h3>🛡️ Circuit Breaker</h3>
+            <div class="value" id="valCB" style="font-size:1.6rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valCBMeta">Daily loss vs baseline: -</div>
         </div>
+        <div class="card">
+            <h3>⚡ Bot Health</h3>
+            <div class="value" id="valBotHealth" style="font-size:1.2rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valBotMeta">Next cycle: - | Coverage: -</div>
+        </div>
+        <div class="card">
+            <h3>💰 Total Fees Paid</h3>
+            <div class="value" id="valFees" style="font-size:1.6rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valFeesMeta">Entry: - | Exit: -</div>
+        </div>
+    </div>
+
+    <!-- Row 2: Time + tuner -->
+    <div class="grid" style="margin-top:24px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
         <div class="card">
             <h3>🕒 UTC Real Time</h3>
-            <div class="value" id="valUtcClock" style="font-size: 1.35rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valUtcDate">UTC -</div>
+            <div class="value" id="valUtcClock" style="font-size: 1.35rem;">--:--:--</div>
+            <div class="small-value" id="valLastRun">Last cycle: -</div>
         </div>
         <div class="card">
-            <h3>🗽 ET Washington</h3>
-            <div class="value" id="valEtClock" style="font-size: 1.35rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valEtDate">America/New_York -</div>
+            <h3>🇮🇩 WIB Jakarta</h3>
+            <div class="value" id="valWibClock" style="font-size: 1.35rem;">--:--:--</div>
+            <div class="small-value" id="valWibDate">Asia/Jakarta</div>
+        </div>
+        <div class="card">
+            <h3>🧠 Self-Learning</h3>
+            <div class="value" id="valTuner" style="font-size: 1.2rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valTunerMeta">Tracked: - | Min: -</div>
+        </div>
+        <div class="card">
+            <h3>📊 Last Cycle Stats</h3>
+            <div class="value" id="valCycleStats" style="font-size:1.1rem;"><div class="skeleton"></div></div>
+            <div class="small-value" id="valCycleMeta">Cities: - | Skipped: -</div>
         </div>
     </div>
 
@@ -216,36 +255,37 @@
             <thead>
                 <tr>
                     <th>Market</th>
-                    <th>Harga Beli (Ask)</th>
-                    <th>Amount ($)</th>
-                    <th>Harga Pasar (Bid)</th>
-                    <th>Floating PnL (Spread)</th>
-                    <th>Market (Target)</th>
+                    <th>Buy / SL / TP</th>
+                    <th>Shares (Cost+Fee)</th>
+                    <th>Bid (Live)</th>
+                    <th>Floating PnL</th>
+                    <th>Prob / Edge</th>
+                    <th>Opened</th>
                     <th>Action</th>
                 </tr>
             </thead>
             <tbody id="positionsTable">
-                <tr><td colspan="7" style="text-align:center; padding: 40px;">Memuat data...</td></tr>
+                <tr><td colspan="8" style="text-align:center; padding: 40px;">Memuat data...</td></tr>
             </tbody>
         </table>
     </div>
 
-    
     <h2 style="margin-top: 40px;">📜 Closed History <span id="closedCountBadge" class="badge mode-manual">0</span></h2>
     <div class="card" style="padding: 0; overflow-x: auto;">
         <table>
             <thead>
                 <tr>
                     <th>Market</th>
-                    <th>Harga Beli (Ask)</th>
-                    <th>Harga Keluar (Exit)</th>
-                    <th>Realized PnL</th>
-                    <th>Market (Target)</th>
-                    <th>Waktu / Alasan Tutup</th>
+                    <th>Buy → Exit</th>
+                    <th>ROI %</th>
+                    <th>Net PnL</th>
+                    <th>Fees (In+Out)</th>
+                    <th>Duration</th>
+                    <th>Alasan Tutup</th>
                 </tr>
             </thead>
             <tbody id="historyTable">
-                <tr><td colspan="6" style="text-align:center;">Memuat data...</td></tr>
+                <tr><td colspan="7" style="text-align:center;">Memuat data...</td></tr>
             </tbody>
         </table>
     </div>
@@ -255,15 +295,17 @@
         <table>
             <thead>
                 <tr>
-                    <th>Timestamp (Local)</th>
-                    <th>Bot Mode</th>
-                    <th>Opportunities Found</th>
-                    <th>Markets Opened</th>
-                    <th>Avg Discovery ms</th>
+                    <th>Timestamp (WIB)</th>
+                    <th>Mode</th>
+                    <th>Entry Gate</th>
+                    <th>Opportunities</th>
+                    <th>Opened</th>
+                    <th>Skipped / Errors</th>
+                    <th>Duration</th>
                 </tr>
             </thead>
             <tbody id="cycleTable">
-                <tr><td colspan="5" style="text-align:center;">Memuat data...</td></tr>
+                <tr><td colspan="7" style="text-align:center;">Memuat data...</td></tr>
             </tbody>
         </table>
         <div class="pagination">
@@ -271,6 +313,11 @@
             <div id="cyclePageInfo" class="pagination-info">Page 1 / 1</div>
             <button id="cycleNextBtn" class="refresh-btn" style="padding: 8px 16px;" onclick="cycleNextPage()">Next</button>
         </div>
+    </div>
+
+    <h2 style="margin-top: 40px;">📋 Live Bot Log <button class="refresh-btn" style="padding: 6px 14px; font-size:0.8rem; margin-left:10px;" onclick="fetchLogs()">Refresh Logs</button></h2>
+    <div class="card" style="padding: 16px;">
+        <div id="logFeed" class="log-feed">Loading logs...</div>
     </div>
 </div>
 
@@ -286,12 +333,15 @@
 
 <script>
 const CYCLE_PAGE_SIZE = 10;
+const PAPER_LOOP_INTERVAL_S = 300; // 5 min default — used for Next Cycle ETA
 let latestPositions = [];
 let latestCash = 0;
 let latestDailyBaseline = 0;
 let latestDailyTarget = 0;
+let latestTotalWallet = 0;
 let cyclePage = 0;
 let cycleRowsCache = [];
+let lastCycleTs = null;
 let wsSocket = null;
 let wsReconnectAttempts = 0;
 let wsReconnectTimer = null;
@@ -355,25 +405,28 @@ function scheduleWsReconnect() {
 }
 
 function updateAggregateCards() {
-    let totalLiquidationValue = latestCash;
     let openPnlTotal = 0;
+    let openCostBasis = 0;
+    let openMarkValue = 0;
     latestPositions.forEach(p => {
         const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
         const posValue = markBid * Number(p.quantity || 0);
-        totalLiquidationValue += posValue;
+        openMarkValue += posValue;
+        openCostBasis += Number(p.cost_basis || 0);
         openPnlTotal += (posValue - Number(p.cost_basis || 0));
     });
+    const totalLiquidationValue = latestCash + openMarkValue;
+
     const pnlEl = document.getElementById('valOpenPnl');
     if (pnlEl) {
         pnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
         pnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
     }
+    document.getElementById('valOpenPositions').innerHTML = `Active: ${latestPositions.length} | Deployed: $${openCostBasis.toFixed(4)}`;
+
     const walletEl = document.getElementById('valWallet');
-    if (walletEl) {
-        walletEl.innerHTML = `$${totalLiquidationValue.toFixed(4)}`;
-        walletEl.classList.add('pulse-text');
-        setTimeout(() => walletEl.classList.remove('pulse-text'), 500);
-    }
+    if (walletEl) walletEl.innerHTML = `$${totalLiquidationValue.toFixed(4)}`;
+
     const targetEl = document.getElementById('valDailyTarget');
     if (targetEl && latestDailyBaseline > 0) {
         const gain = totalLiquidationValue - latestDailyBaseline;
@@ -384,12 +437,28 @@ function updateAggregateCards() {
     }
 }
 
+function fmtDuration(ms) {
+    if (!ms || ms < 0) return '-';
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60); const rs = s % 60;
+    if (m < 60) return `${m}m ${rs}s`;
+    const h = Math.floor(m / 60); const rm = m % 60;
+    return `${h}h ${rm}m`;
+}
+
+function fmtWib(isoStr) {
+    if (!isoStr) return '-';
+    try { return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short', hour12: false }).format(new Date(isoStr)); }
+    catch { return isoStr; }
+}
+
 function renderPositionsTable() {
     const tPos = document.getElementById('positionsTable');
     if (!tPos) return;
     tPos.innerHTML = "";
     if (latestPositions.length === 0) {
-        tPos.innerHTML = "<tr><td colspan='7' style='text-align:center; padding: 40px;'>No active positions.</td></tr>";
+        tPos.innerHTML = "<tr><td colspan='8' style='text-align:center; padding: 40px;'>No active positions.</td></tr>";
         return;
     }
     latestPositions.forEach(p => {
@@ -402,34 +471,56 @@ function renderPositionsTable() {
         const unPnl = pos.current_pnl || 0;
         const pnlCls = unPnl >= 0 ? "good" : "bad";
         const pnlPct = pos.cost_basis ? ((unPnl / pos.cost_basis) * 100) : 0;
-        const dir = pos.direction === 'above' ? '≥' : (pos.direction === 'below' ? '≤' : '=');
-        const targetText = `Temp ${dir} ${pos.threshold || ''}°${pos.unit || ''}`;
         const marketLabel = getMarketLabel(pos);
         let cleanSlug = (pos.market_slug || "").replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
         const marketUrl = cleanSlug ? `https://polymarket.com/event/${cleanSlug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
-        
+        const entryFee = Number(pos.entry_fee_usd || 0);
+        const sharesCost = Number(pos.shares_cost || pos.cost_basis || 0);
+        const modelProb = Number(pos.entry_model_prob || 0);
+        const edge = Number(pos.entry_edge || 0);
+        const openedAgo = pos.opened_at ? fmtDuration(Date.now() - new Date(pos.opened_at).getTime()) : '-';
+        const slPrice = Number(pos.stop_loss_price || 0);
+        const tpPrice = Number(pos.target_price || 0);
+        const stratBadge = pos.target_strategy === 'hold_until_resolve'
+            ? `<span class="pill pill-blue">🏰 FORTRESS</span>`
+            : `<span class="pill pill-green">📉 SWING</span>`;
+
         tPos.innerHTML += `
             <tr data-token-id="${pos.token_id}" data-index="${idx}">
-                <td><strong>${escapeHtml(marketLabel)}</strong><br><small style="color: #bbb">${escapeHtml(pos.city || '').toUpperCase()}</small></td>
-                <td>$${Number(pos.entry_price || 0).toFixed(4)}</td>
-                <td>${Number(pos.quantity || 0).toFixed(2)} ($${Number(pos.cost_basis || 0).toFixed(2)})</td>
-                <td class="js-bid-price">$${markBid.toFixed(4)}</td>
-                <td class="js-upnl ${pnlCls}"><strong>$${unPnl.toFixed(4)} <small>(${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</small></strong></td>
                 <td>
-                    <div style="display:flex; flex-direction: column; gap: 4px;">
-                        <span class="badge mode-auto" style="border-color: ${pos.target_strategy === 'hold_until_resolve' ? '#8b5cf6' : '#10b981'}; color: ${pos.target_strategy === 'hold_until_resolve' ? '#c4b5fd' : '#34d399'};">
-                            ${pos.target_strategy === 'hold_until_resolve' ? '🏰 FORTRESS' : '📉 SWING'}
-                        </span>
-                        <span class="badge mode-auto">${targetText}</span>
-                    </div>
+                    <strong>${escapeHtml(marketLabel)}</strong><br>
+                    <small style="color:#94a3b8">${escapeHtml(pos.city||'').toUpperCase()} · ${pos.date||''}</small><br>
+                    ${stratBadge}
+                </td>
+                <td>
+                    <span style="color:#e2e8f0">Buy: <strong>$${Number(pos.entry_price||0).toFixed(4)}</strong></span><br>
+                    <span style="color:#f87171">SL: $${slPrice.toFixed(4)}</span><br>
+                    <span style="color:#34d399">TP: $${tpPrice.toFixed(4)}</span>
+                </td>
+                <td>
+                    ${Number(pos.quantity||0).toFixed(2)} shares<br>
+                    <small>Cost: $${sharesCost.toFixed(4)}</small><br>
+                    <small style="color:#fbbf24">Fee: $${entryFee.toFixed(4)}</small>
+                </td>
+                <td class="js-bid-price"><strong>$${markBid.toFixed(4)}</strong></td>
+                <td class="js-upnl ${pnlCls}">
+                    <strong>$${unPnl.toFixed(4)}</strong><br>
+                    <small>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</small>
+                </td>
+                <td>
+                    <span style="color:#a5b4fc">P: ${(modelProb*100).toFixed(1)}%</span><br>
+                    <span style="color:#34d399">E: ${(edge*100).toFixed(1)}%</span>
+                </td>
+                <td>
+                    <small>${fmtWib(pos.opened_at)}</small><br>
+                    <small style="color:#94a3b8">~${openedAgo} ago</small>
                 </td>
                 <td>
                     <div style="display:flex; gap: 6px; margin-bottom: 6px;">
-                        <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #03a9f4; text-decoration: none; color: white;">Market</a>
-                        <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #cf6679; border: none;">Close</button>
+                        <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #0284c7; text-decoration: none; color: white;">↗ Poly</a>
                     </div>
-                    <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: linear-gradient(135deg, #10b981, #059669); border: none; width: 100%;" 
-                        onclick="showReason('${escapeHtml(pos.city || '')}', '${escapeHtml(pos.date || '')}', '${escapeHtml(pos.threshold || '')}', '${escapeHtml(pos.unit || '')}', ${Number(pos.entry_model_prob || 0)}, ${Number(pos.entry_confidence_score || 0)}, '${escapeHtml(pos.entry_bucket_reason || '')}')">
+                    <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: linear-gradient(135deg, #10b981, #059669); border: none; width: 100%;"
+                        onclick="showReason('${escapeHtml(pos.city||'')}', '${escapeHtml(pos.date||'')}', '${escapeHtml(pos.threshold||'')}', '${escapeHtml(pos.unit||'')}', ${modelProb}, ${Number(pos.entry_confidence_score||0)}, '${escapeHtml(pos.entry_bucket_reason||'')}')">
                         💡 Logic
                     </button>
                 </td>
@@ -476,14 +567,37 @@ function renderCycleTable() {
     if (!tCyc) return;
     tCyc.innerHTML = '';
     if (!cycleRowsCache.length) {
-        tCyc.innerHTML = "<tr><td colspan='5' style='text-align:center;'>Empty.</td></tr>";
+        tCyc.innerHTML = "<tr><td colspan='7' style='text-align:center;'>Empty.</td></tr>";
         return;
     }
     const totalPages = Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE);
     cyclePage = Math.min(cyclePage, totalPages - 1);
     const pageRows = cycleRowsCache.slice(cyclePage * CYCLE_PAGE_SIZE, (cyclePage + 1) * CYCLE_PAGE_SIZE);
     pageRows.forEach(c => {
-        tCyc.innerHTML += `<tr><td>${new Date(c.timestamp).toLocaleString()}</td><td><span class="badge ${c.aggressive_scan ? 'mode-manual' : 'mode-auto'}">${c.aggressive_scan ? 'SCAN' : 'Loop'}</span></td><td>${c.counts?.opportunities || 0} event</td><td>${c.counts?.opened || 0} trade</td><td>${c.performance?.total_ms?.toFixed(1) || 0}ms</td></tr>`;
+        const gateOpen = c.entry_gate_open !== false;
+        const gateReason = c.entry_gate_reason || 'unknown';
+        const gateBadge = gateOpen
+            ? `<span class="pill pill-green">✅ ${escapeHtml(gateReason)}</span>`
+            : `<span class="pill pill-red">🔒 ${escapeHtml(gateReason)}</span>`;
+        const modeBadge = c.aggressive_scan
+            ? `<span class="pill pill-yellow">⚡ SCAN</span>`
+            : `<span class="pill pill-blue">🔄 LOOP</span>`;
+        const skipped = (c.counts?.skipped || 0) + (c.counts?.exact_skipped || 0);
+        const errors = c.counts?.errors || 0;
+        const durMs = c.performance?.total_ms || 0;
+        tCyc.innerHTML += `
+            <tr>
+                <td><small>${fmtWib(c.timestamp)}</small></td>
+                <td>${modeBadge}</td>
+                <td>${gateBadge}</td>
+                <td>${c.counts?.opportunities || 0}</td>
+                <td>${c.counts?.opened || 0}</td>
+                <td>
+                    <span style="color:#94a3b8">Skip: ${skipped}</span>
+                    ${errors > 0 ? `<br><span style="color:#f87171">Err: ${errors}</span>` : ''}
+                </td>
+                <td>${durMs > 0 ? durMs.toFixed(0) + 'ms' : '-'}</td>
+            </tr>`;
     });
     document.getElementById('cyclePageInfo').innerHTML = `Page ${cyclePage + 1} / ${totalPages}`;
     document.getElementById('cyclePrevBtn').disabled = cyclePage <= 0;
@@ -493,86 +607,190 @@ function renderCycleTable() {
 function cyclePrevPage() { if (cyclePage > 0) { cyclePage--; renderCycleTable(); } }
 function cycleNextPage() { if (cyclePage < Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE) - 1) { cyclePage++; renderCycleTable(); } }
 
+async function fetchLogs() {
+    try {
+        const res = await fetch('/api/logs?n=80', { cache: "no-store" });
+        const data = await res.json();
+        const feed = document.getElementById('logFeed');
+        if (!feed) return;
+        const lines = (data.lines || []);
+        feed.innerHTML = lines.map(line => {
+            const esc = escapeHtml(line);
+            if (/error|exception|traceback|failed/i.test(line)) return `<div class="log-err">${esc}</div>`;
+            if (/warn|warning|⚠|stale/i.test(line)) return `<div class="log-warn">${esc}</div>`;
+            if (/ok|started|running|opened|entry|trade|cycle.*ok/i.test(line)) return `<div class="log-ok">${esc}</div>`;
+            if (/\[boot\]|\[modul|\[ws-|\[paper|\[entry|\[exit|\[cb\]|\[kill\]/i.test(line)) return `<div class="log-info">${esc}</div>`;
+            return `<div>${esc}</div>`;
+        }).join('');
+        feed.scrollTop = feed.scrollHeight;
+    } catch (e) {
+        document.getElementById('logFeed').innerHTML = `<span class="log-err">Failed to load logs: ${e.message}</span>`;
+    }
+}
+
 async function fetchData() {
     try {
         const res = await fetch('../logs/paper_positions_5usd.json?t=' + Date.now(), { cache: "no-store" });
         const data = await res.json();
 
-        // [UI HARDENING] Deduplicate and sort by timestamp descending (newest first)
-        // Move this to TOP to avoid race conditions with summary cards
         const rawCycles = data.cycle_journal || [];
         const seenTs = new Set();
         cycleRowsCache = rawCycles
-            .filter(c => {
-                if (!c.timestamp || seenTs.has(c.timestamp)) return false;
-                seenTs.add(c.timestamp);
-                return true;
-            })
+            .filter(c => { if (!c.timestamp || seenTs.has(c.timestamp)) return false; seenTs.add(c.timestamp); return true; })
             .sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
 
         latestPositions = (data.positions || []).map(p => ({ ...p, last_price: Number(p.last_price || p.entry_quote_best_bid || 0) }));
         const d_closed = data.history || [];
         const meta = data.meta || {};
-        const baseWallet = meta.base_wallet || 5.0;
-        let total_pnl = 0; d_closed.forEach(p => total_pnl += (p.realized_pnl_usd || 0));
+        const baseWallet = Number(meta.base_wallet || 5.0);
+        const cash = Number(meta.cash || meta.current_wallet || baseWallet);
+        latestCash = cash;
+
+        // Realized PnL
+        let total_pnl = 0;
+        let wins = 0, losses = 0, totalFeeEntry = 0, totalFeeExit = 0;
+        d_closed.forEach(p => {
+            total_pnl += Number(p.realized_pnl_usd || 0);
+            if ((p.realized_pnl_usd || 0) >= 0) wins++; else losses++;
+            totalFeeEntry += Number(p.entry_fee_usd || 0);
+            totalFeeExit += Number(p.exit_fee_usd || 0);
+        });
         const pnlEl = document.getElementById('valPnl');
-        if (pnlEl) {
-            pnlEl.innerHTML = `$${total_pnl.toFixed(4)}`;
-            pnlEl.className = total_pnl >= 0 ? "value good" : "value bad";
-        }
+        if (pnlEl) { pnlEl.innerHTML = `$${total_pnl.toFixed(4)}`; pnlEl.className = total_pnl >= 0 ? "value good" : "value bad"; }
         document.getElementById('valClosed').innerHTML = `Closed deals: ${d_closed.length}`;
 
-        let cash = meta.current_wallet !== undefined ? meta.current_wallet - (meta.open_cost_basis || 0) : (baseWallet + total_pnl - (meta.open_cost_basis || 0));
-        latestCash = cash;
-        const daily = meta.daily_session || {};
-        latestDailyBaseline = daily.baseline_wallet || baseWallet;
-        latestDailyTarget = daily.target_wallet || (latestDailyBaseline * 2.0);
+        // Win rate
+        const total_closed = wins + losses;
+        const winRate = total_closed > 0 ? (wins / total_closed * 100) : 0;
+        const avgPnl = total_closed > 0 ? (total_pnl / total_closed) : 0;
+        const wrEl = document.getElementById('valWinRate');
+        if (wrEl) { wrEl.innerHTML = `${winRate.toFixed(1)}%`; wrEl.className = winRate >= 50 ? 'value good' : 'value bad'; }
+        document.getElementById('valWinMeta').innerHTML = `W: ${wins} | L: ${losses} | Avg: $${avgPnl.toFixed(4)}`;
 
+        // Fees
+        const totalFees = totalFeeEntry + totalFeeExit;
+        const feesEl = document.getElementById('valFees');
+        if (feesEl) { feesEl.innerHTML = `$${totalFees.toFixed(4)}`; feesEl.className = 'value bad'; }
+        document.getElementById('valFeesMeta').innerHTML = `Entry: $${totalFeeEntry.toFixed(4)} | Exit: $${totalFeeExit.toFixed(4)}`;
+
+        // Daily session
+        const daily = meta.daily_session || {};
+        latestDailyBaseline = Number(daily.baseline_wallet || baseWallet);
+        latestDailyTarget = Number(daily.target_wallet || latestDailyBaseline * 2.0);
+
+        // Circuit Breaker
+        const last_cycle = cycleRowsCache[0];
+        const gateOpen = last_cycle ? (last_cycle.entry_gate_open !== false) : (daily.entry_gate_open !== false);
+        const gateReason = last_cycle?.entry_gate_reason || daily.entry_gate_reason || 'unknown';
+        const cbEl = document.getElementById('valCB');
+        if (cbEl) {
+            cbEl.innerHTML = gateOpen ? '✅ OPEN' : '🔒 TRIPPED';
+            cbEl.className = gateOpen ? 'value cb-open' : 'value cb-closed';
+        }
+        const openCostBasis = latestPositions.reduce((s, p) => s + Number(p.cost_basis || 0), 0);
+        const currentTotal = cash + openCostBasis;
+        const dailyPnl = currentTotal - latestDailyBaseline;
+        document.getElementById('valCBMeta').innerHTML = `Gate: <strong>${escapeHtml(gateReason)}</strong> | Day ΔP: ${dailyPnl >= 0 ? '+' : ''}$${dailyPnl.toFixed(4)}`;
+
+        // Bot Health
+        lastCycleTs = last_cycle ? new Date(last_cycle.timestamp) : null;
+        updateBotHealth();
+
+        // Wallet mode
         document.getElementById('posCountBadge').innerHTML = latestPositions.length;
         document.getElementById('valWalletMode').innerHTML = `Base: $${baseWallet.toFixed(4)} | Cash: $${cash.toFixed(4)}`;
-        document.getElementById('valDailyGate').innerHTML = `Baseline: $${latestDailyBaseline.toFixed(4)} | Gate: ${daily.entry_gate_open !== false ? 'OPEN' : 'CLOSED'}`;
-        
+        document.getElementById('valDailyGate').innerHTML = `Baseline: $${latestDailyBaseline.toFixed(4)} | Gate: ${gateOpen ? '<span style="color:#34d399">OPEN</span>' : '<span style="color:#f87171">CLOSED</span>'}`;
+
+        // Tuner
         const tuner = meta.auto_tuner || {};
         const sum = tuner.summary || {};
-        document.getElementById('valTuner').innerHTML = `A:${sum.aggressive || 0} | C:${sum.cautious || 0} | B:${sum.blacklist || 0}`;
-        document.getElementById('valTunerMeta').innerHTML = `Tracked: ${sum.cities_total || 0} | Min: ${tuner.min_trades || 0}`;
+        document.getElementById('valTuner').innerHTML = `A:${sum.aggressive||0} | C:${sum.cautious||0} | B:${sum.blacklist||0}`;
+        document.getElementById('valTunerMeta').innerHTML = `Tracked: ${sum.cities_total||0} | Min: ${tuner.min_trades||0}`;
 
-        const last_cycle = cycleRowsCache[0];
+        // Last cycle stats
         if (last_cycle) {
-            document.getElementById('valLastRun').innerHTML = new Date(last_cycle.timestamp).toLocaleString();
-            let cov = last_cycle.city_coverage || {};
-            document.getElementById('valCoverage').innerHTML = `Coverage: ${cov.unique_opportunity_cities}/${cov.min_city_target}`;
+            const cov = last_cycle.city_coverage || {};
+            const skipped = (last_cycle.counts?.skipped || 0) + (last_cycle.counts?.exact_skipped || 0);
+            document.getElementById('valCycleStats').innerHTML = `Opps: ${last_cycle.counts?.opportunities||0} | Opened: ${last_cycle.counts?.opened||0}`;
+            document.getElementById('valCycleMeta').innerHTML = `Cities: ${cov.unique_opportunity_cities||'-'}/${cov.min_city_target||'-'} | Skip: ${skipped}`;
+            document.getElementById('valLastRun').innerHTML = `Last cycle: ${fmtWib(last_cycle.timestamp)}`;
         } else if (data.updated_at) {
-            document.getElementById('valLastRun').innerHTML = new Date(data.updated_at).toLocaleString();
-            document.getElementById('valCoverage').innerHTML = `Discovery in progress...`;
+            document.getElementById('valLastRun').innerHTML = `Updated: ${fmtWib(data.updated_at)}`;
         }
 
+        // History table
         const tHist = document.getElementById('historyTable');
         tHist.innerHTML = "";
         document.getElementById('closedCountBadge').innerHTML = d_closed.length;
         if (!d_closed.length) {
-            tHist.innerHTML = "<tr><td colspan='6' style='text-align:center;'>No history.</td></tr>";
+            tHist.innerHTML = "<tr><td colspan='7' style='text-align:center;'>No history.</td></tr>";
         } else {
             [...d_closed].sort((a,b) => new Date(b.closed_at) - new Date(a.closed_at)).slice(0, 50).forEach(pos => {
-                const rPnl = pos.realized_pnl_usd || 0;
+                const rPnl = Number(pos.realized_pnl_usd || 0);
+                const roi = Number(pos.realized_roi_pct || 0);
+                const netExit = Number(pos.net_exit_value || pos.exit_value || 0);
                 const pnlCls = rPnl >= 0 ? "good" : "bad";
-                tHist.innerHTML += `<tr><td><strong>${escapeHtml(getMarketLabel(pos))}</strong><br><small>${escapeHtml(pos.city || '').toUpperCase()}</small></td><td>$${(pos.entry_price || 0).toFixed(4)}</td><td>$${(pos.exit_price || 0).toFixed(4)}</td><td class="${pnlCls}"><strong>$${rPnl.toFixed(4)}</strong></td><td><span class="badge mode-auto">Temp ${pos.direction==='above'?'≥':'≤'} ${pos.threshold || ''}</span></td><td><small>${new Date(pos.closed_at).toLocaleString()}</small><br><small style="color:#cf6679">${(pos.close_reason || '').toUpperCase()}</small></td></tr>`;
+                const totalFee = Number(pos.entry_fee_usd||0) + Number(pos.exit_fee_usd||0);
+                const duration = (pos.opened_at && pos.closed_at)
+                    ? fmtDuration(new Date(pos.closed_at) - new Date(pos.opened_at)) : '-';
+                const reasonCls = pos.close_reason === 'take_profit_100pct' ? 'pill-green'
+                    : pos.close_reason === 'stop_loss' ? 'pill-red'
+                    : pos.close_reason === 'hold_to_resolve' ? 'pill-blue' : 'pill-yellow';
+                tHist.innerHTML += `
+                    <tr>
+                        <td>
+                            <strong>${escapeHtml(getMarketLabel(pos))}</strong><br>
+                            <small style="color:#94a3b8">${escapeHtml(pos.city||'').toUpperCase()} · ${pos.date||''}</small>
+                        </td>
+                        <td>
+                            <span style="color:#94a3b8">In: $${Number(pos.entry_price||0).toFixed(4)}</span><br>
+                            <span style="color:#e2e8f0">Out: $${Number(pos.exit_price||0).toFixed(4)}</span>
+                        </td>
+                        <td class="${pnlCls}"><strong>${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</strong></td>
+                        <td class="${pnlCls}"><strong>$${rPnl.toFixed(4)}</strong></td>
+                        <td style="color:#fbbf24">$${totalFee.toFixed(4)}</td>
+                        <td><small>${duration}</small></td>
+                        <td>
+                            <span class="pill ${reasonCls}">${escapeHtml((pos.close_reason||'').replace(/_/g,' ').toUpperCase())}</span><br>
+                            <small style="color:#64748b">${fmtWib(pos.closed_at)}</small>
+                        </td>
+                    </tr>`;
             });
         }
 
+        latestTotalWallet = currentTotal;
         updateAggregateCards();
         renderPositionsTable();
         renderCycleTable();
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error('[fetchData]', e); }
+}
+
+function updateBotHealth() {
+    const healthEl = document.getElementById('valBotHealth');
+    const metaEl = document.getElementById('valBotMeta');
+    if (!healthEl || !metaEl) return;
+    if (!lastCycleTs) { healthEl.innerHTML = 'No cycle yet'; return; }
+    const ageMs = Date.now() - lastCycleTs.getTime();
+    const ageS = Math.floor(ageMs / 1000);
+    const nextInS = Math.max(0, PAPER_LOOP_INTERVAL_S - ageS);
+    const isStale = ageS > PAPER_LOOP_INTERVAL_S * 2;
+    healthEl.innerHTML = isStale
+        ? `<span class="cb-closed">⚠️ STALE ${fmtDuration(ageMs)}</span>`
+        : `<span class="cb-open">✅ ${fmtDuration(ageMs)} ago</span>`;
+    metaEl.innerHTML = `Next cycle ~${fmtDuration(nextInS * 1000)} | Last: ${fmtWib(lastCycleTs.toISOString())}`;
 }
 
 function updateRealtimeClocks() {
     const now = new Date();
-    const fmt = (tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(now);
-    document.getElementById('valUtcClock').innerHTML = fmt('UTC');
-    document.getElementById('valEtClock').innerHTML = fmt('America/New_York');
-    document.getElementById('valUtcDate').innerHTML = 'UTC Timezone';
-    document.getElementById('valEtDate').innerHTML = 'ET Washington';
+    const fmtTime = (tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(now);
+    const fmtDate = (tz) => new Intl.DateTimeFormat('id-ID', { timeZone: tz, weekday: 'short', day: '2-digit', month: 'short' }).format(now);
+    const utcEl = document.getElementById('valUtcClock');
+    if (utcEl) utcEl.innerHTML = fmtTime('UTC');
+    const wibEl = document.getElementById('valWibClock');
+    if (wibEl) wibEl.innerHTML = fmtTime('Asia/Jakarta');
+    const wibDate = document.getElementById('valWibDate');
+    if (wibDate) wibDate.innerHTML = `WIB · ${fmtDate('Asia/Jakarta')}`;
+    updateBotHealth();
 }
 
 // [MODUL J] Emergency Kill-Switch
@@ -593,10 +811,12 @@ function triggerKillSwitch() {
 }
 
 fetchData();
+fetchLogs();
 connectBrowserWs();
 updateRealtimeClocks();
 setInterval(fetchData, 10000);
 setInterval(updateRealtimeClocks, 1000);
+setInterval(fetchLogs, 30000);
 </script>
 </body>
 </html>
