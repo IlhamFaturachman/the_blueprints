@@ -22,28 +22,7 @@ def _env_bool(name, default=False):
 GAMMA_API = "https://gamma-api.polymarket.com/markets"
 GAMMA_EVENTS_API = "https://gamma-api.polymarket.com/events/pagination"
 CLOB_BOOK_API = os.getenv("CLOB_BOOK_API", "https://clob.polymarket.com/book")
-POLYMARKET_CLOB_API_URL = "https://clob.polymarket.com"
-CURRENT_REGIME_CONFIG = {
-    "normal": {
-        "max_slippage": 0.05,
-        "min_liquidity_usd": 100
-    },
-    "aggressive": {
-        "max_slippage": 0.10,
-        "min_liquidity_usd": 50
-    },
-    "defensive": {
-        "max_slippage": 0.02,
-        "min_liquidity_usd": 500
-    }
-}
-OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
-OPEN_METEO_HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
-OPEN_METEO_API = OPEN_METEO_FORECAST_URL
-
-# Model & Liquidity Hardening
-MODEL_EXACT_SIGMA_C = 0.5  # Standard deviation for Gaussian probability
-LIQUIDITY_DEPTH_MULTIPLIER = 1.2  # Safety buffer for orderbook depth
+OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 LOG_FILE = "logs/unmatched_markets.log"
 
 # Target cities with hardcoded coordinates (lat, lon) and ICAO codes for API matching.
@@ -220,9 +199,9 @@ PAPER_BASE_WALLET = max(
 PAPER_MIN_CITY_DIVERSITY = max(1, int(os.getenv("PAPER_MIN_CITY_DIVERSITY", "5")))
 PAPER_ENTRY_MIN_PRICE = float(os.getenv("PAPER_ENTRY_MIN_PRICE", "0.05"))
 PAPER_ENTRY_MAX_PRICE = float(os.getenv("PAPER_ENTRY_MAX_PRICE", "0.65"))
-MAX_ACCEPTABLE_SLIPPAGE = float(os.getenv("MAX_ACCEPTABLE_SLIPPAGE", "0.05"))
-LIQUIDITY_DEPTH_MULTIPLIER = float(os.getenv("LIQUIDITY_DEPTH_MULTIPLIER", "1.0"))
-MIN_STAKE_THRESHOLD = float(os.getenv("MIN_STAKE_THRESHOLD", "0.50"))  # Hard floor — skip dust stakes below USD 0.50
+MAX_ACCEPTABLE_SLIPPAGE = float(os.getenv("MAX_ACCEPTABLE_SLIPPAGE", "0.03"))
+LIQUIDITY_DEPTH_MULTIPLIER = float(os.getenv("LIQUIDITY_DEPTH_MULTIPLIER", "2.0"))
+MIN_STAKE_THRESHOLD = float(os.getenv("MIN_STAKE_THRESHOLD", "1.0"))  # Hard floor — skip dust stakes below USD 1.00
 
 # Exact-bracket market liquidity gate (uses Gamma bestAsk/spread fields)
 MARKET_MAX_SPREAD_GATE = float(os.getenv("MARKET_MAX_SPREAD_GATE", "0.12"))

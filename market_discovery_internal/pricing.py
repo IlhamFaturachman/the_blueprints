@@ -175,9 +175,14 @@ def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
         
         total_depth_usd = 0.0
         for level in asks:
-            # level format: [price, size]
-            price = float(level[0])
-            size = float(level[1])
+            # Polymarket CLOB can return [price, size] OR {"price": "...", "size": "..."}
+            if isinstance(level, dict):
+                price = float(level.get("price", 0))
+                size = float(level.get("size", 0))
+            else:
+                price = float(level[0])
+                size = float(level[1])
+
             if price > max_price_allowed:
                 break
             total_depth_usd += (price * size)

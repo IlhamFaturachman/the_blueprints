@@ -1,8 +1,6 @@
 """
 ws_price_watcher.py — Real-time YES token price monitor via Polymarket WebSocket.
-
-Subscribes to the CLOB market channel for open position token IDs.
-Uses MULTIPROCESSING to ensure zero-lag price monitoring, bypassing the Python GIL.
+Hardened for absolute stability and safe process termination.
 """
 
 import json
@@ -34,10 +32,6 @@ class PriceWatcher:
         self._ping_interval = ping_interval
         self._watchdog_timeout = watchdog_timeout
 
-        # Shared state between main process and subprocess.
-        # Use a Queue for subscription updates to avoid multiprocessing.Manager()
-        # which spawns a non-daemon SyncManager process that becomes an orphan
-        # when the service is restarted by systemd.
         self._sub_update_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._stop_event = multiprocessing.Event()
         self._process: multiprocessing.Process | None = None
@@ -56,14 +50,25 @@ class PriceWatcher:
         logger.info("[WS-MPC] PriceWatcher process started (PID %d)", self._process.pid)
 
     def stop(self) -> None:
-        """Signal the watcher to stop and terminate the process."""
+        """Signal the watcher to stop and terminate the process with hardened cleanup."""
         self._stop_event.set()
-        if self._process:
-            self._process.terminate()
-            self._process.join(timeout=2)
-            if self._process.is_alive():
-                self._process.kill()
-        logger.info("[WS-MPC] PriceWatcher stopped")
+        
+        p = self._process
+        if p is not None:
+            try:
+                # We do NOT call self.stop() or any global _ws_watcher.stop() here to avoid recursion.
+                if p.is_alive():
+                    logger.info("[WS-MPC] Terminating watcher process %d...", p.pid)
+                    p.terminate()
+                    p.join(timeout=5)  # Increased timeout for safer cleanup
+                    if p.is_alive():
+                        p.kill()
+            except (AttributeError, Exception) as e:
+                logger.warning("[WS-MPC] Error during process termination: %s", e)
+            finally:
+                self._process = None
+        
+        logger.info("[WS-MPC] PriceWatcher cleanup complete.")
 
     def update_subscriptions(self, token_ids: set) -> None:
         """Send a subscription update to the watcher subprocess via queue."""
@@ -71,7 +76,6 @@ class PriceWatcher:
             self._sub_update_queue.put_nowait(list(token_ids))
         except Exception as exc:
             logger.warning("[WS-MPC] Could not queue subscription update: %s", exc)
-        logger.debug("[WS-MPC] Subscriptions update queued: %d IDs", len(token_ids))
 
     def _run_loop(self) -> None:
         """Internal subprocess loop — handles connection and watchdog."""
@@ -83,7 +87,6 @@ class PriceWatcher:
         internal_log_path = os.path.join(log_dir, "ws_internal.log")
         ilogger = logging.getLogger("PriceWatcherSub")
         ilogger.setLevel(logging.INFO)
-        # Avoid duplicate handlers if loop restarts within same process (unlikely but safe)
         if not ilogger.handlers:
             fh = logging.handlers.RotatingFileHandler(internal_log_path, maxBytes=1024*1024*5, backupCount=2)
             fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
@@ -97,7 +100,6 @@ class PriceWatcher:
             ilogger.error("[WS-MPC] websocket-client NOT INSTALLED.")
             return
 
-        # DNS/IPv4 Workaround
         parsed_host = (urlparse(self._url).hostname or "").lower()
         original_getaddrinfo = socket.getaddrinfo
         def _prefer_ipv4(host, port, family=0, type=0, proto=0, flags=0):
@@ -109,11 +111,11 @@ class PriceWatcher:
 
         self._last_msg_at = time.time()
         current_subs = set()
-        desired_subs = set()  # Tracks the latest desired subscription set
+        desired_subs = set()
 
         while not self._stop_event.is_set():
             try:
-                ilogger.info("[WS-MPC] Connecting to %s (with SSL Tweak)", self._url)
+                ilogger.info("[WS-MPC] Connecting to %s", self._url)
                 import ssl
                 ws = websocket.WebSocketApp(
                     self._url,
@@ -123,117 +125,107 @@ class PriceWatcher:
                     on_close=lambda w, c, m: self._on_close(w, c, m, current_subs, ilogger),
                 )
 
-                # SSL context: full verification by default.
-                # Set env WS_TLS_NO_VERIFY=1 only as debug opt-in (never in production).
                 ssl_context = ssl.create_default_context()
                 if os.environ.get("WS_TLS_NO_VERIFY") == "1":
-                    ilogger.warning("[WS-MPC] TLS verification DISABLED via WS_TLS_NO_VERIFY=1 — debug only!")
                     ssl_context.check_hostname = False
                     ssl_context.verify_mode = ssl.CERT_NONE
 
                 def watchdog_fn():
                     while ws.sock and ws.sock.connected:
                         if time.time() - self._last_msg_at > self._watchdog_timeout:
-                            ilogger.warning("[WS-MPC] WATCHDOG TIMEOUT (%ds). Closing.", self._watchdog_timeout)
                             ws.close()
                             break
-
-                        # Drain subscription updates from queue (last write wins)
                         latest = None
                         while not self._sub_update_queue.empty():
-                            try:
-                                latest = self._sub_update_queue.get_nowait()
-                            except Exception:
-                                pass
+                            try: latest = self._sub_update_queue.get_nowait()
+                            except: pass
                         if latest is not None:
                             desired_subs.clear()
                             desired_subs.update(latest)
-
                         to_add = desired_subs - current_subs
                         to_remove = current_subs - desired_subs
-
                         if to_add:
                             self._send_op(ws, list(to_add), "subscribe", ilogger)
                             current_subs.update(to_add)
                         if to_remove:
                             self._send_op(ws, list(to_remove), "unsubscribe", ilogger)
                             current_subs.difference_update(to_remove)
-
                         time.sleep(1)
 
                 threading.Thread(target=watchdog_fn, daemon=True).start()
-                
-                ws.run_forever(
-                    ping_interval=self._ping_interval,
-                    ping_timeout=max(10, self._ping_interval // 2),
-                    sslopt={"context": ssl_context}
-                )
+                ws.run_forever(ping_interval=self._ping_interval, sslopt={"context": ssl_context})
             except Exception as e:
                 ilogger.error("[WS-MPC] Connection loop error: %s", e)
             
             if self._stop_event.is_set(): break
-            backoff = self._reconnect_delay + random.uniform(0, 5)
-            ilogger.info("[WS-MPC] Retrying in %.1fs...", backoff)
-            time.sleep(backoff)
+            time.sleep(self._reconnect_delay + random.uniform(0, 5))
 
     def _on_message(self, ws, raw: str, ilogger: logging.Logger):
         self._last_msg_at = time.time()
         try:
             msg = json.loads(raw)
         except: return
-
+        
+        # Polymarket often sends single objects or lists
         events = msg if isinstance(msg, list) else [msg]
         for event in events:
             if not isinstance(event, dict): continue
             etype = event.get("event_type")
             
-            # Polymarket use best_bid_ask or price_change
-            if etype == "best_bid_ask":
-                tid = event.get("asset_id")
-                bid = event.get("best_bid")
-                if tid and bid is not None:
-                    self._update_queue.put((tid, float(bid)))
-            elif etype == "price_change":
-                for c in event.get("price_changes", []):
-                    tid = c.get("asset_id")
-                    bid = c.get("best_bid") or c.get("price")
+            # Match Polymarket CLI/WS event types
+            if etype in ["best_bid_ask", "price_change"]:
+                # If price_change, prices are in nested price_changes list
+                if etype == "price_change":
+                    for c in event.get("price_changes", []):
+                        tid = c.get("asset_id")
+                        # Priority: best_bid > price
+                        price_val = c.get("best_bid") or c.get("price")
+                        if tid and price_val is not None:
+                            try:
+                                self._update_queue.put((tid, float(price_val)))
+                            except: pass
+                else:
+                    # best_bid_ask direct format
+                    tid = event.get("asset_id")
+                    bid = event.get("best_bid")
                     if tid and bid is not None:
-                        self._update_queue.put((tid, float(bid)))
+                        try:
+                            self._update_queue.put((tid, float(bid)))
+                        except: pass
 
-    def _on_open(self, ws, current_subs: set, desired_subs: set, ilogger: logging.Logger):
-        # Drain any queued updates before subscribing on (re)connect
+    def _on_open(self, ws, current_subs, desired_subs, ilogger):
         latest = None
         while not self._sub_update_queue.empty():
-            try:
-                latest = self._sub_update_queue.get_nowait()
-            except Exception:
-                pass
+            try: latest = self._sub_update_queue.get_nowait()
+            except: pass
         if latest is not None:
             desired_subs.clear()
             desired_subs.update(latest)
-
-        ilogger.info("[WS-MPC] Connected. Syncing %d subscriptions", len(desired_subs))
         if desired_subs:
             self._send_op(ws, list(desired_subs), "subscribe", ilogger)
-            current_subs.clear()
-            current_subs.update(desired_subs)
+            current_subs.clear(); current_subs.update(desired_subs)
 
-    def _on_close(self, ws, code, msg, current_subs: set, ilogger: logging.Logger):
-        ilogger.info("[WS-MPC] Closed: %s (code: %s)", msg, code)
+    def _on_close(self, ws, code, msg, current_subs, ilogger):
         current_subs.clear()
 
-    def _send_op(self, ws, ids: list, op: str, ilogger: logging.Logger):
-        msg = json.dumps({
-            "assets_ids": ids,
+    def _send_op(self, ws, ids, op, ilogger):
+        # op is 'subscribe' or 'unsubscribe'
+        # Polymarket CLOB WS requirement: custom_feature_enabled: True for price_change events
+        payload = {
             "type": "market",
-            "operation": op,
-            "custom_feature_enabled": True if op == "subscribe" else False
-        })
+            "assets_ids": ids,
+            "custom_feature_enabled": True
+        }
+        
+        # If the server strictly wants 'subscribe'/'unsubscribe' as a top-level operation for legacy fallbacks:
+        # payload["operation"] = op 
+        
+        msg = json.dumps(payload)
         try:
             ws.send(msg)
-            ilogger.info("[WS-MPC] SENT %s for %d assets", op.upper(), len(ids))
-        except Exception as exc:
-            ilogger.warning("[WS-MPC] Send %s failed: %s", op, exc)
+            # ilogger.info("[WS-MPC] Sent %s for %d assets", op, len(ids))
+        except Exception as e:
+            ilogger.warning("[WS-MPC] Send error: %s", e)
 
 
 def make_ws_exit_callback(state_path: str, lock, broadcaster=None):

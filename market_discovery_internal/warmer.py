@@ -1,5 +1,10 @@
+"""
+Background 'Gudang Data Warmer' service to pre-populate the SQLite warehouse.
+Ensures discovery cycles stay fast by having weather data ready in advance.
+"""
+
 import time
-import threading
+import logging
 from datetime import datetime, timedelta, timezone
 from market_discovery_internal.config import TARGET_CITIES
 from market_discovery_internal.database_manager import db
@@ -7,80 +12,87 @@ from market_discovery_internal.forecasting import (
     _fetch_bulk_historical_weather, _fetch_bulk_forecasts
 )
 
+logger = logging.getLogger(__name__)
+
 class GudangDataWarmer:
-    """
-    Background service that pre-populates the SQLite Warehouse with 
-    historical data and future forecasts to enable 'Instant Filtering'.
-    """
-    
-    def __init__(self, interval_hours=2):
-        self.interval_hours = interval_hours
-        self.running = False
-        self._thread = None
+    def __init__(self, check_interval_hours=2):
+        self.check_interval_hours = check_interval_hours
+        self.is_running = False
+        self._last_429_time = 0
 
     def start(self):
-        if not self.running:
-            self.running = True
-            self._thread = threading.Thread(target=self._run_loop, daemon=True)
-            self._thread.start()
-            print("[WARMER] Gudang Data Warmer service started.")
-
-    def _run_loop(self):
-        while self.running:
+        """Start the background warming loop."""
+        self.is_running = True
+        logger.info(f"GudangDataWarmer started. Interval: {self.check_interval_hours}h")
+        
+        while self.is_running:
             try:
-                self.perform_warming_cycle()
+                # [MODUL L] Process Watchdog Update
+                db.update_heartbeat("warmer")
+                
+                # Cooldown check for 429s (10 minute silent period if tripped)
+                if (time.time() - self._last_429_time) < 600:
+                    time.sleep(60)
+                    continue
+
+                self.warm_all_cities()
+                
+                logger.debug(f"Warming cycle complete. Sleeping for {self.check_interval_hours}h...")
+                time.sleep(self.check_interval_hours * 3600)
             except Exception as e:
-                print(f"[WARMER] Warming cycle error: {e}")
-            
-            print(f"[WARMER] Cycle complete. Sleeping for {self.interval_hours} hours.")
-            time.sleep(self.interval_hours * 3600)
+                logger.error(f"GudangDataWarmer loop error: {e}")
+                time.sleep(300)
 
-    def perform_warming_cycle(self):
-        print(f"--- [WARMER] Warming Cycle Start: {datetime.now().strftime('%H:%M:%S')} ---")
-        
-        # We warm the next 10 days for all cities (increased window for buffer)
-        dates = [(datetime.now(timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(11)]
+    def warm_all_cities(self):
+        """Warm both historical and forecast data for all target cities."""
         cities = list(TARGET_CITIES.keys())
+        today = datetime.now(timezone.utc).date()
         
-        for date in dates:
-            # [MODUL L] Heartbeat Pulse per date (Granular monitoring)
-            db.update_heartbeat("warmer")
-            
+        # 1. Warm Forecasts (Today + next 3 days)
+        for i in range(4):
+            target_date = (today + timedelta(days=i)).isoformat()
+            logger.info(f"[WARMER] Warming forecasts for {target_date}...")
             try:
-                month_day = date[5:]
-                
-                # 1. Identify missing historical data for this date across all cities
-                missing_hist_cities = []
-                for city in cities:
-                    if not db.get_weather(city, month_day):
-                        missing_hist_cities.append(city)
-                
-                if missing_hist_cities:
-                    print(f"[WARMER] Fetching bulk historical for {len(missing_hist_cities)} cities on {date}...")
-                    _fetch_bulk_historical_weather(missing_hist_cities, date)
-                    # Aggregation Muzzle: Only 1 request per date instead of 31.
-                    time.sleep(30.0) 
-                
-                # 2. Identify missing forecasts for this date across all cities
-                missing_forecast_cities = []
-                for city in cities:
-                    # TTL 2 hours for warmer
-                    if not db.get_cached_forecast(city, date, ttl_seconds=7200):
-                        missing_forecast_cities.append(city)
-                
-                if missing_forecast_cities:
-                    print(f"[WARMER] Fetching bulk forecast for {len(missing_forecast_cities)} cities on {date}...")
-                    _fetch_bulk_forecasts(missing_forecast_cities, date)
-                    time.sleep(10.0)
-
+                # [MODUL U] Bulk Fetch: Collapse N requests into 1
+                res = _fetch_bulk_forecasts(cities, target_date)
+                # Polite Sleep to avoid 429 during bulk burst
+                time.sleep(20) 
             except Exception as e:
                 if "429" in str(e):
-                    print(f"[WARMER] Circuit Breaker Tripped (429 detected). Cooling down cycle: {e}")
-                    time.sleep(300) # Wait 5 mins before next date
-                    continue
-                print(f"[WARMER] Date-specific error ({date}): {e}")
+                    self._last_429_time = time.time()
+                    logger.warning("[WARMER] 429 Tripped during Forecast bulk. Cooldown active.")
+                    return
+                logger.error(f"[WARMER] Forecast warm error for {target_date}: {e}")
 
-        print(f"--- [WARMER] Warming Cycle Complete: {datetime.now().strftime('%H:%M:%S')} ---")
+        # 2. Warm Historical Averages (Today + next 14 days)
+        for i in range(15):
+            target_date = (today + timedelta(days=i)).isoformat()
+            month_day = target_date[5:]
+            
+            cities_needed = []
+            for city in cities:
+                if not db.get_weather(city, month_day):
+                    cities_needed.append(city)
+            
+            if not cities_needed:
+                continue
+                
+            logger.info(f"[WARMER] Warming historical ({len(cities_needed)} cities) for {month_day}...")
+            try:
+                _fetch_bulk_historical_weather(cities_needed, target_date)
+                # [MODUL L] Aggressive Throttling for historical fetches
+                time.sleep(60) 
+            except Exception as e:
+                if "429" in str(e):
+                    self._last_429_time = time.time()
+                    logger.warning("[WARMER] 429 Tripped during Historical bulk. Cooldown active.")
+                    return
+                logger.error(f"[WARMER] Historical warm error for {target_date}: {e}")
 
-# Singleton instance
+    def stop(self):
+        """Gracefully stop the warmer."""
+        self.is_running = False
+        logger.info("GudangDataWarmer stopping...")
+
+# Singleton instance for module-level access
 warmer = GudangDataWarmer()
