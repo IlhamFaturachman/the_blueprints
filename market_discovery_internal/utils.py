@@ -44,7 +44,7 @@ def send_telegram_alert(message, is_html=True):
         "chat_id": str(TELEGRAM_CHAT_ID),
         "text": message,
         "parse_mode": "HTML" if is_html else None,
-        "disable_web_page_preview": False
+        "disable_web_page_preview": True
     }
     try:
         requests.post(url, json=payload, timeout=5)
