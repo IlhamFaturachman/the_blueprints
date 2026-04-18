@@ -3,25 +3,34 @@
 import time
 import json
 import os
+import string
 from datetime import datetime, timezone
 import requests
 
 from market_discovery_internal.config import LOG_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
-def load_telegram_template(category, type_name, **kwargs):
-    """Load a telegram message template from telegram_msg/{category}/{type_name}.html and format it."""
-    base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "telegram_msg")
-    file_path = os.path.join(base_dir, category, f"{type_name}.html")
+class SafeFormatter(string.Formatter):
+    def get_value(self, key, args, kwargs):
+        if isinstance(key, str):
+            return kwargs.get(key, f"[{key} N/A]")
+        return string.Formatter.get_value(self, key, args, kwargs)
+
+def load_telegram_template(category: str, type_name: str, **kwargs) -> str:
+    """
+    Loads an HTML template and injects variables safely.
+    Path: telegram_msg/{category}/{type_name}.html
+    """
+    template_path = os.path.join("telegram_msg", category, f"{type_name}.html")
     
-    if not os.path.exists(file_path):
-        return f"Error: Template {category}/{type_name} not found."
+    if not os.path.exists(template_path):
+        return f"⚠️ Template not found: {template_path}"
     
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            template = f.read()
-        return template.format(**kwargs)
+        with open(template_path, "r") as f:
+            template_content = f.read()
+            return SafeFormatter().format(template_content, **kwargs)
     except Exception as e:
-        return f"Error formatting template {category}/{type_name}: {str(e)}"
+        return f"❌ Error rendering template {category}/{type_name}: {str(e)}"
 
 def send_telegram_alert(message, is_html=True):
     """[MODUL N] Send push notification via Telegram Bot API."""
