@@ -140,6 +140,11 @@ def enrich_discovery_markets(
         if total_parsed > 20 and i % 25 == 0:
              print(f"[MODUL C] Enrichment progress: {i}/{total_parsed} markets...", flush=True)
 
+        # [MODUL L] Rate Limit Shield: Dampen burst requests to provider
+        if i % 5 == 0:
+            import time
+            time.sleep(0.5)
+
         city = market["city"]
         date = market["date"]
         forecast_temp = fetch_forecast_with_cache_fn(
@@ -874,13 +879,13 @@ def run_paper_trading_cycle(
         current_stake_usd = 2.0 if wallet_after_position_management >= 12.0 else 1.0
 
     # [SAFE LEVERAGE CAP] Ensure Total Exposure <= Available Cash
-    # Use actual cash (base + realized - already-deployed cost) not wallet, so fees
-    # from open positions don't cause cash to go negative.
-    # Account for max risk multiplier (1.5x) and fee overhead (5%) so cost_basis
-    # never exceeds cash even after per-position sizing adjustments.
+    # Use actual cash balance. Formula: Total Equity - Current Deployment Cost.
+    _open_exposure = sum(float(p.get("cost_basis", 0.0) or 0.0) for p in next_open_positions)
+    available_cash = round(wallet_after_position_management - _open_exposure, 4)
+
     from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE
     _MAX_EFFECTIVE_OVERHEAD = 1.5 * (1.0 + POLYMARKET_TAKER_FEE_RATE)  # ~1.575
-    available_cash = float(state_meta.get("cash", wallet_after_position_management))
+    
     max_total_exposure = max(0.0, available_cash)
     if max_total_exposure <= 0.0:
         # No cash left — block all new entries this cycle
