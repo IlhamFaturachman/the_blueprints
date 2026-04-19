@@ -43,7 +43,6 @@ OPEN_METEO_API = OPEN_METEO_FORECAST_URL
 
 # Model & Liquidity Hardening
 MODEL_EXACT_SIGMA_C = 0.5  # Standard deviation for Gaussian probability
-LIQUIDITY_DEPTH_MULTIPLIER = 1.2  # Safety buffer for orderbook depth
 LOG_FILE = "logs/unmatched_markets.log"
 
 # Target cities with hardcoded coordinates (lat, lon) and ICAO codes for API matching.
