@@ -10,7 +10,7 @@ from market_discovery_internal.config import (
     HYBRID_MIN_CONFIDENCE_TO_HOLD, HYBRID_CONFIDENCE_EDGE_SCALE,
     PAPER_STAKE_USD, PAPER_BASE_WALLET, PAPER_MAX_OPEN_PER_CITY,
     MARKET_MAX_SPREAD_GATE, MIN_STAKE_THRESHOLD, PAPER_STAKE_INCLUSIVE,
-    WHIPLASH_COOLDOWN_HOURS
+    WHIPLASH_COOLDOWN_HOURS, STRATEGY_MIN_STAKE_USD, STRATEGY_MIN_SHARES
 )
 from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
@@ -1195,18 +1195,32 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
     # For paper trading, we simulate paying slightly more than best_ask (slippage).
     effective_price = round(entry_price * 1.01, 4)
 
-    # [FIX] Inclusive Stake Logic: Shares + Fee = Stake_USD
-    # Formula: total = Q*P + Q*r*P*(1-P) = Q*P*(1 + r*(1-P))
-    # Q = total / (P * (1 + r*(1-P)))
-    if PAPER_STAKE_INCLUSIVE:
-        denominator = effective_price * (1.0 + POLYMARKET_TAKER_FEE_RATE * (1.0 - effective_price))
-        quantity = round(float(stake_usd) / denominator, 6)
-    else:
-        quantity = round(float(stake_usd) / effective_price, 6)
+    # [LIVE-READY] Quantity Calculation with Integers and Floors
+    # Rule: Must be at least STRATEGY_MIN_SHARES and at least STRATEGY_MIN_STAKE_USD in cost.
+    # Total = Q * P * (1 + fee_overhead). Q = Total / (P * (1+overhead))
+    _fee_mult = 1.0 + POLYMARKET_TAKER_FEE_RATE * (1.0 - effective_price)
+    
+    # Initial target quantity from stake or $1.00 floor
+    target_usd = max(float(stake_usd), STRATEGY_MIN_STAKE_USD)
+    _raw_qty = target_usd / (effective_price * _fee_mult)
+    
+    # Enforce integer rounding (ceil) and share floor
+    import math
+    quantity = float(max(STRATEGY_MIN_SHARES, math.ceil(_raw_qty)))
 
     shares_cost = round(quantity * effective_price, 4)
     entry_fee_usd = calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
     cost_basis = round(shares_cost + entry_fee_usd, 4)
+    
+    # [LIVE-READY] Final Floor Check: If cost_basis < $1.00 (e.g. very cheap shares), 
+    # we must buy more shares to reach $1.00.
+    if cost_basis < STRATEGY_MIN_STAKE_USD:
+        # Calculate how many more shares needed to hit $1.00 cost
+        _needed_qty = math.ceil(STRATEGY_MIN_STAKE_USD / (effective_price * _fee_mult))
+        quantity = float(max(quantity, _needed_qty))
+        shares_cost = round(quantity * effective_price, 4)
+        entry_fee_usd = calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
+        cost_basis = round(shares_cost + entry_fee_usd, 4)
     
     # Final clamping to ensure we NEVER exceed stake_usd when inclusive is on
     if PAPER_STAKE_INCLUSIVE and cost_basis > float(stake_usd):
