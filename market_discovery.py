@@ -246,7 +246,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
             build_weather_evidence_fn=build_weather_evidence,
             is_weather_evidence_valid_fn=is_weather_evidence_valid,
             position_to_market_fn=position_to_market,
-            calculate_edge_fn=calculate_edge,
+            calculate_edge_fn=lambda *a, **kw: calculate_edge(*a, k_factor_override=0.8, **kw),
             **kwargs
         ),
         position_confidence_score_fn=_position_confidence_score, 

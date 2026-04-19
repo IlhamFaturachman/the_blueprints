@@ -449,32 +449,35 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
             "Return ONLY: {\"action\": \"hold\"|\"close\", \"confidence\": 0.0-1.0, \"reasoning\": \"brief string\"}"
         )
 
-        response = _anthropic_create_message(
-            client,
-            model=HAIKU_MONITOR_MODEL,
-            max_tokens=HAIKU_MONITOR_MAX_TOKENS,
-            prompt=prompt,
-        )
-        _record_ai_usage_cost("haiku_monitor", HAIKU_MONITOR_MODEL, response)
-
+        response = _anthropic_create_message(client, model=HAIKU_MONITOR_MODEL, max_tokens=HAIKU_MONITOR_MAX_TOKENS, prompt=prompt)
         text = _extract_text_from_anthropic_response(response)
         result = _extract_json_payload(text)
+        
+        if not result or not isinstance(result, dict):
+            return {"action": "hold", "confidence": 1.0, "reasoning": "Malformed AI response"}
 
-        if not isinstance(result, dict) or "action" not in result:
-            result = {"action": "hold", "confidence": 1.0, "reasoning": "Parse failed"}
+        # [FIX] Profit Guard: Override AI if the position is clearly winning.
+        # This protects us from 'False Panic' during price feed lags.
+        if result.get("action") == "close":
+            try:
+                # If PNL is positive and significant (>5%), forced hold.
+                cur_pnl = float(pnl_pct) if pnl_pct is not None else 0.0
+                if cur_pnl > 5.0:
+                    result["action"] = "hold"
+                    result["reasoning"] = f"[PROFIT-GUARD] Overrode AI close due to {cur_pnl}% profit. " + result.get("reasoning", "")
+            except:
+                pass
 
-        # Clamp confidence
-        try:
-            result["confidence"] = max(0.0, min(1.0, float(result.get("confidence", 1.0))))
-        except (TypeError, ValueError):
-            result["confidence"] = 1.0
-
-        # Cache the result
-        if token_id:
-            cache[token_id] = {"at": datetime.now(timezone.utc).isoformat(), "result": result}
-            _save_haiku_monitor_cache(cache)
-
+        _record_ai_usage_cost("haiku_monitor", HAIKU_MONITOR_MODEL, response)
+        
+        # Save to cache
+        cache[token_id] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "result": result
+        }
+        _save_haiku_monitor_cache(cache)
         return result
+
 
     except Exception as e:
         return {"action": "hold", "confidence": 1.0, "reasoning": f"Error: {e}"}

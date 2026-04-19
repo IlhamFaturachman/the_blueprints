@@ -295,7 +295,7 @@ def compute_regime_score(market, weather_evidence=None):
     return regime_class, regime_score, gates
 
 
-def calculate_edge(market, forecast_temp, hours_until_resolve=None):
+def calculate_edge(market, forecast_temp, hours_until_resolve=None, k_factor_override=None):
     """
     Calculate the statistical edge of a market position compared to forecast.
 
@@ -337,14 +337,11 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None):
     # Compute model probability only for non-market-implied path
     if market_implied is None:
         raw_prob = 0.0
-        # [FIX] Dynamic Sigmoid Scaling: Confidence should be higher for immediate horizons
-        # k=1.5 -> Standard. We scale k based on hours_until_resolve (h).
-        # h <= 6: k = 1.3 (Softer for last-mile noise/uncertainty)
-        # 6 < h <= 14: k = 1.6 (High precision Golden Window)
-        # 14 < h <= 36: k = 1.1 (Moderate)
-        # h > 36: k = 0.75 (Conservative)
+        # Sigmoid hardening based on hours remaining
         _h_val = float(hours_until_resolve) if hours_until_resolve is not None else 24.0
-        if _h_val <= 6:
+        if k_factor_override is not None:
+            k = k_factor_override
+        elif _h_val <= 6:
             k = 1.3
         elif _h_val <= 14:
             k = 1.6

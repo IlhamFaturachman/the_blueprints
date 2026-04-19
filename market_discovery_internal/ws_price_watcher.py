@@ -215,6 +215,8 @@ class PriceWatcher:
         payload = {
             "type": "market",
             "assets_ids": ids,
+            "markets": [],
+            "initial_dump": True,
             "custom_feature_enabled": True
         }
         

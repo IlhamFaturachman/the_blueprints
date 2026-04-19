@@ -29,13 +29,14 @@ Dokumen ini mencatat detail teknis pengerjaan untuk mempermudah handoff ke Claud
     - **Wallet Reset**: Injeksi saldo awal $5.00 langsung ke database.
     - **Verification**: Konfirmasi log `monitoring 0 active tokens`.
 
-### [2026-04-19 09:47 WIB] WebSocket Reliability Fix
+### [2026-04-19 09:57 WIB] Dual Fix: Stale Price & AI Panic
 - **Status**: ✅ COMPLETED
-- **Task**: Memperbaiki UI freeze (WS Down) akibat race condition saat opening posisi.
+- **Task**: Memperbaiki harga stuck (0.52) dan mencegah AI "Panic Selling" posisi untung.
 - **Changes**:
-    - **Race Fix**: `_on_instant_ws_refresh` kini menggunakan in-memory set (`_current_monitored_tokens`) alih-alih reload database yang rawan telat sinkronisasi.
-    - **Process Hardening**: Menambahkan local capture dan PID getattr pada `ws_price_watcher.py` untuk mencegah `NoneType` error saat termination.
-    - **Log**: Menambahkan log re-subskripsi otomatis saat koneksi WS open kembali.
+    - **WS Protocol**: Menambahkan `initial_dump: true` pada `ws_price_watcher.py` agar harga real-time langsung sinkron saat koneksi dibuka.
+    - **Profit Guard**: Menambahkan logic di `analysis.py` yang melarang AI menarik "Close" jika posisi sedang profit > 5% (Mencegah false exit akibat data stale).
+    - **Monitor Dampening**: Mengatur `k=0.8` khusus untuk Monitoring di `market_discovery.py`. Bot jadi lebih sabar (Diamond Hands) terhadap fluktuasi ramalan cuaca kecil.
+- **Goal**: Memastikan Seoul/Dallas tidak ditutup prematur saat harganya sedang naik.
 
 ---
-*Status Update: System Running - TRUE ZERO STATE. Logic Armor & WS-Relay Active.*
+*Status Update: System Hardened. Profit-Guard & Initial-Dump Active.*
