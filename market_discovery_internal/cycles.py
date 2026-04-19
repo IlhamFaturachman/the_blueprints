@@ -1222,6 +1222,11 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         entry_fee_usd = calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
         cost_basis = round(shares_cost + entry_fee_usd, 4)
     
+    # [HONEST ACCOUNTING] Cost integrity floor
+    # We no longer "shave" the cost_basis to fit the stake_usd (previous cause of PnL hallucination).
+    # If the cost_basis exceeds the target stake due to share floors (5 shares), 
+    # we accept the higher cost here; the calling function handles total budget limits.
+
     target_price = _compute_take_profit_price(effective_price)
     entry_yes_reference = _safe_float(opportunity.get("yes_price"), effective_price)
     entry_price_source = str(opportunity.get("entry_price_source") or "yes_price")
