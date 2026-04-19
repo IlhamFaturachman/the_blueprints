@@ -9,7 +9,7 @@ from market_discovery_internal.config import (
     HYBRID_STOP_LOSS_MULTIPLIER, HYBRID_LATE_WINDOW_HOURS,
     HYBRID_MIN_CONFIDENCE_TO_HOLD, HYBRID_CONFIDENCE_EDGE_SCALE,
     PAPER_STAKE_USD, PAPER_BASE_WALLET, PAPER_MAX_OPEN_PER_CITY,
-    MARKET_MAX_SPREAD_GATE
+    MARKET_MAX_SPREAD_GATE, MIN_STAKE_THRESHOLD
 )
 from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
@@ -860,6 +860,12 @@ def run_paper_trading_cycle(
         logger.warning("[ACCOUNTING] Available cash $%.4f <= 0, blocking new entries.", available_cash)
     elif (current_stake_usd * _MAX_EFFECTIVE_OVERHEAD * current_tier_max_slots) > max_total_exposure:
         current_stake_usd = round(max_total_exposure / (current_tier_max_slots * _MAX_EFFECTIVE_OVERHEAD), 2)
+
+    # [FIX] Block entries if the calculated stake falls below the hard floor
+    if effective_allow_new_entries and current_stake_usd < MIN_STAKE_THRESHOLD:
+        effective_allow_new_entries = False
+        effective_entry_gate_reason = "insufficient_cash"
+        logger.warning("[ACCOUNTING] Calculated stake $%.2f < floor $%.2f, blocking new entries.", current_stake_usd, MIN_STAKE_THRESHOLD)
 
     # Notify on Tier Change
     prev_tier = state_meta.get("current_tier", 1)

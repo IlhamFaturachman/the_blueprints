@@ -227,6 +227,7 @@ MIN_STAKE_THRESHOLD = float(os.getenv("MIN_STAKE_THRESHOLD", "1.00"))  # Hard fl
 
 # Exact-bracket market liquidity gate (uses Gamma bestAsk/spread fields)
 MARKET_MAX_SPREAD_GATE = float(os.getenv("MARKET_MAX_SPREAD_GATE", "0.12"))
+PAPER_BYPASS_LIQUIDITY_CHECK = _env_bool("PAPER_BYPASS_LIQUIDITY_CHECK", False)
 
 # Polymarket taker fee rate per category (formula: C × rate × p × (1-p))
 # Weather = 0.05, Sports = 0.03, Crypto = 0.072 (we trade Weather only)
