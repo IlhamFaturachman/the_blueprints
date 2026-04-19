@@ -13,6 +13,11 @@ import sys
 import time
 import signal
 import threading
+import sys
+
+# [FIX] Force unbuffered output for real-time UI logs
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
 import multiprocessing
 import fcntl
 from datetime import datetime, timezone
@@ -199,6 +204,30 @@ def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
         daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE
     )
 
+def _on_instant_ws_refresh(pos):
+    """[NEW] Instant callback called by cycles.py as soon as a position is built."""
+    global _ws_broadcaster, _ws_watcher
+    try:
+        if _ws_broadcaster:
+            token_id = str(pos.get("token_id", ""))
+            city = str(pos.get("city", ""))
+            entry_price = float(pos.get("entry_price", 0))
+            _ws_broadcaster.broadcast_opened(token_id=token_id, city=city, entry_price=entry_price)
+            print(f"[WS-WIRING] Instant broadcast for {city} ({token_id})")
+
+        if _ws_watcher:
+            # Sync watcher with all current open tokens to include the new one
+            from market_discovery_internal.state_persistence import load_paper_state
+            # Use lock to access file safely
+            with _state_lock:
+                st = load_paper_state(PAPER_STATE_FILE)
+            token_ids = {str(p["token_id"]) for p in st.get("positions", []) if p.get("status") == "open"}
+            _ws_watcher.update_subscriptions(token_ids)
+            print(f"[WS-WIRING] Instant subscription refresh: {len(token_ids)} tokens")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"[WS-WIRING] Error in instant refresh: {e}")
+
 def wired_run_paper_trading_cycle(force_aggressive_scan=False):
     """Bridge function to inject all dependencies into the internal paper trading loop."""
     result = run_paper_trading_cycle(
@@ -250,6 +279,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         ws_watcher=_ws_watcher,
         last_ws_update_at=_last_ws_update_at,
         ws_stale_detection_minutes=WS_STALE_DETECTION_MINUTES,
+        on_position_opened_fn=_on_instant_ws_refresh, # [NEW]
     )
 
     # Post-cycle: broadcast new entries and refresh WS subscriptions

@@ -9,7 +9,7 @@ from market_discovery_internal.config import (
     HYBRID_STOP_LOSS_MULTIPLIER, HYBRID_LATE_WINDOW_HOURS,
     HYBRID_MIN_CONFIDENCE_TO_HOLD, HYBRID_CONFIDENCE_EDGE_SCALE,
     PAPER_STAKE_USD, PAPER_BASE_WALLET, PAPER_MAX_OPEN_PER_CITY,
-    MARKET_MAX_SPREAD_GATE, MIN_STAKE_THRESHOLD
+    MARKET_MAX_SPREAD_GATE, MIN_STAKE_THRESHOLD, PAPER_STAKE_INCLUSIVE
 )
 from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
@@ -1158,13 +1158,29 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
 
     # [PAPER REALISM] Implement 1% Slippage Buffer
     # For paper trading, we simulate paying slightly more than best_ask (slippage).
-    # This ensures our backtests/simulations aren't overly optimistic.
     effective_price = round(entry_price * 1.01, 4)
 
-    quantity = round(float(stake_usd) / effective_price, 6)
+    # [FIX] Inclusive Stake Logic: Shares + Fee = Stake_USD
+    # Formula: total = Q*P + Q*r*P*(1-P) = Q*P*(1 + r*(1-P))
+    # Q = total / (P * (1 + r*(1-P)))
+    if PAPER_STAKE_INCLUSIVE:
+        denominator = effective_price * (1.0 + POLYMARKET_TAKER_FEE_RATE * (1.0 - effective_price))
+        quantity = round(float(stake_usd) / denominator, 6)
+    else:
+        quantity = round(float(stake_usd) / effective_price, 6)
+
     shares_cost = round(quantity * effective_price, 4)
     entry_fee_usd = calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
     cost_basis = round(shares_cost + entry_fee_usd, 4)
+    
+    # Final clamping to ensure we NEVER exceed stake_usd when inclusive is on
+    if PAPER_STAKE_INCLUSIVE and cost_basis > float(stake_usd):
+        # Micro-adjustment if rounding caused overshoot
+        cost_delta = cost_basis - float(stake_usd)
+        if cost_delta > 0:
+             shares_cost = round(shares_cost - cost_delta, 4)
+             cost_basis = round(shares_cost + entry_fee_usd, 4)
+
     target_price = _compute_take_profit_price(effective_price)
     entry_yes_reference = _safe_float(opportunity.get("yes_price"), effective_price)
     entry_price_source = str(opportunity.get("entry_price_source") or "yes_price")

@@ -1,6 +1,7 @@
 """Output/printing helpers for market_discovery."""
 
 import json
+import sys
 
 
 def print_discovery_diagnostics(
@@ -292,6 +293,7 @@ def print_paper_cycle_summary(cycle, safe_float_fn, paper_min_city_diversity):
     print(f"{'=' * 43}")
 
     _print_paper_cycle_token_changes(cycle)
+    sys.stdout.flush()
 
 
 def _print_report_journal_retention_block(journal_retention, safe_float_fn):
