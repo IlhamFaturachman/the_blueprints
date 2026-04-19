@@ -198,8 +198,9 @@ CITY_REGEXES = [
     for city, pattern in CITY_PATTERNS.items()
 ]
 
-# Paper-trading strategy defaults (can be overridden via environment variables)
-PAPER_STAKE_USD = float(os.getenv("PAPER_STAKE_USD", "100"))
+# [MODE] Data Collector Mode (Aggressive) - Phase 1
+PAPER_BASE_WALLET = float(os.getenv("PAPER_BASE_WALLET", "100.0"))
+PAPER_STAKE_USD = float(os.getenv("PAPER_STAKE_USD", "1.60")) # Fits integer shares 5 @ 0.30
 HYBRID_TAKE_PROFIT_MULTIPLIER = float(os.getenv("HYBRID_TAKE_PROFIT_MULTIPLIER", "2.0"))
 HYBRID_TAKE_PROFIT_MIN_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MIN_PRICE", "0.50"))
 HYBRID_TAKE_PROFIT_MAX_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MAX_PRICE", "0.60"))
@@ -214,20 +215,11 @@ PAPER_MAX_OPEN_PER_CITY = max(1, int(os.getenv("PAPER_MAX_OPEN_PER_CITY", "1")))
 WHIPLASH_COOLDOWN_HOURS = float(os.getenv("WHIPLASH_COOLDOWN_HOURS", "24.0"))
 GOLDEN_WINDOW_HOURS_MAX = float(os.getenv("GOLDEN_WINDOW_HOURS_MAX", "14.0"))
 GOLDEN_WINDOW_HOURS_MIN = float(os.getenv("GOLDEN_WINDOW_HOURS_MIN", "8.0"))
-PAPER_BASE_WALLET = max(
-    0.01,
-    float(
-        os.getenv(
-            "PAPER_BASE_WALLET",
-            str(PAPER_STAKE_USD * PAPER_MAX_OPEN_POSITIONS),
-        )
-    ),
-)
 PAPER_MIN_CITY_DIVERSITY = max(1, int(os.getenv("PAPER_MIN_CITY_DIVERSITY", "5")))
 PAPER_ENTRY_MIN_PRICE = float(os.getenv("PAPER_ENTRY_MIN_PRICE", "0.05"))
 PAPER_ENTRY_MAX_PRICE = float(os.getenv("PAPER_ENTRY_MAX_PRICE", "0.65"))
 MAX_ACCEPTABLE_SLIPPAGE = float(os.getenv("MAX_ACCEPTABLE_SLIPPAGE", "0.05"))
-LIQUIDITY_DEPTH_MULTIPLIER = float(os.getenv("LIQUIDITY_DEPTH_MULTIPLIER", "8.33"))
+LIQUIDITY_DEPTH_MULTIPLIER = float(os.getenv("LIQUIDITY_DEPTH_MULTIPLIER", "1.2"))
 MIN_STAKE_THRESHOLD = float(os.getenv("MIN_STAKE_THRESHOLD", "1.00"))  # Hard floor — skip dust stakes below USD 1.00
 
 # Exact-bracket market liquidity gate (uses Gamma bestAsk/spread fields)
@@ -272,8 +264,9 @@ PAPER_REPORT_REJECT_DOMINANT_RATIO = min(
     max(0.0, float(os.getenv("PAPER_REPORT_REJECT_DOMINANT_RATIO", "0.85"))),
 )
 
-# Discovery + entry strategy (runtime-tunable)
-DISCOVERY_MAX_FETCH_PAGES = int(os.getenv("DISCOVERY_MAX_FETCH_PAGES", "2"))
+# Discovery Depth
+DISCOVERY_MAX_FETCH_PAGES = int(os.getenv("DISCOVERY_MAX_FETCH_PAGES", "15"))
+DISCOVERY_MIN_LIQUIDITY_DEPTH = float(os.getenv("DISCOVERY_MIN_LIQUIDITY_DEPTH", "5.0"))
 DISCOVERY_ENABLE_AUTO_AGGRESSIVE_SCAN = _env_bool("DISCOVERY_ENABLE_AUTO_AGGRESSIVE_SCAN", True)
 DISCOVERY_AGGRESSIVE_SCAN_PAGES = int(os.getenv("DISCOVERY_AGGRESSIVE_SCAN_PAGES", "3"))
 DISCOVERY_AUTO_AGGRESSIVE_AFTER_EMPTY_CYCLES = int(
@@ -301,9 +294,9 @@ PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS = max(
 )
 # Discovery gate: aligned with PAPER_ENTRY_MAX_PRICE so no valid candidate is
 # discarded before it reaches the entry bucket stage.
-STRATEGY_MAX_YES_PRICE = float(os.getenv("STRATEGY_MAX_YES_PRICE", "0.50"))
-STRATEGY_MIN_MODEL_PROB = float(os.getenv("STRATEGY_MIN_MODEL_PROB", "0.72"))
-STRATEGY_MIN_EDGE = float(os.getenv("STRATEGY_MIN_EDGE", "0.22"))
+STRATEGY_MAX_YES_PRICE = float(os.getenv("STRATEGY_MAX_YES_PRICE", "0.75"))
+STRATEGY_MIN_MODEL_PROB = float(os.getenv("STRATEGY_MIN_MODEL_PROB", "0.60"))
+STRATEGY_MIN_EDGE = float(os.getenv("STRATEGY_MIN_EDGE", "0.10"))
 
 # [LIVE REQUISITES] Minimum order gates for Polymarket CLOB compliance
 STRATEGY_MIN_STAKE_USD = float(os.getenv("STRATEGY_MIN_STAKE_USD", "1.00"))
