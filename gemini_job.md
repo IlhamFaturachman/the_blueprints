@@ -29,14 +29,14 @@ Dokumen ini mencatat detail teknis pengerjaan untuk mempermudah handoff ke Claud
     - **Wallet Reset**: Injeksi saldo awal $5.00 langsung ke database.
     - **Verification**: Konfirmasi log `monitoring 0 active tokens`.
 
-### [2026-04-19 09:57 WIB] Dual Fix: Stale Price & AI Panic
+### [2026-04-19 10:00 WIB] WS Parser Hardening (Orderbook Fix)
 - **Status**: ✅ COMPLETED
-- **Task**: Memperbaiki harga stuck (0.52) dan mencegah AI "Panic Selling" posisi untung.
+- **Task**: Memastikan Dallas ($0.36) dan Austin ($0.10) yang "stuck" bisa update harga live.
 - **Changes**:
-    - **WS Protocol**: Menambahkan `initial_dump: true` pada `ws_price_watcher.py` agar harga real-time langsung sinkron saat koneksi dibuka.
-    - **Profit Guard**: Menambahkan logic di `analysis.py` yang melarang AI menarik "Close" jika posisi sedang profit > 5% (Mencegah false exit akibat data stale).
-    - **Monitor Dampening**: Mengatur `k=0.8` khusus untuk Monitoring di `market_discovery.py`. Bot jadi lebih sabar (Diamond Hands) terhadap fluktuasi ramalan cuaca kecil.
-- **Goal**: Memastikan Seoul/Dallas tidak ditutup prematur saat harganya sedang naik.
+    - **Logic**: Menambahkan handler untuk `event_type == "book"`. Ini adalah format yang dikirim Polymarket saat `initial_dump` atau update orderbook besar.
+    - **Extraction**: Mengambil Bid tertinggi dari array `bids` di event `book`. Sebelumnya data ini diabaikan oleh bot.
+    - **Support**: Menambahkan support untuk `last_trade_price` sebagai fallback harga live.
+- **Goal**: Harga Live di Dashboard sekarang harus sinkron 1:1 dengan Polymarket untuk SEMUA token aktif.
 
 ---
-*Status Update: System Hardened. Profit-Guard & Initial-Dump Active.*
+*Status Update: System Fully Hardened. WS-Parser-v2 & Profit-Guard Active.*
