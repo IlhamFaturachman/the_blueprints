@@ -174,31 +174,39 @@ class PriceWatcher:
             if not isinstance(event, dict): continue
             etype = event.get("event_type")
             
+            # [HEARTBEAT] Log raw event arrival occasionally to confirm connection activity
+            if random.random() < 0.05: # 5% sample for internal logs
+                ilogger.info("[WS-MPC] Heartbeat: received %s for asset/market %s", etype, event.get("asset_id") or event.get("market"))
+
             # Match Polymarket CLI/WS event types: book, best_bid_ask, price_change, last_trade_price
             if etype in ["best_bid_ask", "price_change", "book", "last_trade_price"]:
-                tid = event.get("asset_id") or event.get("market") # Fallback to market ID if asset missing
+                tid = event.get("asset_id") or event.get("market") 
                 if not tid: continue
-
+                
+                # Universal Price Extraction Logic
                 price_val = None
                 
                 if etype == "price_change":
-                    # price_change carries a list of changes
                     for c in event.get("price_changes", []):
                         cid = c.get("asset_id") or tid
-                        cp = c.get("best_bid") or c.get("price")
+                        # Extract price from various possible fields
+                        cp = c.get("best_bid") or c.get("price") or c.get("best_ask")
                         if cid and cp is not None:
                             try: self._update_queue.put((str(cid), float(cp)))
                             except: pass
-                    continue # Already processed nested changes
+                    continue
                     
                 elif etype == "book":
-                    # Orderbook snapshot/delta. Take top of book (index 0).
+                    # Orderbook format varies: [[price, size], ...] or [{"price":"0.5", ...}, ...]
                     bids = event.get("bids", [])
                     if bids:
                         try:
-                            # Handle both list formats: [price, size] or {"price": p, ...}
+                            # Safely extract from first element (highest bid)
                             first = bids[0]
-                            price_val = first[0] if isinstance(first, list) else first.get("price")
+                            if isinstance(first, list) and len(first) > 0:
+                                price_val = first[0]
+                            elif isinstance(first, dict):
+                                price_val = first.get("price") or first.get("best_bid")
                         except: pass
                 
                 elif etype == "last_trade_price":
@@ -209,11 +217,13 @@ class PriceWatcher:
 
                 if tid and price_val is not None:
                     try:
-                        self._update_queue.put((str(tid), float(price_val)))
-                        # Periodic status log to avoid flooding but show activity
-                        if random.random() < 0.05:
-                            ilogger.info("[WS-MPC] Parsed %s for %s: %s", etype, tid, price_val)
-                    except:
+                        f_price = float(price_val)
+                        # Filter out obviously rogue prices like $0 or extreme spikes
+                        if 0.001 <= f_price <= 0.999:
+                            self._update_queue.put((str(tid), f_price))
+                            if random.random() < 0.1: # 10% sample for successful parse logs
+                                ilogger.info("[WS-MPC] Parsed %s: %s -> %s", etype, tid, f_price)
+                    except (ValueError, TypeError):
                         pass
 
     def _on_open(self, ws, current_subs, desired_subs, ilogger):

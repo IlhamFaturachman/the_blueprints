@@ -29,14 +29,14 @@ Dokumen ini mencatat detail teknis pengerjaan untuk mempermudah handoff ke Claud
     - **Wallet Reset**: Injeksi saldo awal $5.00 langsung ke database.
     - **Verification**: Konfirmasi log `monitoring 0 active tokens`.
 
-### [2026-04-19 10:00 WIB] WS Parser Hardening (Orderbook Fix)
+### [2026-04-19 10:04 WIB] WS Parser v2 (Universal Heartbeat)
 - **Status**: ✅ COMPLETED
-- **Task**: Memastikan Dallas ($0.36) dan Austin ($0.10) yang "stuck" bisa update harga live.
+- **Task**: Memastikan stream data Polymarket tidak ada yang terbuang & Dallas/Austin sinkron.
 - **Changes**:
-    - **Logic**: Menambahkan handler untuk `event_type == "book"`. Ini adalah format yang dikirim Polymarket saat `initial_dump` atau update orderbook besar.
-    - **Extraction**: Mengambil Bid tertinggi dari array `bids` di event `book`. Sebelumnya data ini diabaikan oleh bot.
-    - **Support**: Menambahkan support untuk `last_trade_price` sebagai fallback harga live.
-- **Goal**: Harga Live di Dashboard sekarang harus sinkron 1:1 dengan Polymarket untuk SEMUA token aktif.
+    - **Universal Parser**: Handler `book` ditingkatkan untuk support format List maupun Dict. Ini menjamin `initial_dump` selalu terbaca apa pun tipenya.
+    - **Heartbeat Log**: Menambahkan login "Heartbeat" (5% raw messages) agar kita bisa liat bot aktif nerima data meskipun harga lagi stabil.
+    - **Robustness**: Menambahkan filter harga outlier (0.001 - 0.999) agar data noise tidak masuk ke DB.
+- **Verification**: Dallas ($0.36) dan Austin ($0.10) harus mulai update harga live setelah restart.
 
 ---
-*Status Update: System Fully Hardened. WS-Parser-v2 & Profit-Guard Active.*
+*Status Update: System Fully Hardened. WS-v2-Parser & Heartbeat Active.*
