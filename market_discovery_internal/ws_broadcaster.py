@@ -88,6 +88,17 @@ class WsBroadcaster:
         }
         self._schedule_broadcast(payload)
 
+    def broadcast_opened(self, token_id: str, city: str, entry_price: float) -> None:
+        """Queue a position-opened event for all connected browser clients."""
+        payload = {
+            "type": "position_opened",
+            "token_id": str(token_id),
+            "city": str(city or ""),
+            "entry_price": float(entry_price),
+            "ts": int(time.time()),
+        }
+        self._schedule_broadcast(payload)
+
     def broadcast_closed(
         self,
         token_id: str,

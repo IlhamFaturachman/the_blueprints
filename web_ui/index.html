@@ -546,9 +546,9 @@ function handleWsMessage(raw) {
     if (msg.type === 'price_update') {
         lastReceivedAt = Date.now();
         updatePositionLiveByToken(String(msg.token_id || ''), Number(msg.bid_price || 0));
-    } else if (msg.type === 'position_closed') {
+    } else if (msg.type === 'position_closed' || msg.type === 'position_opened') {
         lastReceivedAt = Date.now();
-        setTimeout(fetchData, 1000);
+        setTimeout(fetchData, 500);
     }
 }
 
@@ -655,6 +655,8 @@ async function fetchData() {
             totalFeeEntry += Number(p.entry_fee_usd || 0);
             totalFeeExit += Number(p.exit_fee_usd || 0);
         });
+        // Also count entry fees from still-open positions
+        (data.positions || []).forEach(p => { totalFeeEntry += Number(p.entry_fee_usd || 0); });
         const pnlEl = document.getElementById('valPnl');
         if (pnlEl) { pnlEl.innerHTML = `$${total_pnl.toFixed(4)}`; pnlEl.className = total_pnl >= 0 ? "value good" : "value bad"; }
         document.getElementById('valClosed').innerHTML = `Closed deals: ${d_closed.length}`;
@@ -667,7 +669,7 @@ async function fetchData() {
         if (wrEl) { wrEl.innerHTML = `${winRate.toFixed(1)}%`; wrEl.className = winRate >= 50 ? 'value good' : 'value bad'; }
         document.getElementById('valWinMeta').innerHTML = `W: ${wins} | L: ${losses} | Avg: $${avgPnl.toFixed(4)}`;
 
-        // Fees
+        // Fees (closed entry+exit + open entry fees)
         const totalFees = totalFeeEntry + totalFeeExit;
         const feesEl = document.getElementById('valFees');
         if (feesEl) { feesEl.innerHTML = `$${totalFees.toFixed(4)}`; feesEl.className = 'value bad'; }

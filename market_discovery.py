@@ -201,7 +201,7 @@ def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
 
 def wired_run_paper_trading_cycle(force_aggressive_scan=False):
     """Bridge function to inject all dependencies into the internal paper trading loop."""
-    return run_paper_trading_cycle(
+    result = run_paper_trading_cycle(
         min_price=PAPER_ENTRY_MIN_PRICE,
         max_price=PAPER_ENTRY_MAX_PRICE,
         stake_usd=PAPER_STAKE_USD,
@@ -251,6 +251,26 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         last_ws_update_at=_last_ws_update_at,
         ws_stale_detection_minutes=WS_STALE_DETECTION_MINUTES,
     )
+
+    # Post-cycle: broadcast new entries and refresh WS subscriptions
+    try:
+        newly_opened = result.get("opened", []) if result else []
+        if newly_opened:
+            if _ws_broadcaster:
+                for pos in newly_opened:
+                    _ws_broadcaster.broadcast_opened(
+                        token_id=pos.get("token_id", ""),
+                        city=pos.get("city", ""),
+                        entry_price=float(pos.get("entry_price", 0)),
+                    )
+            if _ws_watcher:
+                open_positions = result.get("open_positions", [])
+                token_ids = {p["token_id"] for p in open_positions if p.get("token_id")}
+                _ws_watcher.update_subscriptions(token_ids)
+    except Exception as _exc:
+        print(f"[WS-POST-CYCLE] Non-fatal post-cycle hook error: {_exc}")
+
+    return result
 
 # ---------------------------------------------------------------------------
 # Global Background Components (WS & Monitoring)

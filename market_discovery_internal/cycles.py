@@ -844,10 +844,17 @@ def run_paper_trading_cycle(
         current_tier_max_slots = 8 if wallet_after_position_management >= 12.0 else 5
         current_stake_usd = 2.0 if wallet_after_position_management >= 12.0 else 1.0
 
-    # [SAFE LEVERAGE CAP] Ensure Total Exposure <= 100% Wallet
-    # If Total Exposure (stake * total_slots) > Wallet, reduce stake.
-    max_total_exposure = wallet_after_position_management
-    if (current_stake_usd * current_tier_max_slots) > max_total_exposure:
+    # [SAFE LEVERAGE CAP] Ensure Total Exposure <= Available Cash
+    # Use actual cash (base + realized - already-deployed cost) not wallet, so fees
+    # from open positions don't cause cash to go negative.
+    available_cash = float(state_meta.get("cash", wallet_after_position_management))
+    max_total_exposure = max(0.0, available_cash)
+    if max_total_exposure <= 0.0:
+        # No cash left — block all new entries this cycle
+        effective_allow_new_entries = False
+        effective_entry_gate_reason = "insufficient_cash"
+        logger.warning("[ACCOUNTING] Available cash $%.4f <= 0, blocking new entries.", available_cash)
+    elif (current_stake_usd * current_tier_max_slots) > max_total_exposure:
         current_stake_usd = round(max_total_exposure / current_tier_max_slots, 2)
 
     # Notify on Tier Change
@@ -1646,18 +1653,17 @@ def append_opened_positions_from_candidates(
         from market_discovery_internal.config import MAX_ACCEPTABLE_SLIPPAGE, MIN_STAKE_THRESHOLD
         from market_discovery_internal.pricing import calculate_depth_adjusted_stake
 
-        # [LIVE-LIKE] Always check real CLOB depth — no paper bypass.
-        # The original "weather anomaly" was a dict/list format bug (now fixed in pricing.py).
-        dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
-
-        if dynamic_stake <= 0:
-            logger.warning(f"[LIQUIDITY] Skipping {token_id} - Insufficient depth for safe entry (Slippage Threat).")
-            continue
-
-        # [WAVE 2] Hard floor: skip dust stakes below USD 1.00 to avoid exchange min-order rejection
-        if dynamic_stake < MIN_STAKE_THRESHOLD:
-            logger.warning(f"[DUST-FILTER] Skipping {token_id} - Dynamic stake ${dynamic_stake:.2f} < floor ${MIN_STAKE_THRESHOLD:.2f}.")
-            continue
+        from market_discovery_internal.config import PAPER_BYPASS_LIQUIDITY_CHECK
+        if PAPER_BYPASS_LIQUIDITY_CHECK:
+            dynamic_stake = float(stake_usd)
+        else:
+            dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
+            if dynamic_stake <= 0:
+                logger.warning(f"[LIQUIDITY] Skipping {token_id} - Insufficient depth for safe entry (Slippage Threat).")
+                continue
+            if dynamic_stake < MIN_STAKE_THRESHOLD:
+                logger.warning(f"[DUST-FILTER] Skipping {token_id} - Dynamic stake ${dynamic_stake:.2f} < floor ${MIN_STAKE_THRESHOLD:.2f}.")
+                continue
 
         if dynamic_stake < float(stake_usd):
             logger.info(f"[LIQUIDITY] Scaling down stake for {token_id}: ${stake_usd} -> ${dynamic_stake}")
