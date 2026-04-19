@@ -159,33 +159,54 @@ def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
         bids = data.get("bids", [])
         
         if not asks or not bids:
-            return 0.0 # Cannot verify liquidity, skip
-            
-        best_ask = float(asks[0]['price']) if isinstance(asks[0], dict) else float(asks[0][0])
-        best_bid = float(bids[0]['price']) if isinstance(bids[0], dict) else float(bids[0][0])
-        
+            return 0.0
+
+        def _parse_level(level):
+            if isinstance(level, dict):
+                return float(level.get("price", 0)), float(level.get("size", 0))
+            return float(level[0]), float(level[1])
+
+        # CLOB may return asks sorted ascending OR descending — find true best (min) ask.
+        ask_prices = []
+        for lvl in asks:
+            try:
+                p, _ = _parse_level(lvl)
+                if p > 0:
+                    ask_prices.append(p)
+            except Exception:
+                continue
+        bid_prices = []
+        for lvl in bids:
+            try:
+                p, _ = _parse_level(lvl)
+                if p > 0:
+                    bid_prices.append(p)
+            except Exception:
+                continue
+
+        if not ask_prices or not bid_prices:
+            return 0.0
+
+        best_ask = min(ask_prices)
+        best_bid = max(bid_prices)
+
         # 1. Spread Gate
         spread = best_ask - best_bid
         if spread > MARKET_MAX_SPREAD_GATE:
-            return 0.0 # Excessive spread
-            
-        # 2. Depth Calculation within Slippage Boundary
-        # How much volume exists before price hits (best_ask * (1 + max_slippage_pct))
+            return 0.0
+
+        # 2. Depth within slippage boundary (count asks from best_ask upward)
         max_price_allowed = best_ask * (1.0 + max_slippage_pct)
-        
+
         total_depth_usd = 0.0
         for level in asks:
-            # Polymarket CLOB can return [price, size] OR {"price": "...", "size": "..."}
-            if isinstance(level, dict):
-                price = float(level.get("price", 0))
-                size = float(level.get("size", 0))
-            else:
-                price = float(level[0])
-                size = float(level[1])
-
-            if price > max_price_allowed:
-                break
-            total_depth_usd += (price * size)
+            try:
+                price, size = _parse_level(level)
+            except Exception:
+                continue
+            if price < best_ask or price > max_price_allowed:
+                continue
+            total_depth_usd += price * size
             
         # 3. Apply Multiplier Buffer
         # We only take a portion of available depth to keep slippage under control
