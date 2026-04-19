@@ -847,6 +847,10 @@ def run_paper_trading_cycle(
     # [SAFE LEVERAGE CAP] Ensure Total Exposure <= Available Cash
     # Use actual cash (base + realized - already-deployed cost) not wallet, so fees
     # from open positions don't cause cash to go negative.
+    # Account for max risk multiplier (1.5x) and fee overhead (5%) so cost_basis
+    # never exceeds cash even after per-position sizing adjustments.
+    from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE
+    _MAX_EFFECTIVE_OVERHEAD = 1.5 * (1.0 + POLYMARKET_TAKER_FEE_RATE)  # ~1.575
     available_cash = float(state_meta.get("cash", wallet_after_position_management))
     max_total_exposure = max(0.0, available_cash)
     if max_total_exposure <= 0.0:
@@ -854,8 +858,8 @@ def run_paper_trading_cycle(
         effective_allow_new_entries = False
         effective_entry_gate_reason = "insufficient_cash"
         logger.warning("[ACCOUNTING] Available cash $%.4f <= 0, blocking new entries.", available_cash)
-    elif (current_stake_usd * current_tier_max_slots) > max_total_exposure:
-        current_stake_usd = round(max_total_exposure / current_tier_max_slots, 2)
+    elif (current_stake_usd * _MAX_EFFECTIVE_OVERHEAD * current_tier_max_slots) > max_total_exposure:
+        current_stake_usd = round(max_total_exposure / (current_tier_max_slots * _MAX_EFFECTIVE_OVERHEAD), 2)
 
     # Notify on Tier Change
     prev_tier = state_meta.get("current_tier", 1)
@@ -896,6 +900,7 @@ def run_paper_trading_cycle(
             max_bound=max_bound,
             fetch_orderbook_quote_fn=_get_orderbook_quote,
             is_paper_trading=True,
+            available_cash=available_cash,
         )
         # [ACCOUNTING] Debit cash for each newly opened position
         for pos in opened_this_cycle:
@@ -1607,10 +1612,12 @@ def append_opened_positions_from_candidates(
     max_bound,
     fetch_orderbook_quote_fn,
     is_paper_trading=True,
+    available_cash=None,
 ):
     """Open positions from ranked candidates while respecting city and slot limits."""
     opened_this_cycle = []
     opened_city_keys = set()
+    remaining_cash = float(available_cash) if available_cash is not None else None
 
     for candidate in entry_candidates:
         if available_slots <= 0:
@@ -1707,6 +1714,16 @@ def append_opened_positions_from_candidates(
             entry_opportunity["entry_quote_best_bid"] = round(best_bid, 4)
 
         position = build_paper_position(entry_opportunity, stake_usd=risk_weighted_stake)
+
+        # [ACCOUNTING GUARD] Hard block if cost_basis exceeds remaining cash
+        position_cost = float(position.get("cost_basis", 0.0))
+        if remaining_cash is not None and position_cost > remaining_cash:
+            logger.warning(
+                "[ACCOUNTING] Skipping %s — cost_basis $%.4f > remaining cash $%.4f",
+                token_id, position_cost, remaining_cash,
+            )
+            continue
+
         position["entry_bucket"] = bucket_name
         position["entry_bucket_reason"] = bucket.get("reason")
         position["entry_confidence_score"] = bucket.get("confidence")
@@ -1727,6 +1744,9 @@ def append_opened_positions_from_candidates(
             position["entry_ai_confidence"] = opportunity.get("ai_confidence")
         if bucket.get("ai_override_applied"):
             position["entry_ai_override_applied"] = True
+
+        if remaining_cash is not None:
+            remaining_cash -= position_cost
 
         next_open_positions.append(position)
         opened_this_cycle.append(position)
