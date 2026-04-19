@@ -1286,7 +1286,23 @@ def evaluate_hybrid_exit(
             "partial_tp_taken": partial_tp_taken or (price >= entry_price * 1.5),
         }
 
-    if price <= stop_loss_price:
+    # Stop loss cooldown: don't fire within HYBRID_STOP_LOSS_COOLDOWN_HOURS of entry.
+    # Prevents spread noise and early market uncertainty from triggering a premature exit.
+    _stop_loss_armed = True
+    _opened_at = position.get("opened_at")
+    if _opened_at and now_utc is not None:
+        try:
+            from market_discovery_internal.config import HYBRID_STOP_LOSS_COOLDOWN_HOURS
+            from datetime import timezone as _tz
+            _opened_dt = datetime.fromisoformat(str(_opened_at).replace("Z", "+00:00"))
+            _now_aware = now_utc if now_utc.tzinfo is not None else now_utc.replace(tzinfo=_tz.utc)
+            _age_hours = (_now_aware - _opened_dt).total_seconds() / 3600
+            if _age_hours < HYBRID_STOP_LOSS_COOLDOWN_HOURS:
+                _stop_loss_armed = False
+        except Exception:
+            pass
+
+    if _stop_loss_armed and price <= stop_loss_price:
         return {
             "action": "sell",
             "reason": "stop_loss",
