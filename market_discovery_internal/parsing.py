@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from market_discovery_internal.config import (
     LOG_FILE, DAILY_RESOLVE_ONLY, DAILY_MIN_HOURS_TO_RESOLVE,
     DAILY_MIN_RESOLVE_DAYS_AHEAD, DAILY_MAX_RESOLVE_DAYS_AHEAD,
+    GOLDEN_WINDOW_HOURS_MAX, GOLDEN_WINDOW_HOURS_MIN,
     THRESHOLD_RE, EXACT_RE, ABOVE_RE, BELOW_RE,
     WEATHER_CONTEXT_RE, CITY_REGEXES, TARGET_CITIES,
     AIRPORT_IATA_TO_ICAO, STATION_NAME_TO_ICAO, CITY_STATIONS
@@ -286,11 +287,10 @@ def parse_market(
 
     if daily_resolve_only:
         # [MODUL C] The Golden Window is the SOLE time filter (8-14h before resolve).
-        # This replaces the old days-ahead check which was mathematically contradicting
-        # the window (min 1 day = 24h, but window max is 14h — impossible to satisfy both).
-        if hours_until_resolve > 14.0:
+        # We now use system-wide config for easier tuning.
+        if hours_until_resolve > GOLDEN_WINDOW_HOURS_MAX:
             return _with_reason(None, "too_early_to_enter")
-        if hours_until_resolve < 8.0:
+        if hours_until_resolve < GOLDEN_WINDOW_HOURS_MIN:
             return _with_reason(None, "too_close_to_resolve")
 
     market_slug = raw.get("slug") or raw.get("event_slug") or ""

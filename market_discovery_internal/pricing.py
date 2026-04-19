@@ -337,14 +337,24 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None):
     # Compute model probability only for non-market-implied path
     if market_implied is None:
         raw_prob = 0.0
+        # [FIX] Dynamic Sigmoid Scaling: Confidence should be higher for immediate horizons
+        # k=1.5 -> Standard. We scale k based on hours_until_resolve (h).
+        # h <= 14: k = 1.6 (High precision Golden Window)
+        # 14 < h <= 36: k = 1.1 (Moderate)
+        # h > 36: k = 0.75 (Conservative)
+        _h_val = float(hours_until_resolve) if hours_until_resolve is not None else 24.0
+        if _h_val <= 14:
+            k = 1.6
+        elif _h_val <= 36:
+            k = 1.1
+        else:
+            k = 0.75
+
         if direction == "above":
             # Sigmoid: smooth gradient around threshold.
-            # k=1.5 → at +1°C prob≈0.82, at +2°C prob≈0.95, at -1°C prob≈0.18
-            k = 1.5
             diff = max(-50, min(50, (forecast - threshold)))
             raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
         elif direction == "below":
-            k = 1.5
             diff = max(-50, min(50, (threshold - forecast)))
             raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
         elif direction == "exact":

@@ -9,7 +9,8 @@ from market_discovery_internal.config import (
     HYBRID_STOP_LOSS_MULTIPLIER, HYBRID_LATE_WINDOW_HOURS,
     HYBRID_MIN_CONFIDENCE_TO_HOLD, HYBRID_CONFIDENCE_EDGE_SCALE,
     PAPER_STAKE_USD, PAPER_BASE_WALLET, PAPER_MAX_OPEN_PER_CITY,
-    MARKET_MAX_SPREAD_GATE, MIN_STAKE_THRESHOLD, PAPER_STAKE_INCLUSIVE
+    MARKET_MAX_SPREAD_GATE, MIN_STAKE_THRESHOLD, PAPER_STAKE_INCLUSIVE,
+    WHIPLASH_COOLDOWN_HOURS
 )
 from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
@@ -764,6 +765,29 @@ def run_paper_trading_cycle(
     available_slots = max(paper_max_open_positions - len(open_token_ids), 0)
 
     entry_selection_started = perf_counter_fn()
+    
+    # [FIX] Whiplash Shield: Build a blacklist of recently force-closed positions to avoid re-entry whiplash.
+    recent_exit_blacklist = set()
+    _now_ts_whiplash = now_dt.timestamp()
+    for h_pos in next_history:
+        try:
+            closed_at_str = h_pos.get("closed_at")
+            if not closed_at_str: continue
+            from market_discovery_internal.reporting import parse_utc_datetime
+            closed_dt = parse_utc_datetime(closed_at_str)
+            if not closed_dt: continue
+            
+            age_hours = (_now_ts_whiplash - closed_dt.timestamp()) / 3600.0
+            if age_hours <= WHIPLASH_COOLDOWN_HOURS:
+                reason = str(h_pos.get("reason", "")).lower()
+                # Blacklist if closed by AI monitor or Stop Loss (to prevent immediate whiplash)
+                if any(r in reason for r in ["haiku_monitor_exit", "stop_loss", "broken_thesis"]):
+                    recent_exit_blacklist.add(str(h_pos.get("token_id")))
+        except Exception:
+            continue
+    if recent_exit_blacklist:
+        logger.warning(f"[WHIPLASH-SHIELD] Active blacklist for {len(recent_exit_blacklist)} tokens: {recent_exit_blacklist}")
+
     (
         entry_candidates,
         bucket_counts,
@@ -775,6 +799,7 @@ def run_paper_trading_cycle(
         open_city_counts=open_city_counts,
         min_bound=min_bound,
         max_bound=max_bound,
+        recent_exit_blacklist=recent_exit_blacklist,
     )
 
     effective_allow_new_entries = bool(allow_new_entries)
@@ -1539,7 +1564,14 @@ def _city_candidate_rank(opportunity, bucket):
     return (confidence, edge, -yes_price)
 
 
-def build_entry_candidates(opportunities, open_token_ids, open_city_counts, min_bound, max_bound):
+def build_entry_candidates(
+    opportunities,
+    open_token_ids,
+    open_city_counts,
+    min_bound,
+    max_bound,
+    recent_exit_blacklist=None,
+):
     """Build ranked entry candidates while enforcing one-best-candidate per city."""
     bucket_counts = {
         "reject": 0,
@@ -1575,6 +1607,11 @@ def build_entry_candidates(opportunities, open_token_ids, open_city_counts, min_
 
         if str(token_id) in open_token_ids:
             continue
+        
+        # [FIX] Whiplash Shield: Filter out recently force-closed markets
+        if recent_exit_blacklist and str(token_id) in recent_exit_blacklist:
+            continue
+
         if price < min_bound or price > max_bound:
             continue
         
