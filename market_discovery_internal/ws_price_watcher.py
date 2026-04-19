@@ -245,10 +245,7 @@ class PriceWatcher:
 
     def _on_open(self, ws):
         self._ilogger.info("[WS-MPC] Connection established. Initializing subscriptions...")
-        # Clear drainage to ensure fresh start on reconnect
-        while not self._sub_update_queue.empty():
-            try: self._sub_update_queue.get_nowait()
-            except: pass
+        # Note: Do not clear sub_update_queue here, let the watchdog process the backlog.
         
         # We will let the watchdog thread handle the initial 'desired_subs' sync 
         # on the next 1s tick to avoid race conditions.
