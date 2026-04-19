@@ -1759,10 +1759,12 @@ def append_opened_positions_from_candidates(
         # Dynamic risk-weighting and depth scaling caused inconsistent spend per trade.
         # User expectation: $1 stake = exactly $1 total (cost + fee).
         risk_weighted_stake = float(stake_usd)
+        _risk_multiplier = 1.0
 
         # [PACK C] Correlation cap: if city already has an open position, reduce stake 30%
         if city_key and open_city_counts.get(city_key, 0) >= 1:
             risk_weighted_stake = round(risk_weighted_stake * 0.70, 2)
+            _risk_multiplier *= 0.70
 
         entry_opportunity = {
             **opportunity,
