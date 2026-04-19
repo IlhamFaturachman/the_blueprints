@@ -432,12 +432,15 @@ def run_paper_trading_cycle(
     # [PACK F] Weekly profit attribution report (once per 7 days)
     try:
         last_report_at_str = state_meta.get("last_attribution_report_at", "")
-        _do_report = True
-        if last_report_at_str:
+        _do_report = False  # default: never report on fresh start
+        if not last_report_at_str:
+            # First run — record timestamp but don't send yet (wait 7 days)
+            state_meta["last_attribution_report_at"] = now_dt.isoformat()
+        else:
             from market_discovery_internal.reporting import parse_utc_datetime
             _last_r = parse_utc_datetime(last_report_at_str)
-            if _last_r and (now_dt - _last_r).total_seconds() < 7 * 86400:
-                _do_report = False
+            if _last_r and (now_dt - _last_r).total_seconds() >= 7 * 86400:
+                _do_report = True
         if _do_report:
             _report = build_profit_attribution_report()
             if _report and _report.get("trades_analyzed", 0) > 0:
@@ -1752,14 +1755,10 @@ def append_opened_positions_from_candidates(
                          f"price={best_ask:.3f}>{_r_max_price:.3f}")
             continue
 
-        # [PACK C] Risk-weighted sizing: scale stake by model confidence
-        _confidence = float(opportunity.get("model_prob", 0.70))
-        _base_confidence = 0.70  # normalize around 70% base
-        _risk_multiplier = max(0.5, min(1.5, _confidence / _base_confidence))
-        risk_weighted_stake = round(dynamic_stake * _risk_multiplier, 2)
-        # Re-check dust floor after risk weighting
-        if risk_weighted_stake < MIN_STAKE_THRESHOLD:
-            risk_weighted_stake = dynamic_stake  # fall back to unweighted
+        # [FIX] Fixed stake: always use exact configured stake_usd.
+        # Dynamic risk-weighting and depth scaling caused inconsistent spend per trade.
+        # User expectation: $1 stake = exactly $1 total (cost + fee).
+        risk_weighted_stake = float(stake_usd)
 
         # [PACK C] Correlation cap: if city already has an open position, reduce stake 30%
         if city_key and open_city_counts.get(city_key, 0) >= 1:

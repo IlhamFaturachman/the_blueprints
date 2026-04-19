@@ -456,8 +456,6 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
         if not result or not isinstance(result, dict):
             return {"action": "hold", "confidence": 1.0, "reasoning": "Malformed AI response"}
 
-        # [FIX] Profit Guard: Override AI if the position is clearly winning.
-        # This protects us from 'False Panic' during price feed lags.
         # [FIX] Profit Guard + Newborn Guard: Override AI if position is winning OR too new.
         # This protects from 'False Panic' during price feed lags and spread noise.
         if result.get("action") == "close":
