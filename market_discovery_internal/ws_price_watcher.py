@@ -179,8 +179,9 @@ class PriceWatcher:
             if self._stop_event.is_set(): break
             time.sleep(self._reconnect_delay + random.uniform(0, 5))
 
-    def _on_message(self, ws, raw: str, ilogger: logging.Logger):
+    def _on_message(self, ws, raw: str):
         self._last_msg_at = time.time()
+        ilogger = self._ilogger
         try:
             msg = json.loads(raw)
         except: return
