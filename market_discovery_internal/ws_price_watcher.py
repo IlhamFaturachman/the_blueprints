@@ -95,6 +95,7 @@ class PriceWatcher:
             ilogger.addHandler(fh)
         
         ilogger.info("=== PriceWatcher Subprocess Starting ===")
+        self._ilogger = ilogger
 
         try:
             import websocket
@@ -122,10 +123,11 @@ class PriceWatcher:
                 ilogger.info("[WS-MPC] Handshake started for %s (Origin: https://polymarket.com)", self._url)
                 ws = websocket.WebSocketApp(
                     self._url,
-                    on_open=lambda w: self._on_open(w, current_subs, desired_subs, ilogger),
-                    on_message=lambda w, m: self._on_message(w, m, ilogger),
-                    on_error=lambda w, e: ilogger.warning("[WS-MPC] Error: %s", e),
-                    on_close=lambda w, c, m: self._on_close(w, c, m, current_subs, ilogger),
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                    on_pong=self._on_pong,
                     header={"Origin": "https://polymarket.com"}
                 )
 
@@ -233,38 +235,43 @@ class PriceWatcher:
                     except (ValueError, TypeError):
                         pass
 
-    def _on_open(self, ws, current_subs, desired_subs, ilogger):
+    def _on_error(self, ws, error):
+        self._ilogger.warning("[WS-MPC] Socket Error: %s", error)
+
+    def _on_pong(self, ws, message):
+        self._last_msg_at = time.time()
+        if random.random() < 0.1:
+            self._ilogger.info("[WS-MPC] Pong received (link healthy)")
+
+    def _on_open(self, ws):
+        self._ilogger.info("[WS-MPC] Connection established. Initializing subscriptions...")
         # Clear drainage to ensure fresh start on reconnect
         while not self._sub_update_queue.empty():
             try: self._sub_update_queue.get_nowait()
             except: pass
         
-        if desired_subs:
-            ilogger.info("[WS-MPC] Re-subscribing to %d tokens on open", len(desired_subs))
-            self._send_op(ws, list(desired_subs), "subscribe", ilogger)
-            current_subs.clear(); current_subs.update(desired_subs)
+        # We will let the watchdog thread handle the initial 'desired_subs' sync 
+        # on the next 1s tick to avoid race conditions.
 
-    def _on_close(self, ws, code, msg, current_subs, ilogger):
-        current_subs.clear()
+    def _on_close(self, ws, code, msg):
+        self._ilogger.info("[WS-MPC] Connection closed: Code=%s, Msg=%s", code, msg)
 
     def _send_op(self, ws, ids, op, ilogger):
-        # op is 'subscribe' or 'unsubscribe'
-        # Polymarket CLOB WS requirement: custom_feature_enabled: True for price_change events
+        """Send subscription/unsubscription operation to Polymarket CLOB."""
+        # Standard Polymarket CLOB subscription follows this pattern:
         payload = {
-            "type": "market",
-            "assets_ids": ids,
-            "markets": [],
-            "initial_dump": True,
-            "custom_feature_enabled": True
+            "type": "subscribe", # or 'unsubscribe' logic
+            "topic": "price_change", # Monitor price changes for these specific assets
+            "assets_ids": ids
         }
         
-        # If the server strictly wants 'subscribe'/'unsubscribe' as a top-level operation for legacy fallbacks:
-        # payload["operation"] = op 
+        if op == "unsubscribe":
+             payload["type"] = "unsubscribe"
         
         msg = json.dumps(payload)
         try:
             ws.send(msg)
-            # ilogger.info("[WS-MPC] Sent %s for %d assets", op, len(ids))
+            ilogger.info("[WS-MPC] Sent %s for %d assets (%s...)", op, len(ids), str(ids[0])[:12] if ids else "")
         except Exception as e:
             ilogger.warning("[WS-MPC] Send error: %s", e)
 
