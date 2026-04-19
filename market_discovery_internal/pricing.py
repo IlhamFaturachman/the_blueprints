@@ -339,11 +339,14 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None):
         raw_prob = 0.0
         # [FIX] Dynamic Sigmoid Scaling: Confidence should be higher for immediate horizons
         # k=1.5 -> Standard. We scale k based on hours_until_resolve (h).
-        # h <= 14: k = 1.6 (High precision Golden Window)
+        # h <= 6: k = 1.3 (Softer for last-mile noise/uncertainty)
+        # 6 < h <= 14: k = 1.6 (High precision Golden Window)
         # 14 < h <= 36: k = 1.1 (Moderate)
         # h > 36: k = 0.75 (Conservative)
         _h_val = float(hours_until_resolve) if hours_until_resolve is not None else 24.0
-        if _h_val <= 14:
+        if _h_val <= 6:
+            k = 1.3
+        elif _h_val <= 14:
             k = 1.6
         elif _h_val <= 36:
             k = 1.1
@@ -357,6 +360,15 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None):
         elif direction == "below":
             diff = max(-50, min(50, (threshold - forecast)))
             raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
+
+        # [FIX] Consensus Guard: Detect "Too-Good-To-Be-True" bargains that are likely traps.
+        # If we are < 12h from resolve and we are 90%+ sure, but market price is < 30c,
+        # we assume the market knows something our forecast API doesn't.
+        if _h_val < 12.0 and raw_prob > 0.90 and price < 0.30:
+            _gap = raw_prob - price
+            if _gap > 0.50:
+                raw_prob = (raw_prob + price) / 2.0 # Dampen hubris towards market center
+                prob_source += "+consensus_guard"
         elif direction == "exact":
             # Probability that the daily high lands in the ±0.5°C bracket around threshold.
             # Uses Gaussian CDF integral: P = Φ((threshold+0.5 - forecast)/σ) - Φ((threshold-0.5 - forecast)/σ)
