@@ -194,12 +194,18 @@ class WsBroadcaster:
         """
         Master Plan Handshake Hardening:
         Handle non-standard Connection headers safely.
+        Returns a 400 Bad Request to the client if the handshake is invalid,
+        preventing Tracebacks in the logs.
         """
         headers = getattr(request, "headers", {})
-        if "Connection" in headers:
-            conn = headers.get("Connection", "").lower()
-            if "upgrade" not in conn:
-                logger.debug("[WS-BROADCAST] Non-standard connection header: %s", conn)
+        conn = headers.get("Connection", "").lower() if "Connection" in headers else ""
+        upgrade = headers.get("Upgrade", "").lower() if "Upgrade" in headers else ""
+
+        if "upgrade" not in conn or upgrade != "websocket":
+            logger.warning("[WS-BROADCAST] Rejecting invalid handshake: Connection='%s', Upgrade='%s'", conn, upgrade)
+            # Return (status, headers, body) to cleanly terminate the request
+            return (400, [("Content-Type", "text/plain")], b"Handshake failed: Invalid Upgrade headers\n")
+
         return None  # Proceed with default WebSocket handshake
 
     async def _handle_client(self, websocket):
