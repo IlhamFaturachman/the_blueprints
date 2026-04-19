@@ -132,29 +132,37 @@ class PriceWatcher:
                 )
 
                 def watchdog_fn():
-                    while ws.sock and ws.sock.connected:
-                        if time.time() - self._last_msg_at > self._watchdog_timeout:
-                            ilogger.warning("[WS-MPC] Watchdog timeout: closing stale connection")
-                            ws.close()
-                            break
-                        # Process sub updates
-                        latest = None
-                        while not self._sub_update_queue.empty():
-                            try: latest = self._sub_update_queue.get_nowait()
-                            except: pass
-                        if latest is not None:
-                            desired_subs.clear()
-                            desired_subs.update(latest)
+                    ilogger.info("[WS-MPC] Watchdog thread started.")
+                    while not self._stop_event.is_set():
+                        if ws.sock and ws.sock.connected:
+                            # 1. Heartbeat timeout check
+                            if time.time() - self._last_msg_at > self._watchdog_timeout:
+                                ilogger.warning("[WS-MPC] Watchdog timeout: closing stale connection")
+                                ws.close()
+                                break
+                                
+                            # 2. Process subscription updates
+                            latest = None
+                            while not self._sub_update_queue.empty():
+                                try: latest = self._sub_update_queue.get_nowait()
+                                except: pass
+                            
+                            if latest is not None:
+                                ilogger.info("[WS-MPC] Received subscription update: %d tokens", len(latest))
+                                desired_subs.clear()
+                                desired_subs.update(latest)
+                            
+                            to_add = desired_subs - current_subs
+                            to_remove = current_subs - desired_subs
+                            if to_add:
+                                self._send_op(ws, list(to_add), "subscribe", ilogger)
+                                current_subs.update(to_add)
+                            if to_remove:
+                                self._send_op(ws, list(to_remove), "unsubscribe", ilogger)
+                                current_subs.difference_update(to_remove)
                         
-                        to_add = desired_subs - current_subs
-                        to_remove = current_subs - desired_subs
-                        if to_add:
-                            self._send_op(ws, list(to_add), "subscribe", ilogger)
-                            current_subs.update(to_add)
-                        if to_remove:
-                            self._send_op(ws, list(to_remove), "unsubscribe", ilogger)
-                            current_subs.difference_update(to_remove)
                         time.sleep(1)
+                    ilogger.info("[WS-MPC] Watchdog thread exiting.")
 
                 threading.Thread(target=watchdog_fn, daemon=True).start()
                 
