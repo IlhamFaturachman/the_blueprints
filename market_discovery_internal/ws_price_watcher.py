@@ -155,7 +155,6 @@ class PriceWatcher:
                         time.sleep(1)
 
                 ilogger.info("[WS-MPC] Starting run_forever (Forcing IPv4)...")
-                import socket
                 ws.run_forever(
                     ping_interval=self._ping_interval, 
                     sslopt={"context": ssl_context},
