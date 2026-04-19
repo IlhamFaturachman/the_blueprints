@@ -192,8 +192,12 @@ def fetch_forecast(city, date, icao_override=None):
         return None
 
     def _fetch_wttr():
+        # Query by ICAO code so wttr.in returns data for the exact airport station,
+        # matching the source Polymarket uses for market resolution.
+        icao = icao_override or coords.get("icao")
+        query = icao if icao else urllib.parse.quote(city)
         try:
-            url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
+            url = f"https://wttr.in/{query}?format=j1"
             data = fetch_with_retry(url)
             for w in data.get("weather", []):
                 if w.get("date") == date:

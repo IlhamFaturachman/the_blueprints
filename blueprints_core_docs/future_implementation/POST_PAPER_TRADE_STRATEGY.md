@@ -105,11 +105,15 @@ Semua harus terpenuhi sebelum switch ke real money:
 
 Prioritas berurutan setelah live trading berjalan:
 
-1. **Perluas kota** — tambah kota baru yang sering muncul di Polymarket tapi belum di TARGET_CITIES
-2. **Forecast ensemble** — tambah sumber data ketiga selain Open-Meteo + wttr.in (misal: Tomorrow.io)
-3. **Dynamic stake sizing** — stake lebih besar saat edge tinggi, lebih kecil saat edge tipis (Kelly Criterion)
-4. **Haiku position monitor** — review apakah AI exit decision membantu atau malah cut profit terlalu awal
-5. **Backtest otomatis** — jalankan `run_backtest()` setiap minggu untuk validasi model terus-menerus
+1. **Airport coordinate fix** — verifikasi Open-Meteo dipanggil dengan koordinat airport exact, bukan kota center (lihat `GROK_IMPROVEMENT_PLAN.md` Fix #1) ← PALING PENTING
+2. **Forecast ensemble** — tambah Open-Meteo Ensemble 31-member GFS sebagai sumber ke-3 (lihat `GROK_IMPROVEMENT_PLAN.md` Fix #2)
+3. **NOAA/METAR integration** — data observasi airport yang sama dengan yang Polymarket pakai untuk resolve (lihat `GROK_IMPROVEMENT_PLAN.md` Fix #3)
+4. **Dynamic stake sizing (Kelly Criterion)** — stake lebih besar saat edge tinggi, lebih kecil saat tipis
+5. **Haiku position monitor review** — apakah AI exit decision membantu atau malah cut profit terlalu awal
+6. **Perluas kota** — tambah kota baru yang sering muncul di Polymarket tapi belum di TARGET_CITIES
+7. **Backtest otomatis** — jalankan `run_backtest()` setiap minggu untuk validasi model terus-menerus
+
+> Detail lengkap analisis kompetitor, pseudocode, dan prioritas: lihat `GROK_IMPROVEMENT_PLAN.md`
 
 ---
 

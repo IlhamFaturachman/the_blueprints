@@ -1,6 +1,6 @@
 # THE BLUEPRINTS — Panduan Lengkap Bot Trading Cuaca
 
-**Versi:** 1.1 | **Tanggal:** 19 April 2026 | **Mode aktif:** Paper Trading
+**Versi:** 1.2 | **Tanggal:** 19 April 2026 | **Mode aktif:** Paper Trading
 
 ---
 
@@ -18,6 +18,7 @@
 10. Infrastruktur & Komponen Teknis
 11. Dasbor & Monitoring
 12. Status Saat Ini & Roadmap
+13. Riwayat Bug & Perbaikan
 
 ---
 
@@ -93,7 +94,7 @@ Data historis disimpan di database lokal dan tidak perlu diambil ulang setiap si
 
 Bot hanya tertarik pada satu jenis pasar: **"Suhu tertinggi di kota X pada tanggal Y"**.
 
-Setiap pertanyaan semacam ini terdiri dari 11 sub-pasar (bucket), misalnya untuk London:
+Setiap pertanyaan semacam ini terdiri dari ~11 sub-pasar (bucket), misalnya untuk London:
 
 - "Apakah akan 13°C atau di bawahnya?" → Harga YES: $0.001
 - "Apakah akan 14°C?" → Harga YES: $0.002
@@ -107,19 +108,20 @@ Bot menganalisis setiap bucket secara terpisah dan hanya tertarik pada yang harg
 
 ### 4.2 Kota Target
 
-Bot saat ini memantau **31 kota** di seluruh dunia, termasuk London, New York, Tokyo, Seoul, Singapore, Dubai, Paris, Toronto, Sydney, dan lainnya.
+Bot saat ini memantau **31 kota** di seluruh dunia, termasuk London, New York, Seoul, Singapore, Paris, Toronto, Dallas, Austin, Hong Kong, Madrid, dan lainnya.
 
 ### 4.3 Golden Window — Jendela Waktu Terbaik
 
-Berdasarkan analisis data aktual Polymarket, bot hanya mencari peluang pada **jam 05:00–11:00 WIB** setiap hari.
+Semua temperature market Polymarket **resolve setiap hari jam 19:00 WIB (12:00 UTC)**. Bot hanya mencari peluang pada **jam 05:00–11:00 WIB** setiap hari.
 
 Alasannya:
-
-- Polymarket menerbitkan pasar baru setiap hari sekitar jam 05:00 WIB
-- Semua pasar berakhir (resolve) jam 19:00 WIB
-- Pada rentang 05:00–11:00 WIB, pasar masih dalam kondisi **8–14 jam sebelum berakhir** — cukup waktu untuk prediksi bermakna, tapi cukup dekat untuk hasil cuaca mulai terlihat
+- 14 jam sebelum resolve = 05:00 WIB → pasar baru buka, harga belum efficient
+- 8 jam sebelum resolve = 11:00 WIB → forecast sudah cukup stabil
+- Rentang 05:00–11:00 WIB = **sweet spot** antara ketidakpastian pasar dan kepastian forecast
 
 Di luar jam tersebut, bot tetap berjalan tetapi tidak membuka posisi baru.
+
+**Jumlah peluang yang ditemukan:** Dengan filter probabilitas dan edge aktif, biasanya ditemukan **sekitar 11 peluang** per siklus dalam golden window. Angka ini lebih rendah dari sebelumnya (~50-60) karena model probabilitas telah dikalibrasi ulang agar lebih konservatif — lebih sedikit tapi lebih akurat.
 
 ---
 
@@ -132,15 +134,37 @@ Setelah mendapat prediksi suhu dari Open-Meteo dan wttr.in, bot menggunakan rumu
 - **Pasar "di atas/di bawah"** — menggunakan kurva sigmoid. Semakin jauh prediksi dari batas threshold, semakin tinggi keyakinan bot
 - **Pasar "persis X derajat"** — menggunakan kurva Gaussian (lonceng). Bot paling yakin jika prediksi tepat di angka tersebut, dan keyakinan menurun seiring jarak
 
+**Kalibrasi k-factor sigmoid (diperbarui 19 April 2026):**
+
+| Jarak ke resolve | k sebelumnya | k sekarang | Efek |
+|---|---|---|---|
+| ≤6 jam | 1.3 | 0.9 | Lebih hati-hati saat mendekati resolve |
+| ≤14 jam (golden window) | 1.6 | 1.1 | Tidak lagi overconfident |
+| ≤36 jam | 1.1 | 0.75 | Lebih konservatif |
+| >36 jam | 0.75 | 0.50 | Jauh dari resolve = sangat rendah |
+
+**Hard Ceiling Probabilitas (diperbarui 19 April 2026):**
+
+Meskipun formula sigmoid bisa menghasilkan angka mendekati 100%, bot sekarang menerapkan batas keras berdasarkan margin forecast vs threshold:
+
+| Selisih forecast vs threshold | Probabilitas maksimal |
+|---|---|
+| < 1°C | 75% |
+| 1°C – 2°C | 87% |
+| 2°C – 3°C | 94% |
+| ≥ 3°C | Tidak dibatasi |
+
+Alasan: model cuaca sendiri punya uncertainty ±2–3°C. Tidak realistis jika bot 99% yakin hanya karena selisih 1.5°C.
+
 ### 5.2 Dua Syarat Masuk
 
 Bot hanya membuka posisi jika **dua syarat terpenuhi bersamaan**:
 
 **Syarat 1 — Tingkat Keyakinan Minimum**
-Bot harus yakin minimal **60%** bahwa prediksinya benar (sebelumnya 70%, diturunkan 18 April 2026 untuk mengumpulkan data paper trade).
+Bot harus yakin minimal **60%** bahwa prediksinya benar.
 
 **Syarat 2 — Keuntungan Potensial Minimum**
-Selisih antara keyakinan bot dan harga pasar harus minimal **20%** setelah dikurangi biaya transaksi (slippage). Artinya jika bot 65% yakin tapi harga pasar sudah $0.50, keuntungan potensial hanya 13% — tidak cukup, dilewati.
+Selisih antara keyakinan bot dan harga pasar harus minimal **20%** setelah dikurangi biaya transaksi. Artinya jika bot 65% yakin tapi harga pasar sudah $0.50, keuntungan potensial hanya 13% — tidak cukup, dilewati.
 
 ### 5.3 Regime Pasar
 
@@ -171,49 +195,36 @@ Bot menerapkan aturan ketat untuk menghindari terlalu terkonsentrasi di satu tem
 
 ### 6.3 Ukuran Posisi
 
-Saat ini dalam mode paper trading, setiap posisi menggunakan **$5 USD** (simulasi). Dalam live trading nanti, ukuran posisi bisa disesuaikan berdasarkan besarnya edge — semakin besar keunggulan, semakin besar taruhan (Kelly Criterion).
+Setiap posisi menggunakan **$1.00 USD tepat** (cost + fee = $1.00 total). Tidak ada scaling dinamis berdasarkan confidence — semua posisi sama rata. Ini menjamin akuntansi yang bersih dan hasil yang mudah dibandingkan.
 
-### 6.4 Bagaimana Bot Memilih 5 dari 90 Peluang?
-
-Bayangkan bot menemukan 90 peluang yang sudah lolos filter edge dan probabilitas. Bukan berarti semua langsung dibeli — ada proses seleksi ketat berikutnya:
+### 6.4 Bagaimana Bot Memilih dari Peluang yang Ada?
 
 **Tahap 1 — Klasifikasi Bucket**
-Setiap peluang diberi label:
 
-- `reject` — harga di luar rentang valid (terlalu mahal atau terlalu murah) → **langsung dibuang**
-- `watchlist` — harga terlalu murah (<$0.05), potensi profit terlalu kecil → **dibuang, hanya dipantau**
+- `reject` — harga di luar rentang valid → **langsung dibuang**
+- `watchlist` — harga terlalu murah (<$0.05) → **dibuang, hanya dipantau**
 - `enter_swing` — harga OK, edge OK → **kandidat**
-- `enter_hold_candidate` — edge DAN probabilitas keduanya sangat tinggi → **kandidat prioritas utama**
-
-Sebagian besar dari 90 peluang gugur di tahap ini.
+- `enter_hold_candidate` — edge DAN probabilitas sangat tinggi → **kandidat prioritas utama**
 
 **Tahap 2 — Anti-Korelasi: Satu Kota, Satu Hari, Satu Posisi**
-Dari kandidat yang tersisa, berlaku aturan: satu kota + satu tanggal hanya boleh menghasilkan **1 posisi**. Jika London 19 April punya 3 bucket yang lolos, hanya yang terbaik yang diambil. Sisanya dibuang.
-
-Ini mencegah kerugian ganda jika prediksi cuaca satu kota meleset.
+Dari kandidat yang tersisa, satu kota + satu tanggal hanya boleh menghasilkan 1 posisi. Jika London 19 April punya 3 bucket yang lolos, hanya yang terbaik yang diambil.
 
 **Tahap 3 — Ranking**
-Kandidat yang lolos diurutkan berdasarkan tiga kriteria secara berurutan:
-
-1. **Confidence** (probabilitas model tertinggi) — prioritas utama
-2. **Edge terbesar** — selisih keyakinan vs harga pasar
-3. **Harga YES lebih murah** — harga lebih rendah = ruang keuntungan lebih besar
+Kandidat diurutkan berdasarkan: Confidence → Edge → Harga YES lebih murah.
 
 **Tahap 4 — Slot Tersedia**
-Bot hanya membuka posisi sebanyak slot yang tersedia (`PAPER_MAX_OPEN_POSITIONS`, default: 3). Jika sudah ada 1 posisi terbuka, hanya 2 slot tersisa yang diisi dari ranking terbaik.
+Bot hanya membuka posisi sebanyak slot yang tersedia (maks 5 posisi terbuka bersamaan).
 
 **Tahap 5 — Review Claude Haiku**
-Setiap kandidat final dikirim ke Claude Haiku untuk "second opinion". Haiku bisa memveto keputusan bot jika ada sesuatu yang mencurigakan. Jika diveto, slot tersebut tidak terisi.
+Setiap kandidat final dikirim ke Claude Haiku untuk "second opinion". Haiku bisa memveto jika ada sesuatu yang mencurigakan.
 
 **Contoh nyata:**
 
 ```
-Bucket 17°C ($0.750) → reject (terlalu mahal, >batas maksimum)
-Bucket 18°C ($0.051) → watchlist (terlalu murah, hanya dipantau)
-Bucket 16°C ($0.217) → enter_swing ✓ → masuk ranking → Haiku approve → BELI
+Bucket 17°C ($0.750) → reject (terlalu mahal)
+Bucket 18°C ($0.051) → watchlist (terlalu murah)
+Bucket 16°C ($0.217) → enter_swing ✓ → ranking → Haiku approve → BELI
 ```
-
-Meskipun pasar "mayoritas" bilang 17°C adalah jawaban benar (harga $0.750), bot justru menemukan nilai di bucket lain yang dianggap pasar kurang mungkin — itulah sumber edge-nya.
 
 ---
 
@@ -221,115 +232,101 @@ Meskipun pasar "mayoritas" bilang 17°C adalah jawaban benar (harga $0.750), bot
 
 ### 7.1 Pemantauan Harga Real-Time
 
-Setelah posisi terbuka, bot memantau harga melalui WebSocket — koneksi langsung yang mendapat update harga dalam hitungan detik, bukan menunggu siklus berikutnya.
+Setelah posisi terbuka, bot memantau harga melalui WebSocket — koneksi langsung yang mendapat update harga dalam hitungan detik. Bot men-subscribe token ID posisi ke Polymarket WebSocket, dan setiap ada perubahan harga (event `price_change`, `last_trade_price`, atau `book`) bot langsung menerima notifikasi.
 
 ### 7.2 Tujuh Kondisi Penutupan Posisi (Hybrid Exit)
 
 Bot mengevaluasi tujuh kondisi setiap siklus, berurutan dari prioritas tertinggi:
 
 **1. Haiku Monitor — Forced Exit (Prioritas Tertinggi)**
-Sebelum semua logika lain diperiksa, Claude Haiku menganalisis setiap posisi terbuka. Haiku dipanggil maksimal **setiap 1 jam per posisi**, dengan batas 80 panggilan per hari untuk semua posisi. Jika Haiku memberi sinyal "close" dengan keyakinan ≥75% → posisi langsung ditutup paksa.
+Claude Haiku menganalisis setiap posisi terbuka setiap 1 jam. Jika Haiku memberi sinyal "close" dengan keyakinan ≥75% → posisi langsung ditutup paksa.
+
+> ⚠️ **Newborn Guard (ditambahkan 19 April 2026):** Haiku TIDAK BISA menutup posisi yang berumur kurang dari 2 jam, kecuali kerugian sangat dalam (< -15%). Ini mencegah "false panic" seperti kejadian Seoul dimana Haiku menutup posisi +28% karena harga WS masih stale saat posisi baru dibuka.
+
+> ⚠️ **Profit Guard (diperkuat 19 April 2026):** Haiku juga diblokir jika P&L posisi sedang > +5%. Posisi yang jelas sedang profit tidak boleh ditutup AI karena alasan apapun.
 
 **2. Exit Sniper — Harga Tembus $0.90**
-Jika harga YES tiba-tiba melonjak ke $0.90 atau lebih, bot langsung jual saat itu juga tanpa menunggu. Harga setinggi itu berarti pasar sudah hampir pasti — lebih baik ambil untung sekarang sebelum ada pembalikan.
+Jika harga YES tiba-tiba melonjak ke $0.90 atau lebih → langsung jual. Harga setinggi itu berarti pasar sudah hampir pasti — ambil untung sekarang.
 
 **3. Sniper Stop Loss — Forecast Cuaca Rusak**
-Jika prediksi cuaca tidak lagi valid (Open-Meteo dan wttr.in tiba-tiba tidak sepakat, atau prediksi bergeser drastis) → bot langsung tutup posisi. Alasan: dasar keputusan masuk sudah tidak berlaku.
+Jika prediksi cuaca tidak lagi valid (dua sumber tidak sepakat, atau prediksi bergeser drastis) → tutup posisi. Alasan: dasar keputusan masuk sudah tidak berlaku.
 
 **4. Trailing Stop — Proteksi Keuntungan di Break-Even**
-Aktif jika posisi pernah naik +20% atau lebih dari harga beli. Setelah itu, jika harga turun kembali ke harga entry (titik beli awal) → bot jual di break-even (tidak untung, tidak rugi). Ini mencegah posisi yang pernah bagus berubah jadi kerugian, sekaligus memberi ruang bagi pasar yang fluktuatif untuk bergerak naik-turun-naik tanpa keluar terlalu dini.
+Aktif jika posisi pernah naik +20% atau lebih. Setelah itu, jika harga turun kembali ke harga entry → jual di break-even.
 
 **5. Stop Loss Biasa (Hard Stop)**
-Jika harga turun ke **55%** dari harga entry → potong rugi (sebelumnya 80%, diturunkan 19 April 2026 untuk memberi ruang spread). Contoh: beli di $0.30 → stop loss di $0.165.
+Jika harga turun ke **55%** dari harga entry → potong rugi. Contoh: beli di $0.30 → stop loss di $0.165.
 
 > [!IMPORTANT]
-> **Cooldown 2 Jam**: Stop Loss otomatis ini tidak akan aktif selama **2 jam pertama** sejak posisi dibuka. Ini memberikan waktu bagi pasar untuk melewati fase fluktuasi awal tanpa keluar terlalu dini.
+> **Cooldown 2 Jam**: Stop Loss ini tidak aktif selama 2 jam pertama sejak posisi dibuka. Ini memberi ruang bagi spread awal untuk settle.
 
 **6. Take Profit +100%**
-Target standar: 2x harga entry. Beli $0.30 → target $0.60. Jika tercapai → jual, ambil untung.
+Target standar: 2x harga entry. Beli $0.30 → target $0.60.
 
 **7. Late Window Logic (≤2 Jam Sebelum Resolve)**
-Saat tinggal 2 jam atau kurang sebelum pasar tutup jam 19:00 WIB, bot evaluasi:
-
-- Haiku masih yakin ≥75% DAN forecast valid → **tahan sampai resolve** (biarkan pasar settle sendiri)
+Saat tinggal ≤2 jam sebelum pasar tutup jam 19:00 WIB:
+- Haiku yakin ≥75% DAN forecast valid → **tahan sampai resolve**
 - Yakin <75% atau forecast tidak valid → **jual sekarang**
-- Yakin <45% (sangat rendah) → **"Thesis Decay Exit"** — jual meskipun belum rugi
+- Yakin <45% → **"Thesis Decay Exit"** — jual meskipun belum rugi
 
-Jika tidak ada satupun kondisi terpenuhi → bot **diam dan tunggu** siklus berikutnya.
+### 7.3 Whiplash Shield — Cooldown Setelah Exit
 
-### 7.3 Penutupan Berbasis AI (Haiku Monitor)
+Setelah posisi ditutup oleh Haiku atau stop-loss, kota tersebut masuk **blacklist 24 jam**. Bot tidak akan membuka posisi baru di kota yang sama untuk hari itu.
 
-Claude Haiku memantau posisi terbuka setiap 1 jam dan menerima konteks lengkap untuk membuat keputusan yang akurat:
+Alasan: setelah exit paksa, kondisi pasar di kota tersebut dianggap tidak kondusif. Membuka posisi lagi langsung ("churning") hanya membuang fee tanpa edge.
 
-**Data yang diterima Haiku saat monitor:**
+### 7.4 Penutupan Berbasis AI (Haiku Monitor)
 
-| Field                      | Keterangan                                 |
-| -------------------------- | ------------------------------------------ |
-| `market_question`          | Pertanyaan pasar lengkap                   |
-| `entry_price`              | Harga saat posisi dibuka                   |
-| `current_yes_price`        | Harga pasar sekarang                       |
-| `pnl_pct`                  | Untung/rugi saat ini dalam persen          |
-| `hours_until_resolve`      | Jam tersisa sebelum resolve                |
-| `entry_model_prob`         | Keyakinan bot saat masuk                   |
-| `entry_edge`               | Edge yang dihitung saat masuk              |
-| `forecast_temp_at_entry_c` | Prediksi cuaca waktu posisi dibuka         |
-| `forecast_temp_now_c`      | Prediksi cuaca **sekarang** (terbaru)      |
-| `forecast_drift_c`         | Selisih — berapa derajat forecast bergeser |
+Claude Haiku memantau posisi terbuka setiap 1 jam dan menerima konteks lengkap:
 
-**Cara Haiku memutuskan hold atau close:**
+| Field | Keterangan |
+|---|---|
+| `market_question` | Pertanyaan pasar lengkap |
+| `entry_price` | Harga saat posisi dibuka |
+| `current_yes_price` | Harga pasar sekarang |
+| `pnl_pct` | Untung/rugi saat ini dalam persen |
+| `hours_until_resolve` | Jam tersisa sebelum resolve |
+| `entry_model_prob` | Keyakinan bot saat masuk |
+| `entry_edge` | Edge yang dihitung saat masuk |
+| `forecast_temp_at_entry_c` | Prediksi cuaca waktu posisi dibuka |
+| `forecast_temp_now_c` | Prediksi cuaca **sekarang** (terbaru) |
+| `forecast_drift_c` | Selisih — berapa derajat forecast bergeser |
 
-1. `forecast_drift_c` bergerak melawan thesis (misal direction=above tapi forecast turun) → sinyal kuat close
-2. `pnl_pct` < -30% DAN forecast drift melawan → close
-3. `pnl_pct` < -30% tapi forecast tidak berubah → market panic sementara, hati-hati jangan buru-buru close
-4. `hours_until_resolve` ≤ 2 jam DAN masih rugi dalam → close, potong kerugian
-5. `hours_until_resolve` ≤ 2 jam DAN posisi untung atau flat → tahan sampai resolve
-6. Kalau tidak yakin → default hold, jangan close posisi yang tidak jelas ruginya
+**Cara Haiku memutuskan:**
+1. Forecast drift melawan thesis → sinyal kuat close
+2. P&L < -30% DAN forecast drift melawan → close
+3. P&L < -30% tapi forecast tidak berubah → market panic sementara, jangan buru-buru close
+4. ≤2 jam sebelum resolve DAN masih rugi dalam → close
+5. ≤2 jam sebelum resolve DAN posisi untung → tahan
+6. Tidak yakin → default hold
 
-Contoh keputusan nyata dari Haiku (dari log server):
+### 7.5 Review AI Sebelum Masuk Posisi (Haiku Entry)
 
-> _"CRITICAL MISMATCH: Entered at 0.0606 (implied 94% prob YES) but current 0.05 price (98% prob NO) suggests massive adverse information or model failure. With only 9.5 hours to resolution and price stalled at extreme opposite end, holding exposes remaining capital to near-certain loss."_
+Sebelum membuka posisi, Haiku melakukan sanity check terakhir:
+1. Apakah forecast masuk akal untuk kota dan musim tersebut?
+2. Apakah hours_until_resolve cukup? (<6 jam → sangat skeptis)
+3. Apakah arah + threshold konsisten dengan forecast?
+4. Jika edge < 0.15 atau model_prob < 0.55 → skip
 
-Haiku hanya bisa memveto — tidak bisa memaksa bot membuka posisi baru.
-
-### 7.4 Review AI Sebelum Masuk Posisi (Haiku Entry)
-
-Sebelum membuka posisi, Haiku juga melakukan sanity check terakhir. Data yang dikirim:
-
-- Pertanyaan pasar, kota, tanggal, arah, threshold
-- Harga pasar saat ini, model_prob, edge, hours_until_resolve
-- Prediksi suhu dan sumbernya
-
-**Urutan cek Haiku sebelum entry:**
-
-1. Apakah `forecast_temp_c` masuk akal untuk kota dan tanggal tersebut?
-2. Apakah `hours_until_resolve` cukup? Jika <6 jam, sangat skeptis
-3. Apakah arah + threshold konsisten dengan forecast? (misal direction=above threshold=20 tapi forecast=14 → model_prob harusnya rendah)
-4. Jika `edge` < 0.15 atau `model_prob` < 0.55 → skip
-5. Jika semua lolos → enter
-
-Haiku entry dibatasi **2 panggilan per hari** karena formula bot sendiri sudah sangat selektif — Haiku hanya sebagai lapisan terakhir.
+Haiku entry dibatasi **2 panggilan per hari**.
 
 ---
 
 ## 8. Sistem Pembelajaran Mandiri
 
-Bot dirancang untuk semakin pintar seiring berjalannya waktu melalui dua mekanisme:
+### 8.1 Kalibrasi Probabilitas (Bayesian Shrinkage)
 
-### 8.1 Kalibrasi Probabilitas
+Setiap trade yang selesai dicatat. Setelah minimal **5 data per kategori** terkumpul (per kota, per arah, per jarak waktu), bot mulai "mengoreksi dirinya sendiri" — menyesuaikan perhitungan probabilitas ke depan berdasarkan akurasi historis.
 
-Setiap trade yang selesai dicatat: bot yakin berapa persen, dan apakah hasilnya benar? Data ini dikumpulkan per kota, per arah (atas/bawah/tepat), dan per jarak waktu ke resolve.
-
-Setelah minimal 5 data per kategori terkumpul, bot mulai "mengoreksi dirinya sendiri" — jika selama ini bot 70% yakin tapi kenyataannya hanya menang 50%, bot akan menyesuaikan perhitungannya ke depan.
+Catatan: fitur ini baru aktif efektif setelah ~30 trade terkumpul.
 
 ### 8.2 Auto-Tuner Per Kota (A/C/B)
 
-Berdasarkan rekam jejak trading per kota, bot mengategorikan setiap kota ke dalam tiga status:
+Berdasarkan rekam jejak per kota (minimal 3 trade), bot mengategorikan:
 
-- **A (Aggressive)** — kota dengan win rate tinggi, bot lebih agresif mencari peluang di kota ini
-- **C (Cautious)** — kota dengan win rate rendah, bot lebih selektif
-- **B (Blacklist)** — kota dengan terlalu banyak kerugian berturut-turut, dilewati sepenuhnya untuk siklus tersebut
-
-Sistem ini baru aktif setelah minimal **3 trade per kota** terkumpul.
+- **A (Aggressive)** — win rate tinggi, bot lebih agresif
+- **C (Cautious)** — win rate rendah, bot lebih selektif
+- **B (Blacklist)** — kerugian berturut-turut, dilewati sementara
 
 ---
 
@@ -337,26 +334,28 @@ Sistem ini baru aktif setelah minimal **3 trade per kota** terkumpul.
 
 ### 9.1 Circuit Breaker
 
-Jika total kerugian dalam satu hari melampaui batas tertentu, bot otomatis berhenti membuka posisi baru untuk hari tersebut. Seperti pemutus arus listrik — melindungi dari kerugian berantai.
+Jika total kerugian hari ini melampaui batas → bot berhenti membuka posisi baru untuk hari itu.
 
 ### 9.2 Daily Target Gate
 
-Bot melacak performa harian. Jika target harian sudah tercapai, bot bisa berhenti membuka posisi baru untuk mengamankan keuntungan.
+Jika target harian sudah tercapai → bot bisa berhenti membuka posisi baru untuk mengamankan keuntungan.
 
 ### 9.3 Anti-Korelasi
 
-Bot tidak boleh memiliki dua posisi yang "berlawanan" dalam event yang sama — misalnya tidak bisa membeli "London 16°C" dan "London 17°C" sekaligus, karena jika satu menang, yang lain pasti kalah.
+Tidak boleh punya dua posisi yang saling bertentangan dalam event yang sama (misal London 16°C DAN London 17°C).
 
 ### 9.4 Validasi Prediksi Ganda
 
-Setiap prediksi cuaca divalidasi dari dua sisi:
+- **Konsensus dua sumber** — Open-Meteo dan wttr.in harus sepakat dalam ±2.5°C
+- **Anomaly check** — prediksi tidak boleh >7°C dari rata-rata historis 10 tahun
 
-- **Konsensus dua sumber** — Open-Meteo dan wttr.in harus sepakat
-- **Anomaly check** — prediksi tidak boleh terlalu jauh dari rata-rata historis 10 tahun
+### 9.5 Consensus Guard
 
-### 9.5 Perlindungan Data
+Jika bot >90% yakin tapi harga pasar <30% (pasar sangat tidak setuju) dalam 12 jam terakhir sebelum resolve → probabilitas bot diredam. Ini mencegah bot ngotot melawan konsensus pasar tanpa alasan yang sangat kuat.
 
-Semua data posisi disimpan dengan backup otomatis. Jika bot restart, posisi yang sedang terbuka tetap terlacak dan tidak hilang.
+### 9.6 Perlindungan Data
+
+Semua data posisi disimpan di SQLite (`blueprints_master.db`) dengan mirror JSON (`paper_positions_5usd.json`). Jika bot restart, posisi yang sedang terbuka tetap terlacak.
 
 ---
 
@@ -364,8 +363,7 @@ Semua data posisi disimpan dengan backup otomatis. Jika bot restart, posisi yang
 
 ### 10.1 Database Terpusat
 
-Semua data bot tersimpan dalam satu database SQLite (`blueprints_master.db`), mencakup:
-
+Semua data tersimpan dalam SQLite (`blueprints_master.db`):
 - Posisi aktif dan historis
 - Rekam jejak trade (untuk pembelajaran)
 - Data cuaca historis 31 kota
@@ -375,101 +373,139 @@ Semua data bot tersimpan dalam satu database SQLite (`blueprints_master.db`), me
 
 ### 10.2 Data Warmer
 
-Setiap 2 jam, komponen terpisah (Warmer) mengambil data cuaca historis untuk tanggal-tanggal yang akan datang dan menyimpannya ke database. Ini memastikan saat bot perlu data historis untuk validasi, data sudah tersedia tanpa perlu menunggu.
+Setiap 2 jam, komponen terpisah mengambil data cuaca historis untuk tanggal mendatang dan menyimpan ke database. Memastikan data historis selalu tersedia saat dibutuhkan.
 
-### 10.3 WebSocket Price Watcher
+### 10.3 WebSocket Price Watcher (Diperbarui 19 April 2026)
 
-Komponen terpisah yang menjaga koneksi langsung ke Polymarket untuk mendapat update harga real-time posisi yang sedang terbuka. Jika koneksi terputus, sistem otomatis mencoba menyambung kembali.
+Komponen terpisah yang menjaga koneksi langsung ke Polymarket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`).
+
+**Perbaikan yang diterapkan:**
+- **IPv4 Force** — VPS tidak punya routing IPv6 ke internet, menyebabkan koneksi hang. Kini dipaksa IPv4.
+- **Subscribe by token ID** — Bot subscribe ke `assets_ids` dengan token ID posisi aktif. Polymarket mengirim `book` (snapshot orderbook) + `price_change`/`last_trade_price` secara real-time.
+- **Universal book parser** — Mendukung format orderbook lama (list) dan baru (dict).
+- **Watchdog thread** — Thread terpisah memantau koneksi, reconnect jika tidak ada pesan >120 detik.
+- **Heartbeat logging** — 5% dari event yang diterima di-log untuk membuktikan koneksi aktif.
+
+Saat tidak ada posisi terbuka, WS tetap terkoneksi tapi tidak subscribe ke token apapun — hanya menerima broadcast global `new_market`. Saat posisi dibuka, token ID langsung di-subscribe dan harga mulai mengalir.
 
 ### 10.4 AI — Claude Haiku
 
-Bot menggunakan Claude Haiku (model AI ringan dari Anthropic) untuk tiga fungsi:
+| Fungsi | Kapan Dipanggil | Interval | Batas Per Hari |
+|---|---|---|---|
+| **Entry Review** | Sanity check sebelum buka posisi | Per kandidat | 2 panggilan |
+| **Position Monitor** | Pantau posisi terbuka — hold atau close? | Setiap 1 jam per posisi | 80 panggilan |
+| **Market Sensing** | Identifikasi kode ICAO dari deskripsi pasar | Per pasar baru | 50 panggilan |
 
-| Fungsi               | Kapan Dipanggil                                           | Interval                    | Batas Per Hari   |
-| -------------------- | --------------------------------------------------------- | --------------------------- | ---------------- |
-| **Entry Review**     | Sanity check terakhir sebelum buka posisi                 | Per kandidat                | 2 panggilan      |
-| **Position Monitor** | Pantau posisi terbuka — hold atau close?                  | **Setiap 1 jam per posisi** | **80 panggilan** |
-| **Market Sensing**   | Identifikasi kode stasiun cuaca ICAO dari deskripsi pasar | Per pasar baru              | 50 panggilan     |
-
-Interval monitor sengaja 1 jam (sebelumnya 12 jam) karena posisi hidup 8–14 jam — dengan interval 1 jam, tiap posisi bisa dicek hingga **14 kali sepanjang hidupnya**. Ketiga fungsi menerima konteks spesifik berbeda dan punya prompt yang berbeda — bukan satu prompt generik.
-
-Biaya estimasi: **$0.14 per hari** dengan monitoring penuh. Dengan sisa kredit $3.69, cukup untuk **~26 hari**.
-
-Catatan penting: Haiku bekerja per siklus (~5 menit), bukan real-time. Dan Haiku hanya bisa **memveto** — tidak bisa membuka posisi baru sendiri.
+Biaya estimasi: **~$0.03–0.04 per hari**.
 
 ### 10.5 Telegram Notifikasi
 
-Bot mengirim notifikasi ke Telegram untuk kejadian penting:
-
+Bot mengirim notifikasi untuk:
 - Posisi baru dibuka
 - Posisi ditutup (beserta hasil profit/rugi)
-- Peringatan sistem (misalnya koneksi bermasalah)
-- Laporan harian
+- Peringatan sistem
+- **Laporan atribusi profit mingguan** (hanya setiap 7 hari — bukan setiap siklus)
 
 ### 10.6 Server
 
-Bot berjalan di VPS (Virtual Private Server) di Jakarta dengan alamat `103.253.244.158`, aktif 24 jam sehari. Dikelola sebagai layanan sistem (systemd) yang otomatis restart jika terjadi crash.
+VPS di Jakarta, IP `103.253.244.158`, aktif 24 jam. Dikelola sebagai systemd service yang otomatis restart jika crash.
 
 ---
 
 ## 11. Dasbor & Monitoring
 
-Bot memiliki antarmuka web yang dapat diakses di browser (`http://103.253.244.158:8080/web_ui/`), menampilkan:
+Antarmuka web di `http://103.253.244.158:8080/web_ui/`:
 
-| Panel               | Informasi                                               |
-| ------------------- | ------------------------------------------------------- |
-| Portfolio Value     | Total nilai portofolio saat ini                         |
-| Floating PnL        | Keuntungan/kerugian posisi yang masih terbuka           |
-| Realized PnL        | Keuntungan/kerugian yang sudah direalisasi              |
-| Win Rate            | Persentase trade yang menang                            |
-| Circuit Breaker     | Status apakah bot masih aktif membuka posisi            |
-| Bot Health          | Kapan siklus terakhir berjalan                          |
-| Self-Learning       | Status A/C/B per kota (Aggressive/Cautious/Blacklist)   |
-| Last Cycle Stats    | Statistik siklus terakhir                               |
-| Live Open Positions | Semua posisi yang sedang terbuka dengan harga real-time |
+| Panel | Informasi |
+|---|---|
+| Portfolio Value | Total nilai portofolio saat ini |
+| Floating PnL | Keuntungan/kerugian posisi terbuka |
+| Realized PnL | Keuntungan/kerugian yang sudah direalisasi |
+| Win Rate | Persentase trade yang menang |
+| Circuit Breaker | Status apakah bot masih aktif |
+| Bot Health | Kapan siklus terakhir berjalan |
+| Self-Learning | Status A/C/B per kota |
+| Last Cycle Stats | Statistik siklus terakhir |
+| Live Open Positions | Semua posisi dengan harga real-time |
 
 ---
 
 ## 12. Status Saat Ini & Roadmap
 
-### Status Per 18 April 2026
+### Status Per 19 April 2026
 
-| Komponen               | Status                                                         |
-| ---------------------- | -------------------------------------------------------------- |
-| Bot                    | ✅ Aktif berjalan di server                                    |
-| Mode                   | 📄 Paper Trading (simulasi, bukan uang nyata)                  |
-| Modal                  | $1.00 USD per posisi (simulasi), maks 5 posisi terbuka         |
-| Threshold keyakinan    | 60%                                                            |
-| Threshold edge minimum | 20%                                                            |
-| Stop Loss Multiplier   | **0.55 (45% cap)**                                             |
-| Cooldown Stop Loss     | **120 menit (2 jam)**                                          |
-| Data historis          | ✅ Lengkap — 31 kota siap                                      |
-| Golden window          | 05:00–11:00 WIB setiap hari                                    |
-| Claude Haiku           | ✅ Aktif — entry, monitor, sensing                             |
-| Trailing stop          | Break-even guard — hanya exit jika harga kembali ke harga beli |
-| AI budget              | ~$0.03–0.04/hari (Haiku), estimasi cukup 3+ minggu             |
+| Komponen | Status |
+|---|---|
+| Bot | ✅ Aktif berjalan di server |
+| Mode | 📄 Paper Trading (simulasi) |
+| Modal awal | $5.00 USD (fresh reset 19 April 2026) |
+| Stake per posisi | $1.00 USD tepat (cost + fee) |
+| Maks posisi terbuka | 5 posisi bersamaan |
+| Threshold keyakinan | 60% |
+| Threshold edge minimum | 20% |
+| Stop Loss Multiplier | 0.55 (harga turun 45% dari entry → cut loss) |
+| Cooldown Stop Loss | 120 menit (2 jam) |
+| Golden window | 05:00–11:00 WIB setiap hari |
+| Resolve time | 19:00 WIB setiap hari |
+| Data historis | ✅ Lengkap — 31 kota |
+| Claude Haiku | ✅ Aktif — entry, monitor, sensing |
+| WebSocket | ✅ Aktif dengan IPv4 force |
+| Newborn Guard | ✅ Aktif — 2 jam proteksi setelah entry |
+| Profit Guard | ✅ Aktif — blokir exit jika P&L > +5% |
+| Whiplash Shield | ✅ Aktif — cooldown 24 jam per kota setelah exit paksa |
+| Consensus Guard | ✅ Aktif — redam prob jika bot vs pasar divergen |
+| Prob Ceiling | ✅ Aktif — max 75%/87%/94% per margin |
+| AI budget | ~$0.03–0.04/hari, estimasi cukup 3+ minggu |
 
-### Roadmap 7 Hari Paper Trade (Apr 18–25)
+### Roadmap Bertahap
 
-**Tujuan:** Mengumpulkan data trade nyata untuk kalibrasi dan evaluasi.
+**Phase 1 — Stabilitas (3 hari pertama: 19–21 April)**
+- Target: Bot berjalan tanpa crash, WS tidak freeze, tidak ada SyntaxError/ImportError
+- Indikator sukses: Trade masuk normal jam 05:00–11:00 WIB setiap hari
+- Jika kalah semua: investigasi dulu sebelum top-up $5
 
-**Target:** Minimal 15–20 closed trades untuk analisis bermakna.
+**Phase 2 — Evaluasi (7 hari: 19–25 April)**
+- Target: Kumpulkan 20–30 closed trades
+- Indikator sukses: Win rate ≥ 50%, tidak ada rugi > $2 total
+- Sistem Bayesian mulai punya data untuk kalibrasi
 
-**Setelah 7 hari:**
-
-1. Analisis win rate per kota
-2. Evaluasi akurasi model prediksi
-3. Keputusan threshold berdasarkan data
-4. Implementasi auto-tuner yang aktif
-5. Pertimbangkan switch ke live trading ($10–20 USD)
+**Phase 3 — Live Trading (setelah 15 hari: mulai ~4 Mei)**
+- Masuk uang asli $5
+- Prasyarat: Win rate ≥ 55%, avg profit > avg loss, tidak ada bug dalam 7 hari terakhir
 
 ### Roadmap Jangka Panjang
 
 1. **Tambah sumber prediksi ketiga** — forecast lebih akurat dengan 3 model independen
-2. **Stake dinamis** — taruhan lebih besar saat edge tinggi, lebih kecil saat tipis
+2. **Stake dinamis (Kelly Criterion)** — taruhan lebih besar saat edge tinggi
 3. **Perluas kota** — tambah kota yang sering muncul di Polymarket
-4. **Backtest mingguan otomatis** — validasi model terus-menerus dengan data historis
+4. **REST API fallback sebelum Haiku exit** — verifikasi harga real via REST jika WS stale sebelum memperbolehkan Haiku menutup posisi (Bug #8 dari RCA Seoul, belum diimplementasikan)
 
 ---
 
-_Dokumen ini disiapkan sebagai referensi lengkap non-teknis untuk memahami cara kerja The Blueprints Trading Bot. Dibuat 18 April 2026 berdasarkan analisis mendalam seluruh komponen sistem._
+## 13. Riwayat Bug & Perbaikan
+
+### Insiden Seoul — 19 April 2026
+
+**Kronologi:** Bot masuk posisi Seoul (YES) di $0.53. Harga naik ke $0.68 (+28% profit). WebSocket freeze → harga di DB stuck di $0.52 → Haiku hitung P&L = -1.9% → Haiku panic close → posisi ditutup rugi padahal sedang profit.
+
+**Root cause:**
+1. **WS IPv6 Deadlock** — VPS tidak punya routing IPv6, library hang menunggu timeout
+2. **Haiku Hypersensitivity** — Haiku close posisi baru berdasarkan harga stale tanpa menunggu WS sync
+3. **Sigmoid Overconfidence** — k=1.6 terlalu agresif, model 99% yakin untuk gap 2°C
+
+**Perbaikan yang diterapkan:**
+
+| Bug | Fix | File |
+|---|---|---|
+| WS IPv6 deadlock | Force IPv4 via socket.getaddrinfo | `ws_price_watcher.py` |
+| WS tidak dapat initial snapshot | `initial_dump: True` + subscribe `book` event | `ws_price_watcher.py` |
+| WS format parser gagal | Universal parser (list + dict) | `ws_price_watcher.py` |
+| WS freeze silent | Watchdog thread + heartbeat log 5% | `ws_price_watcher.py` |
+| Haiku false panic exit | Newborn Guard (2 jam) + Profit Guard (>5%) | `analysis.py` |
+| Sigmoid overconfident | k-factors diturunkan + hard ceiling cap | `pricing.py` |
+| Telegram spam tiap siklus | Attribution report hanya setiap 7 hari | `cycles.py` |
+| Stake tidak exact $1 | Hapus risk-multiplier + bypass depth scaling | `cycles.py` + server `.env` |
+
+---
+
+_Dokumen ini adalah referensi lengkap untuk memahami cara kerja The Blueprints Trading Bot. Diperbarui 19 April 2026 mencakup semua perbaikan pasca-insiden Seoul._
