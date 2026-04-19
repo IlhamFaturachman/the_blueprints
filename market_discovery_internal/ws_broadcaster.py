@@ -193,17 +193,21 @@ class WsBroadcaster:
     async def _process_request(self, connection, request):
         """
         Master Plan Handshake Resilience:
-        Loosen the check to accommodate Nginx/Proxy header transformations.
-        We only reject if 'upgrade' is missing from the Connection header.
+        Return a proper websockets.http11.Response object to comply with
+        the asyncio server in websockets v16.0, avoiding AssertionError.
         """
         headers = getattr(request, "headers", {})
         conn = headers.get("Connection", "").lower() if "Connection" in headers else ""
         
         # We only block clear non-WebSocket attempts (like HTTP Keep-Alive probes).
-        # Valid WebSocket handshakes via Nginx will include 'upgrade' in Connection.
         if "upgrade" not in conn:
             logger.debug("[WS-BROADCAST] Rejecting non-upgrade request: Connection='%s'", conn)
-            return (400, [("Content-Type", "text/plain")], b"Handshake failed: Upgrade required\n")
+            try:
+                from websockets.http11 import Response
+                return Response(400, "Upgrade Required", [("Content-Type", "text/plain")], b"Handshake failed: Upgrade required\n")
+            except ImportError:
+                # Fallback for older versions if they somehow exist
+                return (400, [("Content-Type", "text/plain")], b"Handshake failed: Upgrade required\n")
 
         return None  # Let the library's robust internal check handle the rest
 
