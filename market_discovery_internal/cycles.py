@@ -311,6 +311,7 @@ def run_paper_trading_cycle(
     ws_watcher=None,
     last_ws_update_at=None,
     ws_stale_detection_minutes=15,
+    on_position_opened_fn=None,
 ):
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
     global _HEARTBEAT_SENT
@@ -907,6 +908,7 @@ def run_paper_trading_cycle(
             fetch_orderbook_quote_fn=_get_orderbook_quote,
             is_paper_trading=True,
             available_cash=available_cash,
+            on_position_opened_fn=on_position_opened_fn,
         )
         # [ACCOUNTING] Debit cash for each newly opened position
         for pos in opened_this_cycle:
@@ -1635,6 +1637,7 @@ def append_opened_positions_from_candidates(
     fetch_orderbook_quote_fn,
     is_paper_trading=True,
     available_cash=None,
+    on_position_opened_fn=None, # [FIX] Added missing signature
 ):
     """Open positions from ranked candidates while respecting city and slot limits."""
     opened_this_cycle = []
@@ -1772,6 +1775,14 @@ def append_opened_positions_from_candidates(
 
         next_open_positions.append(position)
         opened_this_cycle.append(position)
+        
+        # [FIX] Invoke instant callback for WebSocket refresh
+        if on_position_opened_fn:
+            try:
+                on_position_opened_fn(position)
+            except Exception as _cb_err:
+                logger.error(f"[WS-CALLBACK] Error: {_cb_err}")
+
         open_token_ids.add(str(token_id))
         if city_key:
             open_city_counts[city_key] = open_city_counts.get(city_key, 0) + 1
