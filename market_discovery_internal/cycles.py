@@ -1222,14 +1222,6 @@ def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
         entry_fee_usd = calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
         cost_basis = round(shares_cost + entry_fee_usd, 4)
     
-    # Final clamping to ensure we NEVER exceed stake_usd when inclusive is on
-    if PAPER_STAKE_INCLUSIVE and cost_basis > float(stake_usd):
-        # Micro-adjustment if rounding caused overshoot
-        cost_delta = cost_basis - float(stake_usd)
-        if cost_delta > 0:
-             shares_cost = round(shares_cost - cost_delta, 4)
-             cost_basis = round(shares_cost + entry_fee_usd, 4)
-
     target_price = _compute_take_profit_price(effective_price)
     entry_yes_reference = _safe_float(opportunity.get("yes_price"), effective_price)
     entry_price_source = str(opportunity.get("entry_price_source") or "yes_price")
