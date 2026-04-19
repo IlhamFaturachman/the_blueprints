@@ -119,45 +119,22 @@ class PriceWatcher:
             try:
                 ilogger.info("[WS-MPC] Connecting to %s", self._url)
                 import ssl
+                ilogger.info("[WS-MPC] Handshake started for %s (Origin: https://polymarket.com)", self._url)
                 ws = websocket.WebSocketApp(
                     self._url,
                     on_open=lambda w: self._on_open(w, current_subs, desired_subs, ilogger),
                     on_message=lambda w, m: self._on_message(w, m, ilogger),
                     on_error=lambda w, e: ilogger.warning("[WS-MPC] Error: %s", e),
                     on_close=lambda w, c, m: self._on_close(w, c, m, current_subs, ilogger),
+                    header={"Origin": "https://polymarket.com"}
                 )
 
-                ssl_context = ssl.create_default_context()
-                if os.environ.get("WS_TLS_NO_VERIFY") == "1":
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
-
-                def watchdog_fn():
-                    while ws.sock and ws.sock.connected:
-                        if time.time() - self._last_msg_at > self._watchdog_timeout:
-                            ws.close()
-                            break
-                        latest = None
-                        while not self._sub_update_queue.empty():
-                            try: latest = self._sub_update_queue.get_nowait()
-                            except: pass
-                        if latest is not None:
-                            desired_subs.clear()
-                            desired_subs.update(latest)
-                        to_add = desired_subs - current_subs
-                        to_remove = current_subs - desired_subs
-                        if to_add:
-                            self._send_op(ws, list(to_add), "subscribe", ilogger)
-                            current_subs.update(to_add)
-                        if to_remove:
-                            self._send_op(ws, list(to_remove), "unsubscribe", ilogger)
-                            current_subs.difference_update(to_remove)
-                        time.sleep(1)
-
-                ilogger.info("[WS-MPC] Starting run_forever (Forcing IPv4)...")
+                threading.Thread(target=watchdog_fn, daemon=True).start()
+                
+                ilogger.info("[WS-MPC] Starting run_forever loop (IPv4 Force)...")
                 ws.run_forever(
                     ping_interval=self._ping_interval, 
-                    sslopt={"context": ssl_context},
+                    sslopt={"cert_reqs": ssl.CERT_NONE}, # Simpler SSL bypass
                     # Force AF_INET (IPv4) to avoid IPv6 deadlock on VPS
                     sockopt=((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),)
                 )
