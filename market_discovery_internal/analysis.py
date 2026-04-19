@@ -458,14 +458,34 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
 
         # [FIX] Profit Guard: Override AI if the position is clearly winning.
         # This protects us from 'False Panic' during price feed lags.
+        # [FIX] Profit Guard + Newborn Guard: Override AI if position is winning OR too new.
+        # This protects from 'False Panic' during price feed lags and spread noise.
         if result.get("action") == "close":
             try:
-                # If PNL is positive and significant (>5%), forced hold.
                 cur_pnl = float(pnl_pct) if pnl_pct is not None else 0.0
+
+                # Calculate position age in hours
+                age_hours = 0.0
+                opened_at_str = position.get("opened_at")
+                if opened_at_str:
+                    try:
+                        from datetime import datetime, timezone
+                        opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+                        age_hours = (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600
+                    except Exception:
+                        pass
+
+                is_newborn = age_hours < 2.0  # Position under 2 hours old
+
                 if cur_pnl > 5.0:
+                    # Clearly profitable — block exit
                     result["action"] = "hold"
-                    result["reasoning"] = f"[PROFIT-GUARD] Overrode AI close due to {cur_pnl}% profit. " + result.get("reasoning", "")
-            except:
+                    result["reasoning"] = f"[PROFIT-GUARD] Blocked: P&L={cur_pnl:.1f}% > 5%. " + result.get("reasoning", "")
+                elif is_newborn and cur_pnl > -15.0:
+                    # Position under 2h old, not deeply underwater — allow spread to settle
+                    result["action"] = "hold"
+                    result["reasoning"] = f"[NEWBORN-GUARD] Blocked: Age={age_hours:.1f}h < 2h, P&L={cur_pnl:.1f}%. Spread still settling. " + result.get("reasoning", "")
+            except Exception:
                 pass
 
         _record_ai_usage_cost("haiku_monitor", HAIKU_MONITOR_MODEL, response)

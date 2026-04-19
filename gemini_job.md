@@ -29,14 +29,15 @@ Dokumen ini mencatat detail teknis pengerjaan untuk mempermudah handoff ke Claud
     - **Wallet Reset**: Injeksi saldo awal $5.00 langsung ke database.
     - **Verification**: Konfirmasi log `monitoring 0 active tokens`.
 
-### [2026-04-19 10:04 WIB] WS Parser v2 (Universal Heartbeat)
+### [2026-04-19 12:30 WIB] Prob Calibration & Profit Guard Hardening
 - **Status**: ✅ COMPLETED
-- **Task**: Memastikan stream data Polymarket tidak ada yang terbuang & Dallas/Austin sinkron.
+- **Task**: Fix overconfident probability model, meluaskan proteksi Haiku false exit, dan fix WS IPv6 deadlock.
 - **Changes**:
-    - **Universal Parser**: Handler `book` ditingkatkan untuk support format List maupun Dict. Ini menjamin `initial_dump` selalu terbaca apa pun tipenya.
-    - **Heartbeat Log**: Menambahkan login "Heartbeat" (5% raw messages) agar kita bisa liat bot aktif nerima data meskipun harga lagi stabil.
-    - **Robustness**: Menambahkan filter harga outlier (0.001 - 0.999) agar data noise tidak masuk ke DB.
-- **Verification**: Dallas ($0.36) dan Austin ($0.10) harus mulai update harga live setelah restart.
+    - **analysis.py**: Tambahkan Newborn Guard — posisi <2 jam dan P&L >-15% tidak bisa di-close Haiku (mencegah Seoul incident terulang).
+    - **pricing.py**: Turunkan sigmoid k-factors (golden window: 1.6→1.1, dst) agar prob 90%+ butuh margin >2.5°C.
+    - **pricing.py**: Tambahkan hard probability ceiling berdasarkan forecast margin (<1°C→cap 75%, <2°C→cap 87%, <3°C→cap 94%).
+    - **ws_price_watcher.py**: Force AF_INET (IPv4) untuk bypass IPv6 deadlock yang menyebabkan WS stuck di VPS.
+- **Verification**: grep "NEWBORN-GUARD" analysis.py → found. grep "Hard ceiling" pricing.py → found. grep "Forcing IPv4" ws_price_watcher.py → found. Bot restart sukses tanpa error.
 
 ---
-*Status Update: System Fully Hardened. WS-v2-Parser & Heartbeat Active.*
+*Status Update: System Hardened. WS-v4-Active & Newborn-Guard Active.*

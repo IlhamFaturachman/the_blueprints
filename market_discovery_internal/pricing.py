@@ -342,13 +342,13 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None, k_factor_ove
         if k_factor_override is not None:
             k = k_factor_override
         elif _h_val <= 6:
-            k = 1.3
+            k = 0.9
         elif _h_val <= 14:
-            k = 1.6
-        elif _h_val <= 36:
             k = 1.1
-        else:
+        elif _h_val <= 36:
             k = 0.75
+        else:
+            k = 0.50
 
         if direction == "above":
             # Sigmoid: smooth gradient around threshold.
@@ -357,6 +357,19 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None, k_factor_ove
         elif direction == "below":
             diff = max(-50, min(50, (threshold - forecast)))
             raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
+
+        # [FIX] Hard ceiling: cap confidence based on forecast margin.
+        # Weather ensemble uncertainty is ±2-3°C, so even large margins
+        # should not yield near-100% certainty from the sigmoid alone.
+        if direction in ("above", "below"):
+            abs_diff = abs(forecast - threshold)
+            if abs_diff < 1.0:
+                raw_prob = min(raw_prob, 0.75)
+            elif abs_diff < 2.0:
+                raw_prob = min(raw_prob, 0.87)
+            elif abs_diff < 3.0:
+                raw_prob = min(raw_prob, 0.94)
+            # abs_diff >= 3.0: no cap — margin is large enough to justify high confidence
 
         # [FIX] Consensus Guard: Detect "Too-Good-To-Be-True" bargains that are likely traps.
         # If we are < 12h from resolve and we are 90%+ sure, but market price is < 30c,

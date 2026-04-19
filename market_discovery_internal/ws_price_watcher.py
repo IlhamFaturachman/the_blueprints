@@ -154,8 +154,14 @@ class PriceWatcher:
                             current_subs.difference_update(to_remove)
                         time.sleep(1)
 
-                threading.Thread(target=watchdog_fn, daemon=True).start()
-                ws.run_forever(ping_interval=self._ping_interval, sslopt={"context": ssl_context})
+                ilogger.info("[WS-MPC] Starting run_forever (Forcing IPv4)...")
+                import socket
+                ws.run_forever(
+                    ping_interval=self._ping_interval, 
+                    sslopt={"context": ssl_context},
+                    # Force AF_INET (IPv4) to avoid IPv6 deadlock on VPS
+                    sockopt=((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),)
+                )
             except Exception as e:
                 ilogger.error("[WS-MPC] Connection loop error: %s", e)
             
