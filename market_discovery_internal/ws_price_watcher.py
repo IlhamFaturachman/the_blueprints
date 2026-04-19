@@ -53,19 +53,21 @@ class PriceWatcher:
         """Signal the watcher to stop and terminate the process with hardened cleanup."""
         self._stop_event.set()
         
+        # Local capture of the process handle to avoid race conditions during shutdown.
         p = self._process
         if p is not None:
             try:
-                # We do NOT call self.stop() or any global _ws_watcher.stop() here to avoid recursion.
                 if p.is_alive():
-                    logger.info("[WS-MPC] Terminating watcher process %d...", p.pid)
+                    pid = getattr(p, 'pid', 'unknown')
+                    logger.info("[WS-MPC] Terminating watcher process %s...", pid)
                     p.terminate()
-                    p.join(timeout=5)  # Increased timeout for safer cleanup
+                    p.join(timeout=5)
                     if p.is_alive():
                         p.kill()
             except (AttributeError, Exception) as e:
                 logger.warning("[WS-MPC] Error during process termination: %s", e)
             finally:
+                # Always clear the handle regardless of success to allow restart.
                 self._process = None
         
         logger.info("[WS-MPC] PriceWatcher cleanup complete.")
@@ -194,14 +196,13 @@ class PriceWatcher:
                         except: pass
 
     def _on_open(self, ws, current_subs, desired_subs, ilogger):
-        latest = None
+        # Clear drainage to ensure fresh start on reconnect
         while not self._sub_update_queue.empty():
-            try: latest = self._sub_update_queue.get_nowait()
+            try: self._sub_update_queue.get_nowait()
             except: pass
-        if latest is not None:
-            desired_subs.clear()
-            desired_subs.update(latest)
+        
         if desired_subs:
+            ilogger.info("[WS-MPC] Re-subscribing to %d tokens on open", len(desired_subs))
             self._send_op(ws, list(desired_subs), "subscribe", ilogger)
             current_subs.clear(); current_subs.update(desired_subs)
 

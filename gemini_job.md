@@ -29,5 +29,13 @@ Dokumen ini mencatat detail teknis pengerjaan untuk mempermudah handoff ke Claud
     - **Wallet Reset**: Injeksi saldo awal $5.00 langsung ke database.
     - **Verification**: Konfirmasi log `monitoring 0 active tokens`.
 
+### [2026-04-19 09:47 WIB] WebSocket Reliability Fix
+- **Status**: ✅ COMPLETED
+- **Task**: Memperbaiki UI freeze (WS Down) akibat race condition saat opening posisi.
+- **Changes**:
+    - **Race Fix**: `_on_instant_ws_refresh` kini menggunakan in-memory set (`_current_monitored_tokens`) alih-alih reload database yang rawan telat sinkronisasi.
+    - **Process Hardening**: Menambahkan local capture dan PID getattr pada `ws_price_watcher.py` untuk mencegah `NoneType` error saat termination.
+    - **Log**: Menambahkan log re-subskripsi otomatis saat koneksi WS open kembali.
+
 ---
-*Status Update: System Running - TRUE ZERO STATE. Logic Armor Fully Active.*
+*Status Update: System Running - TRUE ZERO STATE. Logic Armor & WS-Relay Active.*

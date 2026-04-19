@@ -206,24 +206,21 @@ def wired_run_discovery_cycle(inspect=False, aggressive_scan=False):
 
 def _on_instant_ws_refresh(pos):
     """[NEW] Instant callback called by cycles.py as soon as a position is built."""
-    global _ws_broadcaster, _ws_watcher
+    global _ws_broadcaster, _ws_watcher, _current_monitored_tokens
     try:
+        token_id = str(pos.get("token_id", ""))
+        city = str(pos.get("city", ""))
+        entry_price = float(pos.get("entry_price", 0))
+
         if _ws_broadcaster:
-            token_id = str(pos.get("token_id", ""))
-            city = str(pos.get("city", ""))
-            entry_price = float(pos.get("entry_price", 0))
             _ws_broadcaster.broadcast_opened(token_id=token_id, city=city, entry_price=entry_price)
             print(f"[WS-WIRING] Instant broadcast for {city} ({token_id})")
 
         if _ws_watcher:
-            # Sync watcher with all current open tokens to include the new one
-            from market_discovery_internal.state_persistence import load_paper_state
-            # Use lock to access file safely
-            with _state_lock:
-                st = load_paper_state(PAPER_STATE_FILE)
-            token_ids = {str(p["token_id"]) for p in st.get("positions", []) if p.get("status") == "open"}
-            _ws_watcher.update_subscriptions(token_ids)
-            print(f"[WS-WIRING] Instant subscription refresh: {len(token_ids)} tokens")
+            # Sync watcher instantly using memory set, bypassing SQLite race
+            _current_monitored_tokens.add(token_id)
+            _ws_watcher.update_subscriptions(_current_monitored_tokens)
+            print(f"[WS-WIRING] Instant subscription refresh: {len(_current_monitored_tokens)} tokens")
         sys.stdout.flush()
     except Exception as e:
         print(f"[WS-WIRING] Error in instant refresh: {e}")
@@ -311,6 +308,7 @@ _ws_watcher = None
 _ws_broadcaster = None
 _last_ws_update_at = multiprocessing.Value('d', time.time())
 _state_lock = threading.Lock()
+_current_monitored_tokens = set()
 
 _command_server = None
 
@@ -345,13 +343,14 @@ def _start_background_services():
     )
     # [WIRING] Initial subscription sync
     try:
-        import json
         from market_discovery_internal.state_persistence import load_paper_state
         from market_discovery_internal.config import PAPER_STATE_FILE
         state = load_paper_state(PAPER_STATE_FILE)
-        token_ids = {p["token_id"] for p in state.get("positions", []) if p.get("status") == "open"}
-        _ws_watcher.update_subscriptions(token_ids)
-        print(f"[WS-WIRING] Initial sync: monitoring {len(token_ids)} active tokens")
+        token_ids = {str(p["token_id"]) for p in state.get("positions", []) if p.get("status") == "open"}
+        _current_monitored_tokens.clear()
+        _current_monitored_tokens.update(token_ids)
+        _ws_watcher.update_subscriptions(_current_monitored_tokens)
+        print(f"[WS-WIRING] Initial sync: monitoring {len(_current_monitored_tokens)} active tokens")
     except Exception as exc:
         print(f"[WS-WIRING] Initial sync failed: {exc}")
 
