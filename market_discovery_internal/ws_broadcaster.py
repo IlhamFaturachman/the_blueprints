@@ -120,6 +120,10 @@ class WsBroadcaster:
     def _run_thread(self) -> None:
         try:
             import websockets
+            # Suppress verbose tracebacks from random internet scanners (SSH, HTTP probes) 
+            # crashing the websockets HTTP handshake parser
+            import logging
+            logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
         except ImportError:
             logger.warning(
                 "[WS-BROADCAST] websockets package not installed. "
