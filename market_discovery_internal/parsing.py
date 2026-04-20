@@ -174,10 +174,12 @@ def parse_market(
         except Exception as _e:
             _log_unmatched(question, f"haiku_sensing_error: {_e}")
 
-    # Ambiguity Guard: If city has multiple known sensors but none was explicitly found -> REJECT
-    # This prevents the flaw where a city has LGA and JFK but the market only says "New York"
+    # Ambiguity Guard: Previously rejected if no explicit station. 
+    # Now we allow fallback to the primary station in CITY_STATIONS or TARGET_CITIES.
     if len(allowed_stations) > 1 and not source_explicit:
-        return _with_reason(None, "ambiguous_station")
+        # Fallback to the primary station (first in list)
+        icao_code = allowed_stations[0]
+        # logic continues to fallback check below
     
     # Fallback for single-station cities or explicit matches
     if not icao_code:
@@ -334,3 +336,38 @@ def parse_market(
         "hours_until_resolve": round(hours_until_resolve, 1),
         "market_slug": market_slug,
     })
+
+
+CITY_PATTERNS = {
+    "new york city": r"\bnew york(?:\s+city)?\b|\bnyc\b|\bjfk\b|\blga\b",
+    "chicago":       r"\bchicago\b|\bord\b|\bmdw\b",
+    "london":        r"\blondon\b|\blhr\b|\bgatwick\b",
+    "hong kong":     r"\bhong kong\b|\bhk\b|\bhkg\b|\bvhhh\b",
+    "miami":         r"\bmiami\b|\bmia\b",
+    "toronto":       r"\btoronto\b|\byyz\b",
+    "paris":         r"\bparis\b|\bcdg\b|\bory\b",
+    "seoul":         r"\bseoul\b|\bicn\b|\bgmp\b",
+    "singapore":     r"\bsingapore\b|\bwsss\b|\bsin\b",
+    "shanghai":      r"\bshanghai\b|\bzspd\b",
+    "beijing":       r"\bbeijing\b|\bzbaa\b",
+    "los angeles":   r"\blos angeles\b|\bla\b|\blax\b",
+    "houston":       r"\bhouston\b|\biah\b",
+    "dallas":        r"\bdallas\b|\bdfw\b",
+    "denver":        r"\bdenver\b|\bden\b",
+    "atlanta":       r"\batlanta\b|\batl\b",
+    "seattle":       r"\bseattle\b|\bsea\b",
+    "austin":        r"\baustin\b|\baus\b",
+    "madrid":        r"\bmadrid\b|\bmad\b",
+    "milan":         r"\bmilan\b|\bmxp\b|\blin\b",
+    "tel aviv":      r"\btel aviv\b|\btlv\b",
+    "warsaw":        r"\bwarsaw\b|\bwaw\b",
+    "ankara":        r"\bankara\b|\besb\b",
+    "taipei":        r"\btaipei\b|\btpe\b",
+    "sao paulo":     r"\bsao paulo\b|\bgru\b",
+    "buenos aires":  r"\bbuenos aires\b|\beze\b",
+    "chengdu":       r"\bchengdu\b|\bctu\b",
+    "chongqing":     r"\bchongqing\b|\bckg\b",
+    "shenzhen":      r"\bshenzhen\b|\bszx\b",
+    "wuhan":         r"\bwuhan\b|\bwuh\b",
+    "lucknow":       r"\blucknow\b|\blko\b",
+}
