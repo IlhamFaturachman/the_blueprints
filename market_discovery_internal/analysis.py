@@ -662,6 +662,22 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
             "confidence": round(prob, 4),
         }
 
+    # EXACT BRACKET: cheap but high-ROI markets — enter if edge is positive
+    # Exact brackets (direction == "exact") naturally have low prices ($0.05-$0.40)
+    # and low model_prob (10-38%) but offer 150-900% ROI on wins.
+    # Bypass the watchlist gate for these — they are tradeable, not just watchable.
+    direction = opportunity.get("direction", "")
+    if direction == "exact" and _min <= price <= _max and edge > 0:
+        return {
+            "bucket": "enter_swing",
+            "strategy": "swing",
+            "reason": (
+                f"Exact bracket USD {price:.2f} with Prob {prob_pct}, Edge {edge_pct}. "
+                f"High-ROI bracket entry."
+            ),
+            "confidence": round(prob, 4),
+        }
+
     # WATCHLIST: cheap markets within the entry floor — monitor but don't enter yet
     if _min <= price <= ENTRY_BUCKET_WATCH_MAX_PRICE:
         return {
