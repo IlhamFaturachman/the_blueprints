@@ -2,8 +2,11 @@
 
 import sys
 import json
+import logging
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logger = logging.getLogger(__name__)
 
 from market_discovery_internal.config import (
     GAMMA_EVENTS_API, DISCOVERY_MAX_FETCH_PAGES, DISCOVERY_AGGRESSIVE_SCAN_PAGES,
@@ -75,7 +78,8 @@ def fetch_markets(inspect=False, aggressive_scan=False):
             page_candidates = [m for m in page_markets if _is_temperature_market_candidate(m)]
             candidates.extend(page_candidates)
             offset += page_limit
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Pagination stopped at offset {offset}: {e}")
             break
 
     # Deduplicate by token_id

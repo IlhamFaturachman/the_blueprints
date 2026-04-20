@@ -83,8 +83,7 @@ class PriceWatcher:
         """Internal subprocess loop — handles connection and watchdog."""
         import os
         log_dir = "logs"
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
+        os.makedirs(log_dir, exist_ok=True)
         
         internal_log_path = os.path.join(log_dir, "ws_internal.log")
         ilogger = logging.getLogger("PriceWatcherSub")
@@ -108,22 +107,32 @@ class PriceWatcher:
         def _prefer_ipv4(host, port, family=0, type=0, proto=0, flags=0):
             if parsed_host and str(host).lower() == parsed_host:
                 try: return original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-                except: pass
+                except Exception: pass
             return original_getaddrinfo(host, port, family, type, proto, flags)
         socket.getaddrinfo = _prefer_ipv4
 
         self._last_msg_at = time.time()
         current_subs = set()
         desired_subs = set()
+        _subs_lock = threading.Lock()  # HIGH-1: Protect current_subs and desired_subs
         # [FIX] Flag to signal watchdog that a fresh connection was established
         # and current_subs must be cleared so all desired_subs get re-subscribed.
         _needs_resub = threading.Event()
+        # CRITICAL-1: Event to signal old watchdog thread to exit before spawning new one
+        _watchdog_stop = threading.Event()
+
+        import ssl
+        import certifi
 
         while not self._stop_event.is_set():
             try:
                 ilogger.info("[WS-MPC] Connecting to %s", self._url)
-                import ssl
                 ilogger.info("[WS-MPC] Handshake started for %s (Origin: https://polymarket.com)", self._url)
+
+                # CRITICAL-1: Signal old watchdog to stop, wait for it to exit
+                _watchdog_stop.set()
+                time.sleep(0.5)
+                _watchdog_stop.clear()
 
                 # [FIX] Signal that the next connection needs full re-subscribe
                 _needs_resub.set()
@@ -139,58 +148,68 @@ class PriceWatcher:
                 )
 
                 def watchdog_fn():
+                    from queue import Empty
                     ilogger.info("[WS-MPC] Watchdog thread started.")
-                    while not self._stop_event.is_set():
+                    while not self._stop_event.is_set() and not _watchdog_stop.is_set():
                         if ws.sock and ws.sock.connected:
                             # [FIX] On fresh connection, clear current_subs so all
                             # desired tokens get re-subscribed on the new socket.
                             if _needs_resub.is_set():
                                 _needs_resub.clear()
-                                if current_subs:
-                                    ilogger.info("[WS-MPC] Reconnect detected — clearing %d stale subs for full re-subscribe", len(current_subs))
-                                current_subs.clear()
+                                with _subs_lock:
+                                    if current_subs:
+                                        ilogger.info("[WS-MPC] Reconnect detected — clearing %d stale subs for full re-subscribe", len(current_subs))
+                                    current_subs.clear()
 
                             # 1. Heartbeat timeout check
                             if time.time() - self._last_msg_at > self._watchdog_timeout:
                                 ilogger.warning("[WS-MPC] Watchdog timeout: closing stale connection")
                                 ws.close()
                                 break
-                                
-                            # 2. Process subscription updates
+
+                            # 2. Process subscription updates (HIGH-3: drain with try/except Empty)
                             latest = None
-                            while not self._sub_update_queue.empty():
-                                try: latest = self._sub_update_queue.get_nowait()
-                                except: pass
-                            
+                            while True:
+                                try:
+                                    latest = self._sub_update_queue.get_nowait()
+                                except Exception:
+                                    break
+
                             if latest is not None:
                                 ilogger.info("[WS-MPC] Received subscription update: %d tokens", len(latest))
-                                desired_subs.clear()
-                                desired_subs.update(latest)
-                            
-                            to_add = desired_subs - current_subs
-                            to_remove = current_subs - desired_subs
+                                with _subs_lock:
+                                    desired_subs.clear()
+                                    desired_subs.update(latest)
+
+                            with _subs_lock:
+                                to_add = desired_subs - current_subs
+                                to_remove = current_subs - desired_subs
                             if to_add:
                                 self._send_op(ws, list(to_add), "subscribe", ilogger)
-                                current_subs.update(to_add)
+                                with _subs_lock:
+                                    current_subs.update(to_add)
                             if to_remove:
                                 self._send_op(ws, list(to_remove), "unsubscribe", ilogger)
-                                current_subs.difference_update(to_remove)
-                        
+                                with _subs_lock:
+                                    current_subs.difference_update(to_remove)
+
                         time.sleep(1)
                     ilogger.info("[WS-MPC] Watchdog thread exiting.")
 
                 threading.Thread(target=watchdog_fn, daemon=True).start()
-                
+
+                # CRITICAL-2: Use proper SSL verification with certifi CA bundle
+                ssl_context = ssl.create_default_context(cafile=certifi.where())
                 ilogger.info("[WS-MPC] Starting run_forever loop (IPv4 Force)...")
                 ws.run_forever(
-                    ping_interval=self._ping_interval, 
-                    sslopt={"cert_reqs": ssl.CERT_NONE}, # Simpler SSL bypass
+                    ping_interval=self._ping_interval,
+                    sslopt={"ssl_context": ssl_context},
                     # Force AF_INET (IPv4) to avoid IPv6 deadlock on VPS
                     sockopt=((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),)
                 )
             except Exception as e:
                 ilogger.error("[WS-MPC] Connection loop error: %s", e)
-            
+
             if self._stop_event.is_set(): break
             time.sleep(self._reconnect_delay + random.uniform(0, 5))
 
@@ -199,7 +218,8 @@ class PriceWatcher:
         ilogger = self._ilogger
         try:
             msg = json.loads(raw)
-        except: return
+        except Exception:
+            return
         
         # Polymarket often sends single objects or lists
         events = msg if isinstance(msg, list) else [msg]
@@ -225,8 +245,8 @@ class PriceWatcher:
                         # Extract price from various possible fields
                         cp = c.get("best_bid") or c.get("price") or c.get("best_ask")
                         if cid and cp is not None:
-                            try: self._update_queue.put((str(cid), float(cp)))
-                            except: pass
+                            try: self._update_queue.put_nowait((str(cid), float(cp)))
+                            except Exception: pass
                     continue
                     
                 elif etype == "book":
@@ -240,7 +260,8 @@ class PriceWatcher:
                                 price_val = first[0]
                             elif isinstance(first, dict):
                                 price_val = first.get("price") or first.get("best_bid")
-                        except: pass
+                        except Exception:
+                            pass
                 
                 elif etype == "last_trade_price":
                     price_val = event.get("price")
@@ -251,9 +272,12 @@ class PriceWatcher:
                 if tid and price_val is not None:
                     try:
                         f_price = float(price_val)
-                        # Filter out obviously rogue prices like $0 or extreme spikes
-                        if 0.001 <= f_price <= 0.999:
-                            self._update_queue.put((str(tid), f_price))
+                        # Filter out rogue prices outside valid 0-1 range
+                        if 0.0 <= f_price <= 1.0:
+                            try:
+                                self._update_queue.put_nowait((str(tid), f_price))
+                            except Exception:
+                                pass  # Queue full — drop stale data
                             if random.random() < 0.1: # 10% sample for successful parse logs
                                 ilogger.info("[WS-MPC] Parsed %s: %s -> %s", etype, tid, f_price)
                     except (ValueError, TypeError):
@@ -311,15 +335,30 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
     from market_discovery_internal.cycles import close_paper_position
     from datetime import datetime, timezone
 
-    # [Hardeninig] Persistently track consecutive stop-loss hits per token
+    # [Hardening] Persistently track consecutive stop-loss hits per token
     # to avoid exiting on single-tick anomalies (flash crashes / internet noise).
-    _sl_tick_counters = {} 
+    _sl_tick_counters = {}
+    _sl_cleanup_counter = 0  # HIGH-5: Track calls for periodic cleanup
 
     def callback(token_id: str, bid_price: float) -> None:
+        nonlocal _sl_cleanup_counter
         with lock:
             try:
                 state = load_paper_state(state_path)
                 positions = state.get("positions", [])
+
+                # HIGH-5: Periodically clean up _sl_tick_counters for tokens
+                # no longer in open positions (every 100 callbacks)
+                _sl_cleanup_counter += 1
+                if _sl_cleanup_counter >= 100:
+                    _sl_cleanup_counter = 0
+                    open_token_ids = {
+                        p.get("token_id") for p in positions
+                        if p.get("status") == "open"
+                    }
+                    stale_keys = [k for k in _sl_tick_counters if k not in open_token_ids]
+                    for k in stale_keys:
+                        del _sl_tick_counters[k]
                 changed = False
 
                 for i, pos in enumerate(positions):

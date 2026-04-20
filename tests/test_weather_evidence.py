@@ -31,7 +31,7 @@ def test_weather_evidence_valid_when_fresh_and_quality_high():
         fetched_at=now,
     )
 
-    assert is_weather_evidence_valid(evidence, max_age_hours=3.0, min_quality_score=0.65) is True
+    assert is_weather_evidence_valid(evidence, max_age=3.0, min_quality=0.65) is True
 
 
 def test_weather_evidence_invalid_when_stale():
@@ -45,7 +45,7 @@ def test_weather_evidence_invalid_when_stale():
         fetched_at=old,
     )
 
-    assert is_weather_evidence_valid(evidence, max_age_hours=3.0, min_quality_score=0.65) is False
+    assert is_weather_evidence_valid(evidence, max_age=3.0, min_quality=0.65) is False
 
 
 def test_weather_evidence_invalid_when_forecast_missing():
@@ -58,4 +58,4 @@ def test_weather_evidence_invalid_when_forecast_missing():
         fetched_at=now,
     )
 
-    assert is_weather_evidence_valid(evidence, max_age_hours=3.0, min_quality_score=0.65) is False
+    assert is_weather_evidence_valid(evidence, max_age=3.0, min_quality=0.65) is False

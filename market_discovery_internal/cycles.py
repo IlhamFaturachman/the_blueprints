@@ -143,7 +143,6 @@ def enrich_discovery_markets(
 
         # [MODUL L] Rate Limit Shield: Dampen burst requests to provider
         if i % 5 == 0:
-            import time
             time.sleep(0.5)
 
         city = market["city"]
@@ -392,11 +391,10 @@ def run_paper_trading_cycle(
 
     # [DAILY RESET] Check BEFORE updating last_cycle_at so we compare previous vs now
     _prev_cycle_at_raw = state_meta.get("last_cycle_at")
-    now_utc = datetime.now(timezone.utc)
     if _prev_cycle_at_raw:
         from market_discovery_internal.reporting import parse_utc_datetime
         _prev_cycle_dt = parse_utc_datetime(_prev_cycle_at_raw)
-        if _prev_cycle_dt and _prev_cycle_dt.date() < now_utc.date():
+        if _prev_cycle_dt and _prev_cycle_dt.date() < now_dt.date():
             # New day — reset daily session baseline to current actual wallet
             _daily_sess = state_meta.get("daily_session") or {}
             if isinstance(_daily_sess, dict):
@@ -518,7 +516,7 @@ def run_paper_trading_cycle(
 
     # Sync subscriptions to MPC process
     if ws_watcher and hasattr(ws_watcher, "update_subscriptions"):
-        open_ids = {p["token_id"] for p in state.get("positions", []) if p.get("status") == "open"}
+        open_ids = {str(p["token_id"]) for p in state.get("positions", []) if p.get("status") == "open"}
         ws_watcher.update_subscriptions(open_ids)
 
     # Use aggressive scan if WS is stale or force_aggressive_scan is True
@@ -674,19 +672,11 @@ def run_paper_trading_cycle(
                 forced_closed["haiku_monitor_reasoning"] = str(monitor_result.get("reasoning") or "")
                 closed_this_cycle.append(forced_closed)
                 next_history.append(forced_closed)
-                state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("exit_value", 0.0)), 4)
+                state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("net_exit_value", forced_closed.get("exit_value", 0.0))), 4)
                 haiku_monitor_forced_exits += 1
                 continue
 
-        forecast_valid = forecast_still_valid_fn(
-            position,
-            current_yes_price,
-            hours_until_resolve,
-            forecast_cache=position_forecast_cache,
-            forecast_cache_stats=position_forecast_cache_stats,
-        )
-        
-        # [MODUL G] Exit Sniper (Aggressive sweeps)
+        # [MODUL G] Exit Sniper (Aggressive sweeps) — checked BEFORE forecast call to avoid wasted API calls
         if current_yes_price >= 0.90:
             forced_closed = close_paper_position_fn(
                 position=position,
@@ -696,8 +686,16 @@ def run_paper_trading_cycle(
             )
             closed_this_cycle.append(forced_closed)
             next_history.append(forced_closed)
-            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("exit_value", 0.0)), 4)
+            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("net_exit_value", forced_closed.get("exit_value", 0.0))), 4)
             continue
+
+        forecast_valid = forecast_still_valid_fn(
+            position,
+            current_yes_price,
+            hours_until_resolve,
+            forecast_cache=position_forecast_cache,
+            forecast_cache_stats=position_forecast_cache_stats,
+        )
 
         if not forecast_valid:
             forced_closed = close_paper_position_fn(
@@ -708,7 +706,7 @@ def run_paper_trading_cycle(
             )
             closed_this_cycle.append(forced_closed)
             next_history.append(forced_closed)
-            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("exit_value", 0.0)), 4)
+            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("net_exit_value", forced_closed.get("exit_value", 0.0))), 4)
             continue
 
         confidence_score = position_confidence_score_fn(position, current_yes_price, forecast_valid)
@@ -734,9 +732,9 @@ def run_paper_trading_cycle(
         if updated_position.get("status") == "closed":
             closed_this_cycle.append(updated_position)
             next_history.append(updated_position)
-            # [ACCOUNTING] Credit cash with exit proceeds when position closes in main cycle
-            exit_value = float(updated_position.get("exit_value", 0.0))
-            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + exit_value, 4)
+            # [ACCOUNTING] Credit cash with net exit proceeds (after fees) when position closes in main cycle
+            net_exit_val = float(updated_position.get("net_exit_value", updated_position.get("exit_value", 0.0)))
+            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + net_exit_val, 4)
 
             # [MODUL N] Telegram Notification for Closure using Template
             pnl = float(updated_position.get("realized_pnl_usd", 0.0))
@@ -810,6 +808,9 @@ def run_paper_trading_cycle(
             if not closed_at_str: continue
             closed_dt = parse_utc_datetime(closed_at_str)
             if not closed_dt: continue
+            # [FIX] Ensure closed_dt is timezone-aware (assume UTC if naive)
+            if closed_dt.tzinfo is None:
+                closed_dt = closed_dt.replace(tzinfo=timezone.utc)
             
             age_hours = (_now_ts_whiplash - closed_dt.timestamp()) / 3600.0
             if age_hours <= WHIPLASH_COOLDOWN_HOURS:
@@ -870,7 +871,7 @@ def run_paper_trading_cycle(
             last_date = datetime.fromisoformat(last_cycle_str).date()
             if last_date < now_dt.date():
                 state_meta.pop("circuit_breaker_alert_sent", None)
-    except:
+    except Exception:
         pass
 
     if effective_allow_new_entries and _daily_loss >= _drawdown_limit:
@@ -990,12 +991,11 @@ def run_paper_trading_cycle(
             forecast = pos.get('forecast_temp_c', 'N/A')
             
             # Calculate hours until resolve for better context
-            now_utc = datetime.now(timezone.utc)
             end_dt = parse_utc_datetime(pos.get('end_date'))
             
             # Handle potentially negative or None resolution time gracefully in alerts
             if end_dt:
-                diff_sec = (end_dt - now_utc).total_seconds()
+                diff_sec = (end_dt - now_dt).total_seconds()
                 hours_left = round(diff_sec / 3600, 1)
                 hours_label = f"{hours_left}h lagi" if hours_left > 0 else "⚡ Resolving NOW"
             else:
@@ -1149,6 +1149,11 @@ def run_paper_trading_cycle(
         "last_cycle_performance": performance,
         "current_wallet": float(wallet_after_position_management),
     }
+
+    # [FIX] Cap history to last 500 entries to prevent unbounded memory growth
+    _MAX_HISTORY_ENTRIES = 500
+    if len(next_history) > _MAX_HISTORY_ENTRIES:
+        next_history = next_history[-_MAX_HISTORY_ENTRIES:]
 
     next_state = {
         "positions": next_open_positions,
@@ -1370,9 +1375,11 @@ def evaluate_hybrid_exit(
     # [PACK D] Partial TP: at 1.5x entry, lock in profit by moving stop to break-even
     _PARTIAL_TP_MULT = 1.5 - 1e-9  # epsilon tolerance for float precision
     partial_tp_taken = bool(position.get("partial_tp_taken", False))
+    partial_tp_triggered = False
     if not partial_tp_taken and entry_price > 0 and price >= entry_price * _PARTIAL_TP_MULT:
         # Move stop_loss to entry_price (break-even) to protect the profit
         stop_loss_price = max(stop_loss_price, entry_price)
+        partial_tp_triggered = True
         # (The updated peak and partial_tp_taken flag are returned in peak_updates)
 
     # [PACK D] Trailing stop: trigger if price drops 15% from peak AND peak was 20%+ profitable
@@ -1391,6 +1398,7 @@ def evaluate_hybrid_exit(
             "confidence_score": confidence_score,
             "peak_price": round(updated_peak, 4),
             "partial_tp_taken": partial_tp_taken or (price >= entry_price * 1.5),
+            "stop_loss_price": round(stop_loss_price, 4),
         }
 
     # Stop loss cooldown: don't fire within HYBRID_STOP_LOSS_COOLDOWN_HOURS of entry.
@@ -1417,6 +1425,7 @@ def evaluate_hybrid_exit(
             "confidence_score": confidence_score,
             "peak_price": round(updated_peak, 4),
             "partial_tp_taken": partial_tp_taken,
+            "stop_loss_price": round(stop_loss_price, 4),
         }
 
     if price >= target_price and strategy == "swing":
@@ -1427,6 +1436,7 @@ def evaluate_hybrid_exit(
             "confidence_score": confidence_score,
             "peak_price": round(updated_peak, 4),
             "partial_tp_taken": True,
+            "stop_loss_price": round(stop_loss_price, 4),
         }
 
     hours = hours_until_resolve
@@ -1442,6 +1452,7 @@ def evaluate_hybrid_exit(
             "confidence_score": confidence_score,
             "peak_price": round(updated_peak, 4),
             "partial_tp_taken": partial_tp_taken,
+            "stop_loss_price": round(stop_loss_price, 4),
         }
 
     if hours is not None and hours <= HYBRID_LATE_WINDOW_HOURS:
@@ -1453,6 +1464,7 @@ def evaluate_hybrid_exit(
                 "confidence_score": confidence_score,
                 "peak_price": round(updated_peak, 4),
                 "partial_tp_taken": partial_tp_taken,
+                "stop_loss_price": round(stop_loss_price, 4),
             }
 
         if confidence_score >= HYBRID_MIN_CONFIDENCE_TO_HOLD:
@@ -1463,6 +1475,7 @@ def evaluate_hybrid_exit(
                 "confidence_score": confidence_score,
                 "peak_price": round(updated_peak, 4),
                 "partial_tp_taken": partial_tp_taken,
+                "stop_loss_price": round(stop_loss_price, 4),
             }
 
         return {
@@ -1472,6 +1485,7 @@ def evaluate_hybrid_exit(
             "confidence_score": confidence_score,
             "peak_price": round(updated_peak, 4),
             "partial_tp_taken": partial_tp_taken,
+            "stop_loss_price": round(stop_loss_price, 4),
         }
 
     return {
@@ -1481,6 +1495,7 @@ def evaluate_hybrid_exit(
         "confidence_score": confidence_score,
         "peak_price": round(updated_peak, 4),
         "partial_tp_taken": partial_tp_taken or (price >= entry_price * _PARTIAL_TP_MULT),
+        "stop_loss_price": round(stop_loss_price, 4),
     }
 
 
@@ -1570,6 +1585,9 @@ def update_paper_position(
         updated["peak_price"] = decision["peak_price"]
     if "partial_tp_taken" in decision:
         updated["partial_tp_taken"] = decision["partial_tp_taken"]
+    # [FIX] Persist stop_loss_price changes (e.g. partial TP raising stop to break-even)
+    if "stop_loss_price" in decision:
+        updated["stop_loss_price"] = decision["stop_loss_price"]
 
     if decision["action"] == "sell":
         updated = close_paper_position(
@@ -1588,7 +1606,7 @@ def update_paper_position(
 
 def build_open_position_inventory(open_positions):
     """Build token and per-city occupancy maps for currently open positions."""
-    open_token_ids = {position.get("token_id") for position in open_positions if position.get("status") == "open"}
+    open_token_ids = {str(position.get("token_id")) for position in open_positions if position.get("status") == "open"}
     open_city_counts = {}
 
     for position in open_positions:

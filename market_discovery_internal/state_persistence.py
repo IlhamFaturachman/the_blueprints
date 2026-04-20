@@ -1,6 +1,10 @@
 import json
+import logging
 import os
+import tempfile
 from market_discovery_internal.database_manager import db
+
+logger = logging.getLogger(__name__)
 
 def _default_meta():
     """Build a default meta dict from config, evaluated lazily at call time."""
@@ -42,8 +46,8 @@ def load_paper_state(path=None):
                 for k, v in defaults.items():
                     loaded["meta"].setdefault(k, v)
                 return loaded
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to load state from %s: %s", path, e)
         # File missing — return fresh state with config-based defaults
         empty = dict(_EMPTY_STATE)
         empty["meta"] = _default_meta()
@@ -58,10 +62,15 @@ def load_paper_state(path=None):
 
     positions = db.get_active_positions()
     
-    # Load history (Last 100 trades for UI performance)
     conn = db._get_conn()
+
+    # Load history (Last 100 trades for UI performance)
     history_rows = conn.execute("SELECT raw_json FROM trade_history ORDER BY closed_at DESC LIMIT 100").fetchall()
     history = [json.loads(r['raw_json']) for r in history_rows]
+
+    # [CRITICAL FIX] Compute realized PnL from ALL trades, not just the UI-limited 100
+    pnl_row = conn.execute("SELECT COALESCE(SUM(pnl_usd), 0.0) AS total_pnl FROM trade_history").fetchone()
+    realized_pnl_total = float(pnl_row['total_pnl'])
 
     # Load cycle journal (Last 100 for UI)
     metrics = db.get_latest_metrics(limit=100)
@@ -70,7 +79,6 @@ def load_paper_state(path=None):
     base_wallet = float(portfolio.get('base_wallet') or PAPER_BASE_WALLET)
     # [ACCOUNTING FIX] Compute cash from first principles: base_wallet + realized_pnl - open_cost_basis
     # This ensures cash is always accurate regardless of prior accounting bugs.
-    realized_pnl_total = sum(float(h.get('realized_pnl_usd', 0.0) or 0.0) for h in history)
     open_cost_basis = sum(float(p.get('cost_basis', 0.0) or 0.0) for p in positions)
     cash = round(base_wallet + realized_pnl_total - open_cost_basis, 4)
 
@@ -113,14 +121,12 @@ def save_paper_state(state, path=None):
     # 1. Update Portfolio Summary
     db.update_portfolio(base_wallet, cash, total_pnl)
 
-    # 2. Update Active Positions (Atomic Replace)
-    conn = db._get_conn()
-    conn.execute("DELETE FROM active_positions") # Clear to avoid ghosts
-    for pos in state.get("positions", []):
-        db.add_position(pos)
+    # 2. Update Active Positions (Atomic Replace in single transaction)
+    db.replace_all_positions(state.get("positions", []))
 
     # 3. Add Cycle Metric — idempotent: only persist if the latest entry's timestamp
     # differs from the most recently stored metric (prevents double-write per cycle).
+    conn = db._get_conn()
     journal = state.get("cycle_journal", [])
     if journal:
         latest_entry = journal[-1]
@@ -162,7 +168,7 @@ def save_paper_state(state, path=None):
             )
     conn.commit()
 
-    # 5. Mirror to JSON (Mirrored Copy for Dashboard/Manual Debug)
+    # 5. Mirror to JSON (Atomic write via temp file + rename for crash safety)
     if path:
         try:
             # Inject meta defaults so the JSON mirror is self-consistent for readers
@@ -170,9 +176,20 @@ def save_paper_state(state, path=None):
             defaults = _default_meta()
             mirror["meta"] = dict(defaults)
             mirror["meta"].update(state.get("meta") or {})
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(mirror, f, indent=2)
-            # Ensure it's world-readable for the nginx-served dashboard
-            os.chmod(path, 0o644)
-        except:
-            pass
+            # Write to temp file then atomically rename (POSIX atomic)
+            dir_name = os.path.dirname(os.path.abspath(path))
+            fd, tmp_path = tempfile.mkstemp(suffix=".tmp", dir=dir_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(mirror, f, indent=2)
+                os.chmod(tmp_path, 0o644)
+                os.rename(tmp_path, path)
+            except Exception:
+                # Clean up temp file on failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception as e:
+            logger.error("Failed to write JSON mirror to %s: %s", path, e)

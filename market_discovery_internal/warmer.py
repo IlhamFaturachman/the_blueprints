@@ -4,6 +4,7 @@ Ensures discovery cycles stay fast by having weather data ready in advance.
 """
 
 import time
+import threading
 import logging
 from datetime import datetime, timedelta, timezone
 from market_discovery_internal.config import TARGET_CITIES
@@ -17,31 +18,41 @@ logger = logging.getLogger(__name__)
 class GudangDataWarmer:
     def __init__(self, check_interval_hours=2):
         self.check_interval_hours = check_interval_hours
-        self.is_running = False
+        self._stop_event = threading.Event()
         self._last_429_time = 0
+        self._last_429_lock = threading.Lock()
+
+    @property
+    def is_running(self):
+        return not self._stop_event.is_set()
 
     def start(self):
         """Start the background warming loop."""
-        self.is_running = True
+        self._stop_event.clear()
         logger.info(f"GudangDataWarmer started. Interval: {self.check_interval_hours}h")
         
-        while self.is_running:
+        while not self._stop_event.is_set():
             try:
                 # [MODUL L] Process Watchdog Update
                 db.update_heartbeat("warmer")
                 
                 # Cooldown check for 429s (10 minute silent period if tripped)
-                if (time.time() - self._last_429_time) < 600:
-                    time.sleep(60)
+                with self._last_429_lock:
+                    in_cooldown = (time.time() - self._last_429_time) < 600
+                if in_cooldown:
+                    if self._stop_event.wait(60):
+                        break
                     continue
 
                 self.warm_all_cities()
                 
                 logger.debug(f"Warming cycle complete. Sleeping for {self.check_interval_hours}h...")
-                time.sleep(self.check_interval_hours * 3600)
+                if self._stop_event.wait(self.check_interval_hours * 3600):
+                    break
             except Exception as e:
                 logger.error(f"GudangDataWarmer loop error: {e}")
-                time.sleep(300)
+                if self._stop_event.wait(300):
+                    break
 
     def warm_all_cities(self):
         """Warm both historical and forecast data for all target cities."""
@@ -91,7 +102,7 @@ class GudangDataWarmer:
 
     def stop(self):
         """Gracefully stop the warmer."""
-        self.is_running = False
+        self._stop_event.set()
         logger.info("GudangDataWarmer stopping...")
 
 # Singleton instance for module-level access

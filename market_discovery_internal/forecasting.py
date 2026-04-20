@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+import logging
 import urllib.parse
 import os
 import json
@@ -11,6 +12,8 @@ from market_discovery_internal.config import (
     CONSENSUS_MAX_ERROR_C, HISTORICAL_DEVIATION_C, ANOMALY_LOG_FILE
 )
 from market_discovery_internal.utils import fetch_with_retry, send_telegram_alert
+
+logger = logging.getLogger(__name__)
 
 class ForecastTemp(float):
     """Float wrapper to store the oracle source."""
@@ -145,7 +148,10 @@ def fetch_forecast(city, date, icao_override=None):
     if cached:
         # Re-fetch historical avg for the full ForecastTemp object
         hist_avg = _fetch_historical_average(city, date)
-        ft = ForecastTemp(cached['forecast_temp'], cached['source'] + " (cache)")
+        _src = cached['source']
+        if not _src.endswith(" (cache)"):
+            _src += " (cache)"
+        ft = ForecastTemp(cached['forecast_temp'], _src)
         ft.historical_avg = hist_avg
         ft.noaa_current = None # Snapshot METAR not stored in discovery cache
         return ft
@@ -201,7 +207,10 @@ def fetch_forecast(city, date, icao_override=None):
             data = fetch_with_retry(url)
             for w in data.get("weather", []):
                 if w.get("date") == date:
-                    return float(w.get("maxtempC", 0))
+                    raw_val = w.get("maxtempC")
+                    if raw_val is None:
+                        return None
+                    return float(raw_val)
         except Exception:
             pass
         return None
@@ -226,9 +235,21 @@ def fetch_forecast(city, date, icao_override=None):
         f_wt = executor.submit(_fetch_wttr)
         f_noaa = executor.submit(_fetch_noaa)
         
-        t_om = f_om.result()
-        t_wt = f_wt.result()
-        t_noaa = f_noaa.result()
+        try:
+            t_om = f_om.result()
+        except Exception as exc:
+            logger.warning("Open-Meteo fetch failed for %s/%s: %s", city, date, exc)
+            t_om = None
+        try:
+            t_wt = f_wt.result()
+        except Exception as exc:
+            logger.warning("wttr.in fetch failed for %s/%s: %s", city, date, exc)
+            t_wt = None
+        try:
+            t_noaa = f_noaa.result()
+        except Exception as exc:
+            logger.warning("NOAA fetch failed for %s/%s: %s", city, date, exc)
+            t_noaa = None
 
     base_avg = None
     source = None
@@ -236,6 +257,11 @@ def fetch_forecast(city, date, icao_override=None):
     if t_om is not None and t_wt is not None:
         # [MODUL K] Anomaly Check (Strict Consensus Gate)
         if abs(t_om - t_wt) > CONSENSUS_MAX_ERROR_C:
+            logger.warning(
+                "[CONSENSUS REJECT] %s/%s: Open-Meteo=%.1f°C, wttr.in=%.1f°C, delta=%.1f°C > max %.1f°C",
+                city, date, t_om, t_wt, abs(t_om - t_wt), CONSENSUS_MAX_ERROR_C
+            )
+            _log_anomaly(city, date, t_om, t_wt, "consensus_disagreement")
             return None # Major disagreement between weather sources, reject forecast to be safe.
         
         base_avg = round((t_om + t_wt) / 2.0, 1)
@@ -325,6 +351,11 @@ def position_to_market(position, current_yes_price, hours_until_resolve):
     }
 
 
+# Negative cache: stores (None, expiry_timestamp) for failed fetches to avoid repeated API calls.
+_NEGATIVE_CACHE = {}
+_NEGATIVE_CACHE_LOCK = threading.Lock()
+_NEGATIVE_CACHE_TTL_SECONDS = 300  # 5 minutes
+
 def fetch_forecast_with_cache(city, date, cache, stats=None, *, fetch_forecast_fn, icao_override=None):
     """Fetch forecast with per-cycle cache for successful city/date/icao lookups."""
     if not isinstance(cache, dict):
@@ -337,13 +368,29 @@ def fetch_forecast_with_cache(city, date, cache, stats=None, *, fetch_forecast_f
             stats["hits"] = int(stats.get("hits", 0)) + 1
         return cached
 
+    # Check negative cache to avoid repeated API calls for failing cities
+    with _NEGATIVE_CACHE_LOCK:
+        neg_entry = _NEGATIVE_CACHE.get(cache_key)
+        if neg_entry is not None:
+            _neg_val, _neg_expiry = neg_entry
+            if time.time() < _neg_expiry:
+                if isinstance(stats, dict):
+                    stats["hits"] = int(stats.get("hits", 0)) + 1
+                return None
+            else:
+                # Expired negative cache entry — remove it
+                del _NEGATIVE_CACHE[cache_key]
+
     if isinstance(stats, dict):
         stats["misses"] = int(stats.get("misses", 0)) + 1
 
     forecast_temp = fetch_forecast_fn(city, date, icao_override=icao_override)
-    # Keep behavior close to legacy flow: only cache successful results.
     if forecast_temp is not None:
         cache[cache_key] = forecast_temp
+    else:
+        # Negative caching: cache None results for a short TTL to prevent repeated API calls
+        with _NEGATIVE_CACHE_LOCK:
+            _NEGATIVE_CACHE[cache_key] = (None, time.time() + _NEGATIVE_CACHE_TTL_SECONDS)
     return forecast_temp
 
 

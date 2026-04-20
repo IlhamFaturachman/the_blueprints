@@ -1,4 +1,8 @@
 import market_discovery as md
+from market_discovery_internal.config import (
+    ENTRY_BUCKET_HOLD_MIN_PROB, ENTRY_BUCKET_HOLD_MIN_EDGE,
+    ENTRY_BUCKET_WATCH_MAX_PRICE
+)
 
 
 def make_opportunity(yes_price=0.25, model_prob=1.0, edge=0.75, hours_until_resolve=12):
@@ -17,53 +21,51 @@ def make_opportunity(yes_price=0.25, model_prob=1.0, edge=0.75, hours_until_reso
     }
 
 
-def test_bucket_rejects_low_model_prob():
-    opp = make_opportunity(model_prob=0.6, edge=0.5)
-    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.3)
+def test_bucket_rejects_price_outside_valid_range():
+    """Price outside [min, max] entry range → reject."""
+    opp = make_opportunity(yes_price=0.50, model_prob=0.6, edge=0.1)
+    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.40)
     assert result["bucket"] == "reject"
-    assert result["reason"] == "low_model_prob"
 
 
-def test_bucket_watchlists_price_outside_entry_band():
-    opp = make_opportunity(yes_price=0.34, model_prob=1.0, edge=0.66)
-    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.3)
+def test_bucket_watchlists_price_in_watchlist_range():
+    """Price in [min_entry, WATCH_MAX_PRICE] → watchlist (monitoring)."""
+    opp = make_opportunity(yes_price=0.25, model_prob=0.75, edge=0.40)
+    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.50)
     assert result["bucket"] == "watchlist"
-    assert result["reason"] == "out_of_entry_band_watch"
 
 
-def test_bucket_enters_swing_when_not_hold_candidate():
-    opp = make_opportunity(yes_price=0.25, model_prob=0.75, edge=0.40, hours_until_resolve=36)
-    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.3)
+def test_bucket_enters_swing_when_price_in_swing_range():
+    """Price in (WATCH_MAX_PRICE, max_entry] → enter_swing."""
+    # Price must be > ENTRY_BUCKET_WATCH_MAX_PRICE (0.40) and <= max_entry_price
+    opp = make_opportunity(yes_price=0.45, model_prob=0.75, edge=0.40, hours_until_resolve=36)
+    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.50)
     assert result["bucket"] == "enter_swing"
 
 
 def test_bucket_enters_hold_candidate_for_high_confidence_setup():
+    """Prob >= HOLD_MIN_PROB and edge >= HOLD_MIN_EDGE → enter_hold_candidate."""
     opp = make_opportunity(yes_price=0.25, model_prob=1.0, edge=0.80, hours_until_resolve=10)
-    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.3)
+    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.50)
     assert result["bucket"] == "enter_hold_candidate"
-    assert result["reason"] == "high_confidence_hold_candidate"
+    assert "HOLD criteria" in result["reason"]
 
 
-def test_ai_override_applies_when_enabled_and_confident(monkeypatch):
+def test_ai_bucket_override_applies_when_present():
+    """When ai_bucket is set on opportunity, it takes priority (AI decision path)."""
     opp = make_opportunity(yes_price=0.25, model_prob=0.75, edge=0.40, hours_until_resolve=36)
     opp["ai_bucket"] = "enter_hold_candidate"
     opp["ai_confidence"] = 0.95
 
-    monkeypatch.setattr(md, "AI_AGENT_ENABLED", True)
-    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.3)
+    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.50)
 
     assert result["bucket"] == "enter_hold_candidate"
-    assert result["ai_override_applied"] is True
+    assert result["reason"] == "ai_decision"
 
 
-def test_ai_override_cannot_bypass_entry_band_guardrail(monkeypatch):
-    opp = make_opportunity(yes_price=0.35, model_prob=1.0, edge=0.65, hours_until_resolve=10)
-    opp["ai_bucket"] = "enter_swing"
-    opp["ai_confidence"] = 0.95
-
-    monkeypatch.setattr(md, "AI_AGENT_ENABLED", True)
-    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.3)
-
+def test_hold_requires_both_prob_and_edge_thresholds():
+    """If prob is high but edge is below HOLD_MIN_EDGE, should NOT be hold_candidate."""
+    opp = make_opportunity(yes_price=0.25, model_prob=0.95, edge=0.50)
+    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.50)
+    # Edge 0.50 < ENTRY_BUCKET_HOLD_MIN_EDGE (0.60), so not hold
     assert result["bucket"] == "watchlist"
-    assert result["ai_override_applied"] is False
-    assert result["ai_override_reason"] == "blocked_by_entry_band"

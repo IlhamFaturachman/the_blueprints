@@ -1,7 +1,9 @@
 """Pricing, Orderbook, and Edge calculation logic for market_discovery."""
 
 import json
+import logging
 import math
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from market_discovery_internal.config import (
@@ -15,30 +17,35 @@ from market_discovery_internal.parsing import (
     _extract_yes_token_id, THRESHOLD_RE, _market_search_text
 )
 
+logger = logging.getLogger(__name__)
+
 # Event family cache used by market-implied probability logic.
 _CURRENT_EVENT_FAMILIES = {}
+_EVENT_FAMILIES_LOCK = threading.Lock()
 
 def _events_to_markets(events, reset_family_cache=False):
     """Flatten events into markets and keep sibling families for implied pricing."""
     global _CURRENT_EVENT_FAMILIES
-    if reset_family_cache:
-        _CURRENT_EVENT_FAMILIES = {}
+    with _EVENT_FAMILIES_LOCK:
+        if reset_family_cache:
+            _CURRENT_EVENT_FAMILIES = {}
 
-    markets = []
-    for event in events:
-        event_markets = event.get("markets", [])
-        if isinstance(event_markets, list) and len(event_markets) >= 2:
-            for sibling in event_markets:
-                token_id = _extract_yes_token_id(sibling)
-                if token_id:
-                    _CURRENT_EVENT_FAMILIES[token_id] = event_markets
-        for market in event_markets:
-            markets.append(market)
+        markets = []
+        for event in events:
+            event_markets = event.get("markets", [])
+            if isinstance(event_markets, list) and len(event_markets) >= 2:
+                for sibling in event_markets:
+                    token_id = _extract_yes_token_id(sibling)
+                    if token_id:
+                        _CURRENT_EVENT_FAMILIES[token_id] = event_markets
+            for market in event_markets:
+                markets.append(market)
     return markets
 
 def _compute_market_implied_prob(token_id):
     """Compute normalized bracket probability from sibling markets in the same event."""
-    siblings = _CURRENT_EVENT_FAMILIES.get(str(token_id))
+    with _EVENT_FAMILIES_LOCK:
+        siblings = _CURRENT_EVENT_FAMILIES.get(str(token_id))
     if not siblings or len(siblings) < 2:
         return None
 
@@ -357,6 +364,18 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None, k_factor_ove
         elif direction == "below":
             diff = max(-50, min(50, (threshold - forecast)))
             raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
+        elif direction == "exact":
+            # Probability that the daily high lands in the ±0.5°C bracket around threshold.
+            # Uses Gaussian CDF integral: P = Φ((threshold+0.5 - forecast)/σ) - Φ((threshold-0.5 - forecast)/σ)
+            # This replaces the old PDF-height formula which incorrectly gave 100% when forecast==threshold.
+            # Calibration: σ=1.5 → exact match ≈26%, 1°C off ≈18%, 2°C off ≈11% (matches Polymarket consensus).
+            from math import erf as _erf, sqrt as _sqrt
+            sigma = MODEL_EXACT_SIGMA_C
+            _s2 = sigma * _sqrt(2)
+            raw_prob = max(0.0, min(1.0, 0.5 * (
+                _erf((threshold + 0.5 - forecast) / _s2) -
+                _erf((threshold - 0.5 - forecast) / _s2)
+            )))
 
         # [FIX] Hard ceiling: cap confidence based on forecast margin.
         # Weather ensemble uncertainty is ±2-3°C, so even large margins
@@ -371,26 +390,14 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None, k_factor_ove
                 raw_prob = min(raw_prob, 0.94)
             # abs_diff >= 3.0: no cap — margin is large enough to justify high confidence
 
-        # [FIX] Consensus Guard: Detect "Too-Good-To-Be-True" bargains that are likely traps.
-        # If we are < 12h from resolve and we are 90%+ sure, but market price is < 30c,
-        # we assume the market knows something our forecast API doesn't.
-        if _h_val < 12.0 and raw_prob > 0.90 and price < 0.30:
-            _gap = raw_prob - price
-            if _gap > 0.50:
-                raw_prob = (raw_prob + price) / 2.0 # Dampen hubris towards market center
-                prob_source += "+consensus_guard"
-        elif direction == "exact":
-            # Probability that the daily high lands in the ±0.5°C bracket around threshold.
-            # Uses Gaussian CDF integral: P = Φ((threshold+0.5 - forecast)/σ) - Φ((threshold-0.5 - forecast)/σ)
-            # This replaces the old PDF-height formula which incorrectly gave 100% when forecast==threshold.
-            # Calibration: σ=1.5 → exact match ≈26%, 1°C off ≈18%, 2°C off ≈11% (matches Polymarket consensus).
-            from math import erf as _erf, sqrt as _sqrt
-            sigma = MODEL_EXACT_SIGMA_C
-            _s2 = sigma * _sqrt(2)
-            raw_prob = max(0.0, min(1.0, 0.5 * (
-                _erf((threshold + 0.5 - forecast) / _s2) -
-                _erf((threshold - 0.5 - forecast) / _s2)
-            )))
+            # [FIX] Consensus Guard: Detect "Too-Good-To-Be-True" bargains that are likely traps.
+            # If we are < 12h from resolve and we are 90%+ sure, but market price is < 30c,
+            # we assume the market knows something our forecast API doesn't.
+            if _h_val < 12.0 and raw_prob > 0.90 and price < 0.30:
+                _gap = raw_prob - price
+                if _gap > 0.50:
+                    raw_prob = (raw_prob + price) / 2.0 # Dampen hubris towards market center
+                    prob_source += "+consensus_guard"
     # else: raw_prob already set from market_implied above
 
     # [PACK A] Calibration bins

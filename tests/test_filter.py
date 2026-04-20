@@ -27,13 +27,13 @@ def test_passes_high_edge_opportunity():
 
 def test_rejects_yes_price_at_or_above_035():
     markets = [make_opp(0.35, 1.0), make_opp(0.40, 1.0)]
-    result = filter_opportunities(markets)
+    result = filter_opportunities(markets, max_yes_price=0.34)
     assert len(result) == 0
 
 
 def test_rejects_model_prob_below_070():
     markets = [make_opp(0.28, 0.65)]
-    result = filter_opportunities(markets)
+    result = filter_opportunities(markets, min_model_prob=0.70)
     assert len(result) == 0
 
 
@@ -64,7 +64,7 @@ def test_returns_empty_list_when_no_opportunities():
 
 def test_rejects_when_edge_below_min_edge():
     markets = [make_opp(0.34, 0.70, edge=0.20)]
-    result = filter_opportunities(markets)
+    result = filter_opportunities(markets, min_edge=0.25)
     assert result == []
 
 

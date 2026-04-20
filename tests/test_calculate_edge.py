@@ -36,11 +36,12 @@ def make_market(threshold_c, direction, yes_price, **kwargs):
 # ---------------------------------------------------------------------------
 
 def test_above_direction_forecast_well_above_threshold():
-    # forecast +2°C above threshold → sigmoid strong → model_prob > 0.90
+    # forecast +2°C above threshold → sigmoid strong, but hard ceiling caps at 0.87 for <2°C diff
+    # Then calibration shrinks toward prior. model_prob should be > 0.70 (strong signal).
     market = make_market(25.0, "above", 0.28)
     result = calculate_edge(market, 27.0)
     assert result is not None
-    assert result["model_prob"] > 0.90
+    assert result["model_prob"] > 0.70
 
 
 def test_above_direction_forecast_well_below_threshold():
@@ -72,11 +73,12 @@ def test_below_direction_forecast_well_below_threshold():
 
 
 def test_below_direction_forecast_well_above_threshold():
-    # forecast 2°C above threshold → model_prob < 0.10
+    # forecast 2°C above threshold → sigmoid weak for below, but calibration shrinks toward prior
+    # model_prob should be < 0.30 (weak signal for below direction)
     market = make_market(15.0, "below", 0.28)
     result = calculate_edge(market, 17.0)
     assert result is not None
-    assert result["model_prob"] < 0.10
+    assert result["model_prob"] < 0.30
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +86,12 @@ def test_below_direction_forecast_well_above_threshold():
 # ---------------------------------------------------------------------------
 
 def test_exact_direction_at_threshold_max_prob():
-    # forecast == threshold → Gaussian peak → raw_prob = 1.0
+    # forecast == threshold → Gaussian CDF integral over ±0.5°C bracket
+    # With sigma=1.5, P(24.5 < X < 25.5) ≈ 0.2611 (not 1.0 — that was the old PDF formula)
     market = make_market(25.0, "exact", 0.05)
     result = calculate_edge(market, 25.0)
     assert result is not None
-    assert result["raw_prob"] == pytest.approx(1.0, abs=0.001)
+    assert result["raw_prob"] == pytest.approx(0.2611, abs=0.01)
     assert result["model_prob"] > 0
 
 

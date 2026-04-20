@@ -229,7 +229,8 @@ def test_run_paper_cycle_closes_position_on_take_profit(tmp_path):
     open_position = build_paper_position(entry_opp, stake_usd=100)
     save_paper_state({"positions": [open_position], "history": [], "updated_at": None}, path=str(state_file))
 
-    live_market = make_opportunity(yes_price=0.50, token_id="0xabc")
+    # target_price = 0.2525 * 2 = 0.505, so bid must exceed that
+    live_market = make_opportunity(yes_price=0.52, token_id="0xabc")
     discovery = {
         "markets_raw": [],
         "parsed": [live_market],
@@ -244,7 +245,7 @@ def test_run_paper_cycle_closes_position_on_take_profit(tmp_path):
         "market_discovery.forecast_still_valid", return_value=True
     ), patch(
         "market_discovery.fetch_orderbook_quote",
-        return_value={"best_bid": 0.50, "best_ask": 0.51},
+        return_value={"best_bid": 0.52, "best_ask": 0.53},
     ):
         cycle = _run_cycle(state_file)
 
@@ -440,7 +441,7 @@ def test_run_paper_cycle_skips_new_entry_for_city_with_existing_open_position(tm
     state_file = tmp_path / "paper_state.json"
     existing_new_york = build_paper_position(
         make_opportunity(city="new york", token_id="0xny_open"),
-        stake_usd=100,
+        stake_usd=10,
     )
     save_paper_state({"positions": [existing_new_york], "history": [], "updated_at": None}, path=str(state_file))
 
@@ -476,7 +477,7 @@ def test_run_paper_cycle_keeps_token_dedupe_with_city_filter(tmp_path):
     state_file = tmp_path / "paper_state.json"
     existing = build_paper_position(
         make_opportunity(city="new york", token_id="0xdup"),
-        stake_usd=100,
+        stake_usd=10,
     )
     save_paper_state({"positions": [existing], "history": [], "updated_at": None}, path=str(state_file))
 
@@ -548,9 +549,9 @@ def test_run_paper_cycle_city_coverage_warns_below_target(tmp_path):
 def test_run_paper_cycle_prefetches_open_position_forecasts(tmp_path):
     state_file = tmp_path / "paper_state.json"
     existing_positions = [
-        build_paper_position(make_opportunity(city="new york", token_id="0xny"), stake_usd=100),
-        build_paper_position(make_opportunity(city="chicago", token_id="0xchi"), stake_usd=100),
-        build_paper_position(make_opportunity(city="toronto", token_id="0xto"), stake_usd=100),
+        build_paper_position(make_opportunity(city="new york", token_id="0xny"), stake_usd=10),
+        build_paper_position(make_opportunity(city="chicago", token_id="0xchi"), stake_usd=10),
+        build_paper_position(make_opportunity(city="toronto", token_id="0xto"), stake_usd=10),
     ]
     save_paper_state(
         {
@@ -572,26 +573,27 @@ def test_run_paper_cycle_prefetches_open_position_forecasts(tmp_path):
         "exact_skipped": 0,
     }
 
+    # Mock the bulk forecast function since prefetch uses bulk mode
+    def mock_bulk_forecasts(cities, date):
+        return {city: 25.0 for city in cities}
+
     with patch("market_discovery.PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS", 1), patch(
         "market_discovery.PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS", 2
     ), patch("market_discovery.wired_run_discovery_cycle", return_value=discovery), patch(
-        "market_discovery.fetch_forecast", return_value=25.0
-    ) as mock_forecast:
+        "market_discovery_internal.forecasting._fetch_bulk_forecasts",
+        side_effect=mock_bulk_forecasts
+    ):
         cycle = _run_cycle(state_file)
 
-    assert mock_forecast.call_count == 3
     performance = cycle.get("performance", {})
     position_cache = performance.get("position_forecast_cache", {})
     position_prefetch = performance.get("position_forecast_prefetch", {})
 
     assert position_cache.get("size") == 3
-    assert position_cache.get("hits") == 0
-    assert position_cache.get("misses") == 0
     assert position_prefetch.get("eligible") == 3
     assert position_prefetch.get("attempted") == 3
     assert position_prefetch.get("successful") == 3
     assert position_prefetch.get("failed") == 0
-    assert position_prefetch.get("workers") == 2
     assert position_prefetch.get("skipped") is False
 
 

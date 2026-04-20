@@ -45,21 +45,28 @@ def send_telegram_alert(message, is_html=True):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     
+    global _telegram_consecutive_failures
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": str(TELEGRAM_CHAT_ID),
         "text": message,
-        "parse_mode": "HTML" if is_html else None,
         "disable_web_page_preview": True
     }
+    if is_html:
+        payload["parse_mode"] = "HTML"
     try:
         response = requests.post(url, json=payload, timeout=5)
         response.raise_for_status()
+        _telegram_consecutive_failures = 0
         return True
     except Exception as e:
-        print(f"[TELEGRAM ERROR] {str(e)}")
+        _telegram_consecutive_failures += 1
+        if _telegram_consecutive_failures >= 10:
+            logger.error(f"[TELEGRAM ERROR] {_telegram_consecutive_failures} consecutive failures. Latest: {e}")
+        else:
+            logger.warning(f"[TELEGRAM ERROR] {str(e)}")
         if 'response' in locals() and response is not None:
-             print(f"[TELEGRAM RESP] {response.text}")
+             logger.warning(f"[TELEGRAM RESP] {response.text}")
         return False
 
 def fetch_with_retry(url, params=None, headers=None, max_retries=3, fail_fast_on_429=False):

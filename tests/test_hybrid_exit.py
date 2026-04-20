@@ -159,7 +159,7 @@ def test_update_paper_position_closes_and_calculates_pnl():
     assert decision["action"] == "sell"
     assert updated["status"] == "closed"
     assert updated["close_reason"] == "take_profit_100pct"
-    assert updated["realized_roi_pct"] > 100.0  # sold at/above 2x target
+    assert updated["realized_roi_pct"] > 80.0  # sold at/above 2x target (minus taker fees)
 
 
 import pytest  # noqa: E402 (intentional late import to keep module readable)

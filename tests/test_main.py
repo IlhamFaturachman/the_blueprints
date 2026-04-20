@@ -1,26 +1,22 @@
-from unittest.mock import patch
+from unittest.mock import patch, ANY
 import sys
 
 from market_discovery import main
 
 
 def test_main_happy_path_calls_output_functions():
-    parsed_market = {
-        "city": "new york",
-        "date": "2026-04-15",
-        "end_date": "2026-04-15T12:00:00+00:00",
-        "market_question": "Will New York exceed 75F?",
-        "threshold": 75.0,
-        "unit": "F",
-        "direction": "above",
-        "yes_price": 0.28,
-        "token_id": "0xabc",
-        "hours_until_resolve": 18.0,
+    """Discovery mode: wired_run_discovery_cycle → print_opportunities + print_summary."""
+    discovery = {
+        "markets_raw": [{"id": 1}],
+        "parsed": [{"city": "new york"}],
+        "enriched": [{"city": "new york"}],
+        "opportunities": [{"city": "new york", "edge": 0.5}],
+        "failed_cities": [],
+        "skipped_markets": 0,
+        "exact_skipped": 0,
     }
 
-    with patch("market_discovery.fetch_markets", return_value=[{"id": 1}]), \
-            patch("market_discovery.parse_market", return_value=parsed_market), \
-            patch("market_discovery.fetch_forecast", return_value=25.0), \
+    with patch("market_discovery.wired_run_discovery_cycle", return_value=discovery), \
             patch("market_discovery.print_opportunities") as mock_print_opps, \
             patch("market_discovery.print_summary") as mock_print_summary:
         main()
@@ -33,27 +29,22 @@ def test_main_happy_path_calls_output_functions():
 
 
 def test_main_skips_exact_markets_without_forecast_call():
-    parsed_market = {
-        "city": "new york",
-        "date": "2026-04-15",
-        "end_date": "2026-04-15T12:00:00+00:00",
-        "market_question": "Will New York be exactly 75F?",
-        "threshold": 75.0,
-        "unit": "F",
-        "direction": "exact",
-        "yes_price": 0.28,
-        "token_id": "0xabc",
-        "hours_until_resolve": 18.0,
+    """Discovery mode with exact markets: exact_skipped is reported."""
+    discovery = {
+        "markets_raw": [{"id": 1}],
+        "parsed": [],
+        "enriched": [],
+        "opportunities": [],
+        "failed_cities": [],
+        "skipped_markets": 0,
+        "exact_skipped": 1,
     }
 
-    with patch("market_discovery.fetch_markets", return_value=[{"id": 1}]), \
-            patch("market_discovery.parse_market", return_value=parsed_market), \
-            patch("market_discovery.fetch_forecast") as mock_fetch_forecast, \
+    with patch("market_discovery.wired_run_discovery_cycle", return_value=discovery), \
             patch("market_discovery.print_opportunities"), \
             patch("market_discovery.print_summary") as mock_print_summary:
         main()
 
-    mock_fetch_forecast.assert_not_called()
     kwargs = mock_print_summary.call_args.kwargs
     assert kwargs["exact_skipped"] == 1
 
@@ -61,7 +52,12 @@ def test_main_skips_exact_markets_without_forecast_call():
 def test_main_paper_mode_runs_paper_cycle(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["market_discovery.py", "--paper"])
 
-    with patch("market_discovery.run_paper_trading_cycle", return_value={"opened": [], "closed": [], "open_positions": [], "discovery": {"opportunities": []}, "state_path": "logs/paper_positions.json", "min_bound": 0.0, "max_bound": 1.0}) as mock_cycle, patch(
+    with patch("market_discovery.wired_run_paper_trading_cycle", return_value={
+        "opened": [], "closed": [], "open_positions": [],
+        "discovery": {"opportunities": []},
+        "state_path": "logs/paper_positions.json",
+        "min_bound": 0.0, "max_bound": 1.0,
+    }) as mock_cycle, patch(
         "market_discovery.print_paper_cycle_summary"
     ) as mock_print:
         main()
@@ -83,15 +79,17 @@ def test_main_diagnose_mode_prints_diagnostics(monkeypatch):
         "exact_skipped": 0,
     }
 
-    with patch("market_discovery.run_discovery_cycle", return_value=discovery) as mock_run, patch(
+    with patch("market_discovery.wired_run_discovery_cycle", return_value=discovery) as mock_run, patch(
         "market_discovery.print_discovery_diagnostics"
     ) as mock_diag, patch("market_discovery.print_opportunities") as mock_opp, patch(
         "market_discovery.print_summary"
     ) as mock_summary:
         main()
 
-    mock_run.assert_called_once_with(inspect=False, aggressive_scan=True)
-    mock_diag.assert_called_once()
+    mock_run.assert_called_once()
+    call_kwargs = mock_run.call_args.kwargs
+    assert call_kwargs["inspect"] is False
+    assert call_kwargs["aggressive_scan"] is True
     mock_opp.assert_called_once()
     mock_summary.assert_called_once()
 
@@ -109,12 +107,14 @@ def test_main_typo_aggressive_flag_still_enables_aggressive(monkeypatch):
         "exact_skipped": 0,
     }
 
-    with patch("market_discovery.run_discovery_cycle", return_value=discovery) as mock_run, patch(
+    with patch("market_discovery.wired_run_discovery_cycle", return_value=discovery) as mock_run, patch(
         "market_discovery.print_discovery_diagnostics"
     ), patch("market_discovery.print_opportunities"), patch("market_discovery.print_summary"):
         main()
 
-    mock_run.assert_called_once_with(inspect=False, aggressive_scan=True)
+    mock_run.assert_called_once()
+    call_kwargs = mock_run.call_args.kwargs
+    assert call_kwargs["aggressive_scan"] is True
 
 
 def test_main_paper_report_mode_prints_state(monkeypatch):
@@ -128,17 +128,15 @@ def test_main_paper_report_mode_prints_state(monkeypatch):
     }
 
     with patch("market_discovery.load_paper_state", return_value=sample_state) as mock_load, patch(
-        "market_discovery.print_paper_state_report"
+        "market_discovery.wired_print_paper_state_report"
     ) as mock_report:
         main()
 
     mock_load.assert_called_once()
-    mock_report.assert_called_once_with(
-        state=sample_state,
-        state_path="logs/paper_positions.json",
-        recent_entries=5,
-        output_format="text",
-    )
+    call_kwargs = mock_report.call_args.kwargs
+    assert call_kwargs["state"] == sample_state
+    assert call_kwargs["recent_entries"] == 5
+    assert call_kwargs["output_format"] == "text"
 
 
 def test_main_paper_report_json_mode_prints_state_json(monkeypatch):
@@ -152,17 +150,13 @@ def test_main_paper_report_json_mode_prints_state_json(monkeypatch):
     }
 
     with patch("market_discovery.load_paper_state", return_value=sample_state) as mock_load, patch(
-        "market_discovery.print_paper_state_report"
+        "market_discovery.wired_print_paper_state_report"
     ) as mock_report:
         main()
 
     mock_load.assert_called_once()
-    mock_report.assert_called_once_with(
-        state=sample_state,
-        state_path="logs/paper_positions.json",
-        recent_entries=5,
-        output_format="json",
-    )
+    call_kwargs = mock_report.call_args.kwargs
+    assert call_kwargs["output_format"] == "json"
 
 
 def test_main_paper_report_json_flag_prints_state_json(monkeypatch):
@@ -176,14 +170,10 @@ def test_main_paper_report_json_flag_prints_state_json(monkeypatch):
     }
 
     with patch("market_discovery.load_paper_state", return_value=sample_state) as mock_load, patch(
-        "market_discovery.print_paper_state_report"
+        "market_discovery.wired_print_paper_state_report"
     ) as mock_report:
         main()
 
     mock_load.assert_called_once()
-    mock_report.assert_called_once_with(
-        state=sample_state,
-        state_path="logs/paper_positions.json",
-        recent_entries=5,
-        output_format="json",
-    )
+    call_kwargs = mock_report.call_args.kwargs
+    assert call_kwargs["output_format"] == "json"

@@ -44,7 +44,10 @@ def build_weather_evidence(city, date, forecast_temp_c, source="open-meteo", now
 
     if fetched_at:
         try:
-            prev = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+            if isinstance(fetched_at, datetime):
+                prev = fetched_at if fetched_at.tzinfo else fetched_at.replace(tzinfo=timezone.utc)
+            else:
+                prev = datetime.fromisoformat(str(fetched_at).replace("Z", "+00:00"))
             evidence["age_hours"] = round((now_utc - prev).total_seconds() / 3600, 2)
         except (ValueError, TypeError):
             pass

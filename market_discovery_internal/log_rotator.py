@@ -2,7 +2,10 @@ import os
 import gzip
 import shutil
 import time
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 def rotate_log(log_path, max_size_mb=50, backup_count=5):
     """
@@ -17,22 +20,32 @@ def rotate_log(log_path, max_size_mb=50, backup_count=5):
         return
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    gzip_path = f"{log_path}.{timestamp}.gz"
+    rotated_path = f"{log_path}.{timestamp}"
+    gzip_path = f"{rotated_path}.gz"
 
-    # 1. Compress current log
+    # 1. Atomically move the log file so no lines are lost
     try:
-        with open(log_path, 'rb') as f_in:
+        os.rename(log_path, rotated_path)
+    except OSError as e:
+        logger.error(f"[ROTATOR] Error renaming log file: {e}")
+        return
+
+    # 2. Create a new empty log file at the original path
+    try:
+        with open(log_path, 'w') as f:
+            f.write(f"--- Log rotated at {datetime.now().isoformat()} ---\n")
+    except OSError as e:
+        logger.error(f"[ROTATOR] Error creating new log file: {e}")
+
+    # 3. Compress the renamed log file
+    try:
+        with open(rotated_path, 'rb') as f_in:
             with gzip.open(gzip_path, 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)
-        
-        # 2. Clear original log
-        with open(log_path, 'w') as f:
-            f.truncate(0)
-            f.write(f"--- Log rotated at {datetime.now().isoformat()} ---\n")
-            
-        print(f"[ROTATOR] Log rotated: {log_path} -> {gzip_path}")
+        os.remove(rotated_path)
+        logger.info(f"[ROTATOR] Log rotated: {log_path} -> {gzip_path}")
     except Exception as e:
-        print(f"[ROTATOR] Error rotating log: {e}")
+        logger.error(f"[ROTATOR] Error compressing rotated log: {e}")
         return
 
     # 3. Retention management (Keep only N latest .gz files)
@@ -48,9 +61,9 @@ def rotate_log(log_path, max_size_mb=50, backup_count=5):
         for old_file in gz_files[backup_count:]:
             try:
                 os.remove(old_file)
-                print(f"[ROTATOR] Removed old log backup: {old_file}")
+                logger.info(f"[ROTATOR] Removed old log backup: {old_file}")
             except Exception as e:
-                print(f"[ROTATOR] Error removing old log: {e}")
+                logger.error(f"[ROTATOR] Error removing old log: {e}")
 
 def run_rotator_thread(log_path, interval_seconds=3600):
     """Background loop for log rotation."""

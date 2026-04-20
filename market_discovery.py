@@ -13,7 +13,6 @@ import sys
 import time
 import signal
 import threading
-import sys
 
 # [FIX] Force unbuffered output for real-time UI logs
 if hasattr(sys.stdout, "reconfigure"):
@@ -218,9 +217,11 @@ def _on_instant_ws_refresh(pos):
 
         if _ws_watcher:
             # Sync watcher instantly using memory set, bypassing SQLite race
-            _current_monitored_tokens.add(token_id)
-            _ws_watcher.update_subscriptions(_current_monitored_tokens)
-            print(f"[WS-WIRING] Instant subscription refresh: {len(_current_monitored_tokens)} tokens")
+            with _state_lock:
+                _current_monitored_tokens.add(token_id)
+                snapshot = set(_current_monitored_tokens)
+            _ws_watcher.update_subscriptions(snapshot)
+            print(f"[WS-WIRING] Instant subscription refresh: {len(snapshot)} tokens")
         sys.stdout.flush()
     except Exception as e:
         print(f"[WS-WIRING] Error in instant refresh: {e}")
@@ -279,23 +280,8 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         on_position_opened_fn=_on_instant_ws_refresh, # [NEW]
     )
 
-    # Post-cycle: broadcast new entries and refresh WS subscriptions
-    try:
-        newly_opened = result.get("opened", []) if result else []
-        if newly_opened:
-            if _ws_broadcaster:
-                for pos in newly_opened:
-                    _ws_broadcaster.broadcast_opened(
-                        token_id=pos.get("token_id", ""),
-                        city=pos.get("city", ""),
-                        entry_price=float(pos.get("entry_price", 0)),
-                    )
-            if _ws_watcher:
-                open_positions = result.get("open_positions", [])
-                token_ids = {p["token_id"] for p in open_positions if p.get("token_id")}
-                _ws_watcher.update_subscriptions(token_ids)
-    except Exception as _exc:
-        print(f"[WS-POST-CYCLE] Non-fatal post-cycle hook error: {_exc}")
+    # Post-cycle broadcast removed — _on_instant_ws_refresh already handles
+    # broadcasting and subscription updates as each position is opened.
 
     return result
 
@@ -303,7 +289,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
 # Global Background Components (WS & Monitoring)
 # ---------------------------------------------------------------------------
 
-_price_update_queue = multiprocessing.Queue()
+_price_update_queue = multiprocessing.Queue(maxsize=10000)
 _ws_watcher = None
 _ws_broadcaster = None
 _last_ws_update_at = multiprocessing.Value('d', time.time())
@@ -321,9 +307,8 @@ def _start_background_services():
     from market_discovery_internal.config import (
         WS_PRICE_WATCHER_URL, WS_WATCHDOG_TIMEOUT_SECONDS, 
         WS_BROADCAST_HOST, WS_BROADCAST_PORT, WS_PING_INTERVAL_SECONDS,
-        WS_RECONNECT_DELAY_SECONDS, WS_PING_INTERVAL_SECONDS as WS_FEED_PING_INTERVAL
+        WS_RECONNECT_DELAY_SECONDS,
     )
-    import threading
 
     # 1. Broadcaster (Web UI Relay)
     _ws_broadcaster = WsBroadcaster(
@@ -338,7 +323,7 @@ def _start_background_services():
         url=WS_PRICE_WATCHER_URL,
         update_queue=_price_update_queue,
         reconnect_delay=WS_RECONNECT_DELAY_SECONDS,
-        ping_interval=WS_FEED_PING_INTERVAL,
+        ping_interval=WS_PING_INTERVAL_SECONDS,
         watchdog_timeout=WS_WATCHDOG_TIMEOUT_SECONDS
     )
     # [WIRING] Initial subscription sync
@@ -347,10 +332,12 @@ def _start_background_services():
         from market_discovery_internal.config import PAPER_STATE_FILE
         state = load_paper_state(PAPER_STATE_FILE)
         token_ids = {str(p["token_id"]) for p in state.get("positions", []) if p.get("status") == "open"}
-        _current_monitored_tokens.clear()
-        _current_monitored_tokens.update(token_ids)
-        _ws_watcher.update_subscriptions(_current_monitored_tokens)
-        print(f"[WS-WIRING] Initial sync: monitoring {len(_current_monitored_tokens)} active tokens")
+        with _state_lock:
+            _current_monitored_tokens.clear()
+            _current_monitored_tokens.update(token_ids)
+            snapshot = set(_current_monitored_tokens)
+        _ws_watcher.update_subscriptions(snapshot)
+        print(f"[WS-WIRING] Initial sync: monitoring {len(snapshot)} active tokens")
     except Exception as exc:
         print(f"[WS-WIRING] Initial sync failed: {exc}")
 
@@ -369,6 +356,11 @@ def _start_background_services():
             try:
                 # Blocks until update arrives
                 token_id, price = _price_update_queue.get()
+
+                # Poison pill — signal to exit the consumer thread
+                if token_id is None and price is None:
+                    break
+
                 _last_ws_update_at.value = time.time()
 
                 # [FIX] Skip processing for liveness heartbeat sentinel —
@@ -390,6 +382,11 @@ def _start_background_services():
     print("[WS-WIRING] Background services initialized (Isolated Mode)")
 
 def _stop_background_services():
+    # Send poison pill to consumer thread so it exits cleanly
+    try:
+        _price_update_queue.put_nowait((None, None))
+    except Exception:
+        pass
     if _ws_watcher:
         _ws_watcher.stop()
         if hasattr(_ws_watcher, '_process') and _ws_watcher._process:
@@ -463,7 +460,7 @@ def main():
     signal.signal(signal.SIGTERM, handle_exit_signal)
 
     # 1. Process Protection (PID Lock)
-    lock_path = "/opt/the_blueprints/the_blueprints.pid"
+    lock_path = _EARLY_PID_LOCK_PATH
     with PIDLock(lock_path):
         _main_protected()
 

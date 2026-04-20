@@ -2,7 +2,10 @@ import sqlite3
 import threading
 import os
 import json
+import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 class BlueprintsDB:
     """Thread-safe SQLite manager for the Blueprints Data Warehouse (Gudang Data)."""
@@ -28,23 +31,37 @@ class BlueprintsDB:
 
     def _get_conn(self):
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._local.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30)
             self._local.conn.row_factory = sqlite3.Row
             # [MODUL DB] Enable WAL mode for high concurrency
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             # [MODUL DB] Use FULL synchronization for absolute durability against corruption
             self._local.conn.execute("PRAGMA synchronous=FULL")
-            
-            # [MODUL DB] Integrity Shield: Check for corruption on every first connection
-            try:
-                check = self._local.conn.execute("PRAGMA integrity_check").fetchone()
-                if check[0] != "ok":
-                    print(f"[CRITICAL] Database integrity check FAILED: {check[0]}")
-            except sqlite3.Error as e:
-                print(f"[CRITICAL] Database integrity check ERROR: {e}")
         return self._local.conn
 
+    def _run_integrity_check(self):
+        """Run PRAGMA integrity_check once at startup only."""
+        conn = self._get_conn()
+        try:
+            check = conn.execute("PRAGMA integrity_check").fetchone()
+            if check[0] != "ok":
+                logger.critical("Database integrity check FAILED: %s", check[0])
+        except sqlite3.Error as e:
+            logger.critical("Database integrity check ERROR: %s", e)
+
+    def close_connection(self):
+        """Close the thread-local connection and release resources."""
+        if hasattr(self._local, "conn") and self._local.conn is not None:
+            try:
+                self._local.conn.close()
+            except Exception as e:
+                logger.warning("Error closing thread-local connection: %s", e)
+            finally:
+                self._local.conn = None
+
     def _initialize_db(self):
+        # Run integrity check once at startup, not on every connection
+        self._run_integrity_check()
         conn = self._get_conn()
         cursor = conn.cursor()
         
@@ -304,6 +321,11 @@ class BlueprintsDB:
     def add_position(self, pos_dict):
         """Persist a position — stores full payload as raw_json for lossless restore."""
         conn = self._get_conn()
+        self._insert_position(conn, pos_dict)
+        conn.commit()
+
+    def _insert_position(self, conn, pos_dict):
+        """Insert a position row without committing (for batch use)."""
         conn.execute("""
             INSERT OR REPLACE INTO active_positions
             (token_id, city, date, direction, threshold, unit, entry_price, quantity,
@@ -317,7 +339,25 @@ class BlueprintsDB:
             json.dumps(pos_dict.get('metadata', {})),
             json.dumps(pos_dict),
         ))
-        conn.commit()
+
+    def replace_all_positions(self, positions):
+        """Atomically replace all active positions in a single transaction.
+        Uses BEGIN IMMEDIATE to prevent concurrent writes from interleaving."""
+        conn = self._get_conn()
+        try:
+            conn.commit()  # Flush any implicit transaction before explicit BEGIN
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM active_positions")
+            for pos in positions:
+                self._insert_position(conn, pos)
+            conn.execute("COMMIT")
+        except Exception as e:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            logger.error("replace_all_positions failed, rolled back: %s", e)
+            raise
 
     def remove_position(self, token_id):
         conn = self._get_conn()
@@ -371,28 +411,32 @@ class BlueprintsDB:
 
     def ai_try_reserve_call(self, day_key, call_kind, limit):
         """Atomically increment daily call count if below limit.
-        Returns True if the slot was reserved, False if limit already reached."""
+        Returns True if the slot was reserved, False if limit already reached.
+        Uses BEGIN IMMEDIATE + UPDATE...WHERE for atomic check-and-increment."""
         conn = self._get_conn()
-        # Ensure row exists
-        conn.execute("""
-            INSERT OR IGNORE INTO ai_daily_calls (day_key, call_kind, call_count)
-            VALUES (?, ?, 0)
-        """, (day_key, call_kind))
-        # Read current count
-        row = conn.execute(
-            "SELECT call_count FROM ai_daily_calls WHERE day_key = ? AND call_kind = ?",
-            (day_key, call_kind)
-        ).fetchone()
-        current = int(row["call_count"]) if row else 0
-        if current >= limit:
-            conn.commit()
+        try:
+            conn.commit()  # Flush any implicit transaction before explicit BEGIN
+            conn.execute("BEGIN IMMEDIATE")
+            # Ensure row exists
+            conn.execute("""
+                INSERT OR IGNORE INTO ai_daily_calls (day_key, call_kind, call_count)
+                VALUES (?, ?, 0)
+            """, (day_key, call_kind))
+            # Atomic conditional increment: only updates if below limit
+            cursor = conn.execute("""
+                UPDATE ai_daily_calls SET call_count = call_count + 1
+                WHERE day_key = ? AND call_kind = ? AND call_count < ?
+            """, (day_key, call_kind, limit))
+            reserved = cursor.rowcount > 0
+            conn.execute("COMMIT")
+            return reserved
+        except Exception as e:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            logger.error("ai_try_reserve_call failed: %s", e)
             return False
-        conn.execute("""
-            UPDATE ai_daily_calls SET call_count = call_count + 1
-            WHERE day_key = ? AND call_kind = ?
-        """, (day_key, call_kind))
-        conn.commit()
-        return True
 
     # --- [PACK A] Probability Calibration ---
 

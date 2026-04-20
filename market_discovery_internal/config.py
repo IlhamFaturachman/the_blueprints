@@ -42,7 +42,7 @@ OPEN_METEO_HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 OPEN_METEO_API = OPEN_METEO_FORECAST_URL
 
 # Model & Liquidity Hardening
-MODEL_EXACT_SIGMA_C = 0.5  # Standard deviation for Gaussian probability
+# MODEL_EXACT_SIGMA_C defined below at runtime (env-overridable, default 1.5)
 LOG_FILE = "logs/unmatched_markets.log"
 
 # Target cities with hardcoded coordinates (lat, lon) and ICAO codes for API matching.
