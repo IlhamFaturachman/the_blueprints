@@ -405,11 +405,13 @@ def run_paper_trading_cycle(
     
     with _heartbeat_lock:
         if not _HEARTBEAT_SENT:
-            send_telegram_alert(
-                "🚀 <b>Bot Master Active: Resumed</b>\n"
-                f"Siklus pertama dimulai pada {now_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC.\n"
-                "Mode: Paper Trading (Zero-Barrier Configuration)"
+            msg = load_telegram_template(
+                category="system",
+                type_name="heartbeat",
+                timestamp_utc=now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                mode="Paper Trading (Zero-Barrier Configuration)"
             )
+            send_telegram_alert(msg, bypass_dedup=True)
             _HEARTBEAT_SENT = True
     
     # [MODUL L] Process Watchdog Pulse
@@ -427,12 +429,13 @@ def run_paper_trading_cycle(
         _mem_alert_count = state_meta.get("_mem_alert_count", 0)
         if _rss_mb > _MEM_ALERT_THRESHOLD_MB:
             if _mem_alert_count == 0:
-                send_telegram_alert(
-                    f"⚠️ <b>MEMORY WATCHDOG: HIGH RAM</b> ⚠️\n\n"
-                    f"RSS Memory: <b>{_rss_mb:.0f} MB</b> (threshold {_MEM_ALERT_THRESHOLD_MB} MB)\n"
-                    f"Bot masih berjalan, tetapi performa mungkin terdampak.\n"
-                    f"Pertimbangkan restart jika terus meningkat."
+                msg = load_telegram_template(
+                    category="system",
+                    type_name="memory_warning",
+                    rss_mb=_rss_mb,
+                    threshold_mb=_MEM_ALERT_THRESHOLD_MB
                 )
+                send_telegram_alert(msg)
             state_meta["_mem_alert_count"] = (_mem_alert_count + 1) % _MEM_ALERT_COOLDOWN_CYCLES
         else:
             state_meta["_mem_alert_count"] = 0
@@ -449,11 +452,12 @@ def run_paper_trading_cycle(
                 stale_hours = (datetime.now(timezone.utc) - whb).total_seconds() / 3600.0
                 if stale_hours > 6.0: # 3x the normal 2-hour interval
                     if not state_meta.get("warmer_silent_fail_alert_sent"):
-                        send_telegram_alert(
-                            "⚠️ <b>WATCHDOG: WARMER STAGNANT</b> ⚠️\n\n"
-                            f"Layanan Gudang Data Warmer tidak berdetak selama <b>{stale_hours:.1f} jam</b>.\n"
-                            "Penyebaran data forecast mungkin tertunda. Harap cek proses background."
+                        msg = load_telegram_template(
+                            category="system",
+                            type_name="warmer_stagnant",
+                            stale_hours=stale_hours
                         )
+                        send_telegram_alert(msg)
                         state_meta["warmer_silent_fail_alert_sent"] = True
                 else:
                     state_meta["warmer_silent_fail_alert_sent"] = False
@@ -534,13 +538,15 @@ def run_paper_trading_cycle(
                     f"  • {r['key']}: ${r['total_pnl']:+.2f} ({r['count']} trades)"
                     for r in _reasons
                 ) or "  (no data)"
-                send_telegram_alert(
-                    f"📊 <b>WEEKLY PROFIT ATTRIBUTION REPORT</b> 📊\n\n"
-                    f"📉 <b>Top Leakers (City):</b>\n{_leak_text}\n\n"
-                    f"📈 <b>Top Earners (City):</b>\n{_earn_text}\n\n"
-                    f"🏁 <b>Exit Reasons:</b>\n{_reason_text}\n\n"
-                    f"<i>{_report['trades_analyzed']} trades analyzed</i>"
+                msg = load_telegram_template(
+                    category="system",
+                    type_name="weekly_report",
+                    leaker_text=_leak_text,
+                    earner_text=_earn_text,
+                    reason_text=_reason_text,
+                    trades_analyzed=_report['trades_analyzed']
                 )
+                send_telegram_alert(msg, bypass_dedup=True)
                 state_meta["last_attribution_report_at"] = now_dt.isoformat()
                 state_meta["last_attribution_report"] = _report
     except Exception as _e:
@@ -1004,18 +1010,65 @@ def run_paper_trading_cycle(
         effective_entry_gate_reason = "insufficient_cash"
         logger.warning("[ACCOUNTING] Calculated stake $%.2f < floor $%.2f, blocking new entries.", current_stake_usd, MIN_STAKE_THRESHOLD)
 
-    # Notify on Tier Change
+    # Notify on Tier Change (with hysteresis + cooldown to prevent spam)
     prev_tier = state_meta.get("current_tier", 1)
     if new_tier != prev_tier:
-        msg = load_telegram_template(
-            category="system",
-            type_name="tier_update",
-            new_tier=new_tier,
-            wallet_balance=wallet_after_position_management,
-            current_stake_usd=current_stake_usd,
-            max_slots=current_tier_max_slots
-        )
-        send_telegram_alert(msg)
+        # [ANTI-SPAM] Hysteresis: require wallet to be $2 past boundary before tier change
+        _tier_boundaries = {2: 20.0, 1: 5.0}
+        _hysteresis_band = 2.0  # Must be $2 past boundary
+        _allow_tier_change = True
+        if new_tier > prev_tier:
+            # Upgrading: wallet must be $2 ABOVE the boundary
+            boundary = _tier_boundaries.get(new_tier, 0.0)
+            if wallet_after_position_management < (boundary + _hysteresis_band):
+                _allow_tier_change = False
+        else:
+            # Downgrading: wallet must be $2 BELOW the boundary
+            boundary = _tier_boundaries.get(prev_tier, 0.0)
+            if wallet_after_position_management > (boundary - _hysteresis_band):
+                _allow_tier_change = False
+
+        if _allow_tier_change:
+            # [ANTI-SPAM] Cooldown: max 1 tier notification per 6 hours
+            _last_tier_notify = state_meta.get("_last_tier_notify_at", "")
+            _tier_cooldown_ok = True
+            if _last_tier_notify:
+                try:
+                    from market_discovery_internal.reporting import parse_utc_datetime
+                    _last_dt = parse_utc_datetime(_last_tier_notify)
+                    if _last_dt:
+                        _hours_since = (now_dt - _last_dt).total_seconds() / 3600.0
+                        if _hours_since < 6.0:
+                            _tier_cooldown_ok = False
+                except Exception:
+                    pass
+
+            if _tier_cooldown_ok:
+                _direction = "naik" if new_tier > prev_tier else "turun"
+                msg = load_telegram_template(
+                    category="system",
+                    type_name="tier_update",
+                    new_tier=new_tier,
+                    prev_tier=prev_tier,
+                    direction=_direction,
+                    wallet_balance=wallet_after_position_management,
+                    current_stake_usd=current_stake_usd,
+                    max_slots=current_tier_max_slots
+                )
+                send_telegram_alert(msg)
+                state_meta["_last_tier_notify_at"] = now_dt.isoformat()
+            state_meta["current_tier"] = new_tier
+        else:
+            # Hysteresis blocked: keep previous tier to prevent oscillation
+            # Revert tier AND recalculate stake/slots for the previous tier
+            new_tier = prev_tier
+            if prev_tier == 2:
+                current_tier_max_slots = 15
+                current_stake_usd = round(wallet_after_position_management * 0.15, 2)
+            elif prev_tier == 1:
+                current_tier_max_slots = 8 if wallet_after_position_management >= 12.0 else 5
+                current_stake_usd = 2.0 if wallet_after_position_management >= 12.0 else 1.0
+            logger.debug("[TIER] Hysteresis blocked tier change. Wallet $%.2f near boundary.", wallet_after_position_management)
     state_meta["current_tier"] = new_tier
 
     available_slots = max(current_tier_max_slots - len(open_token_ids), 0)

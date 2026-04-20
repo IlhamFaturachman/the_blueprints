@@ -1,15 +1,16 @@
-⛔ <b>CIRCUIT BREAKER TRIPPED</b> ⛔
+⛔ <b>Circuit Breaker Aktif — Entry Dihentikan</b>
 
-<b>Bot telah menghentikan semua entry baru.</b>
+Bot menghentikan semua pembelian baru karena kerugian harian melebihi batas.
 
-📉 <b>Drawdown Report:</b>
-├ 💸 Daily Loss:       <b>-${current_loss}</b>
-├ 🛑 Max Limit (15%):  <b>-${limit_amount}</b>
-├ 📊 Baseline Wallet:  <b>${baseline}</b>
-└ 🏦 Current Balance:  <b>${cash}</b>
+<b>Detail Kerugian:</b>
+├ Rugi hari ini: <b>-${current_loss}</b>
+├ Batas maks (15%): <b>-${limit_amount}</b>
+├ Saldo awal hari: <b>${baseline}</b>
+└ Saldo sekarang: <b>${cash}</b>
 
-🛡️ <b>Protokol Aktif:</b>
-Posisi yang sudah terbuka tetap dipantau.
-Tidak ada entry baru sampai hari berikutnya (reset UTC midnight).
+<b>Yang terjadi sekarang:</b>
+├ Posisi yang sudah terbuka tetap dipantau
+├ Tidak ada pembelian baru sampai besok (reset UTC 00:00)
+└ Stop-loss dan take-profit tetap aktif
 
-⚠️ <i>Jika ingin reset manual: gunakan Kill Switch di dashboard lalu restart bot.</i>
+<i>Untuk reset manual: gunakan Kill Switch di dashboard lalu restart bot.</i>

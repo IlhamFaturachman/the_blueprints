@@ -341,6 +341,12 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     Formula: half-spread approximates one-way transaction cost.
     """
     price = market.get("yes_price")
+    if price is None:
+        return None
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return None
     threshold_raw = market.get("threshold")
     direction = market.get("direction")
     city = str(market.get("city", "")).lower()
@@ -504,7 +510,7 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
                                     city, noaa_temp, _lower, _upper, NOAA_OVERRIDE_CONFIRM_PROB)
                         raw_prob = max(raw_prob, NOAA_OVERRIDE_CONFIRM_PROB)
                     elif abs(noaa_temp - ((_lower + _upper) / 2)) > 5.0 and hours_left <= 2.0:
-                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C far from bracket [%.1f, %.1f]. Overriding prob to %.2f",
+                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C far from bracket [%.1f, %.1f] with %.1fh left. Overriding prob to %.2f",
                                     city, noaa_temp, _lower, _upper, hours_left, NOAA_OVERRIDE_CONTRADICT_PROB)
                         raw_prob = min(raw_prob, NOAA_OVERRIDE_CONTRADICT_PROB)
 

@@ -316,7 +316,9 @@ def _start_background_services():
         port=WS_BROADCAST_PORT,
         ping_interval_seconds=WS_PING_INTERVAL_SECONDS
     )
-    _ws_broadcaster.start()
+    if not _ws_broadcaster.start():
+        print("[WS-BROADCAST] WARNING: Broadcaster failed to start. Dashboard live updates disabled.")
+        print("[WS-BROADCAST] Install websockets: pip install \"websockets>=12.0\"")
 
     # 2. Price Watcher (Multiprocessing Source)
     _ws_watcher = PriceWatcher(
@@ -483,11 +485,26 @@ def _main_protected():
             from market_discovery_internal.utils import send_telegram_alert, load_telegram_template
 
             def _on_kill():
+                from datetime import datetime, timezone, timedelta
+                _now_wib = datetime.now(timezone(timedelta(hours=7)))
+                # Try to get open position count from state file
+                _open_count = "N/A"
+                try:
+                    from market_discovery_internal.utils import _load_json_blob
+                    _state = _load_json_blob(PAPER_STATE_FILE, {})
+                    _open_count = len([
+                        p for p in _state.get("positions", [])
+                        if p.get("status") == "open"
+                    ])
+                except Exception:
+                    pass
                 msg = load_telegram_template(
                     category="system",
-                    type_name="kill_switch"
+                    type_name="kill_switch",
+                    open_positions=_open_count,
+                    timestamp_wib=_now_wib.strftime('%Y-%m-%d %H:%M:%S')
                 )
-                send_telegram_alert(msg)
+                send_telegram_alert(msg, bypass_dedup=True)
 
             # Enterprise Logic: Monitor WS health and adjust polling interval
             run_main_paper_loop_mode(

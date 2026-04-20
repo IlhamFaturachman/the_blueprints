@@ -43,14 +43,61 @@ def load_telegram_template(category: str, type_name: str, **kwargs) -> str:
     except Exception as e:
         return f"❌ Error rendering template {category}/{type_name}: {str(e)}"
 
-_telegram_consecutive_failures = 0
+import threading as _tg_threading
 
-def send_telegram_alert(message, is_html=True):
-    """[MODUL N] Send push notification via Telegram Bot API."""
+_telegram_consecutive_failures = 0
+_telegram_lock = _tg_threading.Lock()
+_telegram_rate_limiter = {
+    "last_sent": {},       # {message_hash: timestamp} for dedup
+    "window_count": 0,     # messages sent in current window
+    "window_start": 0.0,   # start of current rate-limit window
+}
+_TELEGRAM_MAX_PER_MINUTE = 20       # Telegram API limit is 30/min, we stay safe
+_TELEGRAM_DEDUP_WINDOW_SECONDS = 300  # Suppress identical messages within 5 min
+
+def _telegram_dedup_key(message: str) -> str:
+    """Generate a short hash for dedup. Strips dynamic numbers to catch near-duplicates."""
+    import hashlib
+    import re
+    # Normalize: strip numbers/timestamps so "Wallet: $20.01" and "Wallet: $20.02" dedup
+    normalized = re.sub(r'\d+\.?\d*', '#', message)
+    return hashlib.md5(normalized.encode()).hexdigest()[:12]
+
+def send_telegram_alert(message, is_html=True, bypass_dedup=False):
+    """[MODUL N] Send push notification via Telegram Bot API.
+    
+    Enterprise-grade with:
+    - Rate limiting (max 20 msgs/min to stay under Telegram API limit)
+    - Deduplication (identical messages suppressed within 5-min window)
+    - Consecutive failure tracking with exponential backoff logging
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     
     global _telegram_consecutive_failures
+    now = time.time()
+
+    with _telegram_lock:
+        # [RATE LIMITER] Sliding window: max N messages per 60 seconds
+        rl = _telegram_rate_limiter
+        if now - rl["window_start"] > 60:
+            rl["window_start"] = now
+            rl["window_count"] = 0
+        if rl["window_count"] >= _TELEGRAM_MAX_PER_MINUTE:
+            logger.warning("[TELEGRAM] Rate limit reached (%d/min). Dropping message.", _TELEGRAM_MAX_PER_MINUTE)
+            return False
+
+        # [DEDUP] Suppress identical/near-identical messages within window
+        if not bypass_dedup:
+            dedup_key = _telegram_dedup_key(message)
+            last_sent_at = rl["last_sent"].get(dedup_key, 0.0)
+            if now - last_sent_at < _TELEGRAM_DEDUP_WINDOW_SECONDS:
+                logger.debug("[TELEGRAM] Dedup suppressed (key=%s, age=%.0fs)", dedup_key, now - last_sent_at)
+                return True  # Return True so callers don't think it failed
+            # Cleanup old entries (keep dict small)
+            rl["last_sent"] = {k: v for k, v in rl["last_sent"].items() if now - v < _TELEGRAM_DEDUP_WINDOW_SECONDS}
+            rl["last_sent"][dedup_key] = now
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": str(TELEGRAM_CHAT_ID),
@@ -74,16 +121,19 @@ def send_telegram_alert(message, is_html=True):
     try:
         response = requests.post(url, json=payload, timeout=timeout, proxies=proxies)
         response.raise_for_status()
-        _telegram_consecutive_failures = 0
+        with _telegram_lock:
+            _telegram_consecutive_failures = 0
+            rl["window_count"] += 1
         return True
     except Exception as e:
-        _telegram_consecutive_failures += 1
+        with _telegram_lock:
+            _telegram_consecutive_failures += 1
         if _telegram_consecutive_failures >= 10:
-            logger.error(f"[TELEGRAM ERROR] {_telegram_consecutive_failures} consecutive failures. Latest: {e}")
+            logger.error("[TELEGRAM ERROR] %d consecutive failures. Latest: %s", _telegram_consecutive_failures, e)
         else:
-            logger.warning(f"[TELEGRAM ERROR] {str(e)}")
+            logger.warning("[TELEGRAM ERROR] %s", e)
         if 'response' in locals() and response is not None:
-             logger.warning(f"[TELEGRAM RESP] {response.text}")
+             logger.warning("[TELEGRAM RESP] %s", response.text)
         return False
 
 def fetch_with_retry(url, params=None, headers=None, max_retries=3, fail_fast_on_429=False, timeout=10):

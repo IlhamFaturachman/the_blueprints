@@ -60,6 +60,11 @@ class WsBroadcaster:
         if loop and loop.is_running():
             logger.info("[WS-BROADCAST] Listening on ws://%s:%s", self._host, self._port)
             return True
+        logger.error(
+            "[WS-BROADCAST] FAILED TO START on %s:%s — browser relay disabled. "
+            "Check if 'websockets' package is installed: pip install \"websockets>=12.0\"",
+            self._host, self._port,
+        )
         return False
 
     def stop(self) -> None:

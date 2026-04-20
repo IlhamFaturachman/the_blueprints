@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>THE BLUEPRINTS — Trading Dashboard</title>
@@ -1203,9 +1203,9 @@ function setWsStatus(state, text) {
     if (!dot || !statusText) return;
 
     dot.className = 'live-dot';
-    if (state === 'live') dot.classList.add('');
-    else if (state === 'reconnecting') dot.classList.add('reconnecting');
-    else dot.classList.add('stale');
+    if (state === 'reconnecting') dot.classList.add('reconnecting');
+    else if (state !== 'live') dot.classList.add('stale');
+    // 'live' state: default green styling from .live-dot class (no extra class needed)
 
     statusText.textContent = text;
     if (timeEl) timeEl.textContent = new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -1246,7 +1246,7 @@ function connectBrowserWs() {
         wsSocket.onopen = () => { wsReconnectAttempts = 0; setWsStatus('live', 'Live'); };
         wsSocket.onmessage = e => handleWsMessage(e.data);
         wsSocket.onclose = () => { setWsStatus('reconnecting', 'Reconnecting...'); scheduleWsReconnect(); };
-        wsSocket.onerror = () => {};
+        wsSocket.onerror = (e) => { console.warn('[WS] Connection error', e); };
     } catch { scheduleWsReconnect(); }
 }
 
@@ -1254,6 +1254,7 @@ function connectBrowserWs() {
 async function fetchData() {
     try {
         const res = await fetch('../logs/paper_positions_5usd.json?t=' + Date.now(), { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         const data = await res.json();
 
         // Cycle journal
@@ -1366,6 +1367,12 @@ async function fetchData() {
 
     } catch (e) {
         console.error('[fetchData]', e);
+        // Clear skeleton loaders on error so user sees feedback instead of infinite shimmer
+        const errorIds = ['valPortfolio','valRealized','valWinRate','valFees','valDailyTarget','valCB','valTuner','valCycleStats','valFloating','valHealth'];
+        errorIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (el && el.querySelector('.skeleton')) el.textContent = '--';
+        });
     }
 }
 
@@ -1390,18 +1397,32 @@ function updateClocks() {
 }
 
 // ===== KILL SWITCH =====
+function getCommandServerUrl() {
+    // Command server runs on port 8083 on the same host
+    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+    const hostname = window.location.hostname || 'localhost';
+    return `${protocol}//${hostname}:8083`;
+}
+
 function triggerKillSwitch() {
-    if (!confirm('EMERGENCY KILL-SWITCH\n\nThe bot will stop after the current cycle completes.\nAll open positions remain saved in state.\n\nContinue?')) return;
+    if (!confirm('EMERGENCY KILL-SWITCH\n\nBot akan berhenti setelah siklus saat ini selesai.\nSemua posisi terbuka tetap tersimpan aman.\n\nLanjutkan?')) return;
+    
+    const token = prompt('Masukkan Kill Token (KILL_API_TOKEN):');
+    if (!token) return;
+    
     const btn = document.querySelector('.btn-danger');
     if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
-    fetch('/api/kill', { method: 'POST' })
+    fetch(`${getCommandServerUrl()}/api/kill`, {
+        method: 'POST',
+        headers: { 'X-Kill-Token': token }
+    })
         .then(r => r.json())
         .then(data => {
-            alert('Kill signal sent. Bot will stop after cycle completes.\n\n' + (data.message || ''));
+            alert('Kill signal terkirim. Bot akan berhenti setelah siklus selesai.\n\n' + (data.message || ''));
             if (btn) { btn.textContent = 'Kill Sent'; }
         })
         .catch(err => {
-            alert('Failed to send kill signal: ' + err);
+            alert('Gagal mengirim kill signal: ' + err);
             if (btn) { btn.disabled = false; btn.textContent = 'Kill Bot'; }
         });
 }

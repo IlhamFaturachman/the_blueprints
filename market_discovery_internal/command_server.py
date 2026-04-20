@@ -18,7 +18,7 @@ _logger = logging.getLogger(__name__)
 
 KILL_FLAG_FILE = os.getenv("KILL_FLAG_FILE", "logs/kill.flag")
 COMMAND_SERVER_PORT = int(os.getenv("COMMAND_SERVER_PORT", "8083"))
-COMMAND_SERVER_BIND = os.getenv("COMMAND_SERVER_BIND", "127.0.0.1")
+COMMAND_SERVER_BIND = os.getenv("COMMAND_SERVER_BIND", "0.0.0.0")  # 0.0.0.0 for browser access; auth via KILL_API_TOKEN
 # Auth token — set KILL_API_TOKEN in .env; if unset, all endpoints are disabled.
 _KILL_API_TOKEN = os.getenv("KILL_API_TOKEN", "")
 # CORS: restrict to your dashboard origin (default: same-origin via nginx proxy)
@@ -136,7 +136,13 @@ class _CommandHandler(BaseHTTPRequestHandler):
 
     def _send_cors_headers(self, code):
         self.send_response(code)
-        self.send_header("Access-Control-Allow-Origin", _CORS_ORIGIN)
+        # Validate Origin against allowed patterns (dashboard on port 8080)
+        origin = self.headers.get("Origin", "")
+        # Allow: configured origin, or same-host on port 8080 (dashboard)
+        if origin == _CORS_ORIGIN or (origin and ":8080" in origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+        else:
+            self.send_header("Access-Control-Allow-Origin", _CORS_ORIGIN)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Kill-Token")
 

@@ -429,7 +429,7 @@ WS_WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WS_WATCHDOG_TIMEOUT_SECONDS", "120"
 WS_STALE_DETECTION_MINUTES = 15 # Threshold to trigger Hybrid Fallback (aggressive polling)
 
 WS_BROADCAST_HOST = os.getenv("WS_BROADCAST_HOST", "0.0.0.0")
-WS_BROADCAST_PORT = max(1, int(os.getenv("WS_BROADCAST_PORT", "8082")))
+WS_BROADCAST_PORT = max(1, int(os.getenv("WS_BROADCAST_PORT", "8081")))
 WS_BROADCAST_MAX_CLIENTS = max(1, int(os.getenv("WS_BROADCAST_MAX_CLIENTS", "10")))
 WS_BROADCAST_PING_INTERVAL_SECONDS = max(
     5,
