@@ -1,16 +1,25 @@
+from __future__ import annotations
+
 import logging
 import time
 import os
 import threading
 from datetime import datetime, timezone
-from market_discovery_internal.utils import _safe_float, _safe_div, _clamp, send_telegram_alert, load_telegram_template
+from typing import Any, Optional
+
+from market_discovery_internal.utils import _safe_float, send_telegram_alert, load_telegram_template
 from market_discovery_internal.config import (
     HYBRID_TAKE_PROFIT_MIN_PRICE, HYBRID_TAKE_PROFIT_MULTIPLIER,
     HYBRID_STOP_LOSS_MULTIPLIER, HYBRID_LATE_WINDOW_HOURS,
     HYBRID_MIN_CONFIDENCE_TO_HOLD, HYBRID_CONFIDENCE_EDGE_SCALE,
     PAPER_STAKE_USD, PAPER_BASE_WALLET, PAPER_MAX_OPEN_PER_CITY,
     MARKET_MAX_SPREAD_GATE, MIN_STAKE_THRESHOLD, PAPER_STAKE_INCLUSIVE,
-    WHIPLASH_COOLDOWN_HOURS, STRATEGY_MIN_STAKE_USD, STRATEGY_MIN_SHARES
+    WHIPLASH_COOLDOWN_HOURS, STRATEGY_MIN_STAKE_USD, STRATEGY_MIN_SHARES,
+    SNIPER_TAKE_PROFIT_PRICE, PENNY_BID_THRESHOLD, ROGUE_ASK_THRESHOLD,
+    ASK_SANITY_MULTIPLIER, ASK_SANITY_FLOOR, PARTIAL_TP_MULTIPLIER,
+    TRAILING_STOP_DISTANCE, TRAILING_STOP_TRIGGER, THESIS_DECAY_THRESHOLD,
+    CONFIDENCE_WEIGHT_FORECAST, CONFIDENCE_WEIGHT_EDGE, CONFIDENCE_WEIGHT_LIQUIDITY,
+    HISTORY_MAX_ENTRIES,
 )
 from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
@@ -116,7 +125,7 @@ def enrich_discovery_markets(
     for i, market in enumerate(parsed, 1):
         # Progress log for station resolution if many markets
         if total_parsed > 50 and i % 50 == 0:
-            print(f"[MODUL A] Resolving stations: {i}/{total_parsed} markets processed...", flush=True)
+            logger.info("[MODUL A] Resolving stations: %d/%d markets processed...", i, total_parsed)
 
         # If ICAO is already explicit via regex, we skip AI to save cost.
         if not market.get("icao_explicit"):
@@ -125,7 +134,7 @@ def enrich_discovery_markets(
                 market["icao_code"] = ai_icao
                 market["icao_explicit"] = True # Mark as explicit so we don't re-run AI
 
-    print(f"[MODUL K] Prefetching forecasts for {len(parsed)} unique slots...", flush=True)
+    logger.info("[MODUL K] Prefetching forecasts for %d unique slots...", len(parsed))
     prefetch_started = perf_counter_fn()
     forecast_prefetch = prefetch_forecasts_fn(
         cache_keys=[(market.get("city"), market.get("date"), market.get("icao_code")) for market in parsed],
@@ -139,7 +148,7 @@ def enrich_discovery_markets(
     for i, market in enumerate(parsed, 1):
         # Progress log for enrichment
         if total_parsed > 20 and i % 25 == 0:
-             print(f"[MODUL C] Enrichment progress: {i}/{total_parsed} markets...", flush=True)
+             logger.info("[MODUL C] Enrichment progress: %d/%d markets...", i, total_parsed)
 
         # [MODUL L] Rate Limit Shield: Dampen burst requests to provider
         if i % 5 == 0:
@@ -179,6 +188,7 @@ def enrich_discovery_markets(
                 enriched_item["regime_score"] = r_score
                 enriched_item["regime_gates"] = r_gates
             except Exception:
+                logger.warning("[PACK B] Regime score computation failed, using neutral defaults")
                 enriched_item["regime_class"] = "neutral"
                 enriched_item["regime_score"] = 0.5
                 enriched_item["regime_gates"] = {"min_prob": 0.72, "min_edge": 0.22, "max_price": 0.60}
@@ -197,25 +207,25 @@ def enrich_discovery_markets(
 
 
 def run_discovery_cycle(
-    inspect=False,
-    aggressive_scan=False,
+    inspect: bool = False,
+    aggressive_scan: bool = False,
     *,
-    perf_counter_fn,
-    elapsed_ms_fn,
-    fetch_markets_fn,
-    parse_discovery_markets_fn,
-    enrich_discovery_markets_fn,
-    filter_opportunities_fn,
-    daily_resolve_only,
-    daily_min_hours_to_resolve,
-):
+    perf_counter_fn: Any,
+    elapsed_ms_fn: Any,
+    fetch_markets_fn: Any,
+    parse_discovery_markets_fn: Any,
+    enrich_discovery_markets_fn: Any,
+    filter_opportunities_fn: Any,
+    daily_resolve_only: bool,
+    daily_min_hours_to_resolve: float,
+) -> dict[str, Any]:
     """Run one discovery cycle and return structured results."""
     cycle_started = perf_counter_fn()
-    print(f"--- [FETCH] Starting market scan (Aggressive: {aggressive_scan}) ---", flush=True)
+    logger.info("--- [FETCH] Starting market scan (Aggressive: %s) ---", aggressive_scan)
 
     fetch_started = perf_counter_fn()
     markets_raw = fetch_markets_fn(inspect=inspect, aggressive_scan=aggressive_scan)
-    print(f"--- [FETCH] Found {len(markets_raw)} markets. Parsing...", flush=True)
+    logger.info("--- [FETCH] Found %d markets. Parsing...", len(markets_raw))
     fetch_ms = elapsed_ms_fn(fetch_started)
 
     parse_started = perf_counter_fn()
@@ -274,51 +284,51 @@ def run_discovery_cycle(
 
 
 def run_paper_trading_cycle(
-    min_price,
-    max_price,
-    stake_usd,
-    state_path,
-    force_aggressive_scan,
+    min_price: Optional[float],
+    max_price: Optional[float],
+    stake_usd: float,
+    state_path: str,
+    force_aggressive_scan: bool,
     *,
-    perf_counter_fn,
-    now_utc_fn,
-    elapsed_ms_fn,
-    load_paper_state_fn,
-    run_discovery_cycle_fn,
-    prefetch_forecasts_fn,
-    ensure_take_profit_target_fn,
-    forecast_still_valid_fn,
-    position_confidence_score_fn,
-    update_paper_position_fn,
-    close_paper_position_fn,
-    fetch_orderbook_quote_fn,
-    build_open_position_inventory_fn,
-    build_entry_candidates_fn,
-    append_opened_positions_from_candidates_fn,
-    build_city_coverage_metrics_fn,
-    build_cycle_acceptance_metrics_fn,
-    build_rolling_acceptance_metrics_fn,
-    build_rolling_city_coverage_metrics_fn,
-    build_cycle_journal_entry_fn,
-    save_paper_state_fn,
-    discovery_enable_auto_aggressive_scan,
-    discovery_auto_aggressive_after_empty_cycles,
-    paper_position_forecast_prefetch_min_keys,
-    paper_position_forecast_prefetch_max_workers,
-    paper_entry_min_price,
-    paper_entry_max_price,
-    paper_max_open_positions,
-    paper_min_city_diversity,
-    paper_journal_max_entries,
-    haiku_position_monitor_fn=None,
-    haiku_monitor_min_confidence=0.75,
-    allow_new_entries=True,
-    entry_gate_reason="active",
-    ws_watcher=None,
-    last_ws_update_at=None,
-    ws_stale_detection_minutes=15,
-    on_position_opened_fn=None,
-):
+    perf_counter_fn: Any,
+    now_utc_fn: Any,
+    elapsed_ms_fn: Any,
+    load_paper_state_fn: Any,
+    run_discovery_cycle_fn: Any,
+    prefetch_forecasts_fn: Any,
+    ensure_take_profit_target_fn: Any,
+    forecast_still_valid_fn: Any,
+    position_confidence_score_fn: Any,
+    update_paper_position_fn: Any,
+    close_paper_position_fn: Any,
+    fetch_orderbook_quote_fn: Any,
+    build_open_position_inventory_fn: Any,
+    build_entry_candidates_fn: Any,
+    append_opened_positions_from_candidates_fn: Any,
+    build_city_coverage_metrics_fn: Any,
+    build_cycle_acceptance_metrics_fn: Any,
+    build_rolling_acceptance_metrics_fn: Any,
+    build_rolling_city_coverage_metrics_fn: Any,
+    build_cycle_journal_entry_fn: Any,
+    save_paper_state_fn: Any,
+    discovery_enable_auto_aggressive_scan: bool,
+    discovery_auto_aggressive_after_empty_cycles: int,
+    paper_position_forecast_prefetch_min_keys: int,
+    paper_position_forecast_prefetch_max_workers: int,
+    paper_entry_min_price: float,
+    paper_entry_max_price: float,
+    paper_max_open_positions: int,
+    paper_min_city_diversity: int,
+    paper_journal_max_entries: int,
+    haiku_position_monitor_fn: Any = None,
+    haiku_monitor_min_confidence: float = 0.75,
+    allow_new_entries: bool = True,
+    entry_gate_reason: str = "active",
+    ws_watcher: Any = None,
+    last_ws_update_at: Any = None,
+    ws_stale_detection_minutes: float = 15,
+    on_position_opened_fn: Any = None,
+) -> dict[str, Any]:
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
     global _HEARTBEAT_SENT
     cycle_started = perf_counter_fn()  # Top-level timer for total cycle duration
@@ -330,7 +340,7 @@ def run_paper_trading_cycle(
     state_meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
     
     # [MODUL L] Process Heartbeat
-    print(f"--- CYCLE START: {now_dt.strftime('%H:%M:%S')} (Aggressive: {force_aggressive_scan}) ---", flush=True)
+    logger.info("--- CYCLE START: %s (Aggressive: %s) ---", now_dt.strftime('%H:%M:%S'), force_aggressive_scan)
     
     with _heartbeat_lock:
         if not _HEARTBEAT_SENT:
@@ -366,7 +376,7 @@ def run_paper_trading_cycle(
         else:
             state_meta["_mem_alert_count"] = 0
     except Exception:
-        pass
+        logger.warning("[WATCHDOG] Memory watchdog check failed", exc_info=True)
     
     # [MODUL L] Monitor Warmer Health
     warmer_heartbeat_raw = db.get_heartbeat("warmer")
@@ -598,19 +608,19 @@ def run_paper_trading_cycle(
 
         # Reject completely empty orderbooks that only have extreme fallback limits
         # (bid=0.01, ask=0.99) which cause false 1-cent stop losses.
-        if bid_val <= 0.01 and ask_val >= 0.98:
+        if bid_val <= PENNY_BID_THRESHOLD and ask_val >= ROGUE_ASK_THRESHOLD:
             bid_val = 0.0
             ask_val = 0.0
             
         # Ignore 1-cent bids as active market evaluation criteria if entry point was high.
         # A 1-cent bid is a market maker placeholder, not a real sellable price.
-        if bid_val <= 0.01 and entry_price > 0.05:
+        if bid_val <= PENNY_BID_THRESHOLD and entry_price > 0.05:
             bid_val = 0.0
 
         # [LIVE-LIKE] Exit evaluation always uses bid (what you'd receive selling on CLOB).
         # Mid-price was optimistic and not representative of real execution price.
         # WS exit path already uses bid — align main cycle to match.
-        ask_sane_limit = max(entry_price * 3.0, 0.60)  # ask above 3x entry or 60c is rogue
+        ask_sane_limit = max(entry_price * ASK_SANITY_MULTIPLIER, ASK_SANITY_FLOOR)  # ask above 3x entry or 60c is rogue
 
         if bid_val > 0:
             current_yes_price = bid_val
@@ -650,6 +660,7 @@ def run_paper_trading_cycle(
                 # Backward-compat: support monitor callbacks that accept only position.
                 monitor_result = haiku_position_monitor_fn(position)
             except Exception:
+                logger.warning("[HAIKU-MONITOR] Monitor call failed for %s", position.get("city", "?"), exc_info=True)
                 monitor_result = None
             finally:
                 haiku_monitor_calls += 1
@@ -677,7 +688,7 @@ def run_paper_trading_cycle(
                 continue
 
         # [MODUL G] Exit Sniper (Aggressive sweeps) — checked BEFORE forecast call to avoid wasted API calls
-        if current_yes_price >= 0.90:
+        if current_yes_price >= SNIPER_TAKE_PROFIT_PRICE:
             forced_closed = close_paper_position_fn(
                 position=position,
                 exit_price=current_yes_price,
@@ -756,6 +767,7 @@ def run_paper_trading_cycle(
                 _dur_h, _dur_m = _dur_s // 3600, (_dur_s % 3600) // 60
                 _duration_str = f"{_dur_h}h {_dur_m}m" if _dur_h else f"{_dur_m}m"
             except Exception:
+                logger.warning("[MODUL N] Duration calculation failed for position %s", position.get("city", "?"))
                 _duration_str = "N/A"
             _tpl_name = "exit_profit" if pnl > 0 else "exit_loss"
             msg = load_telegram_template(
@@ -798,6 +810,7 @@ def run_paper_trading_cycle(
     try:
         db_history = db.get_recent_trade_history(limit=50)
     except Exception:
+        logger.warning("[WHIPLASH-SHIELD] Failed to fetch DB trade history for blacklist")
         db_history = []
         
     combined_history = list(next_history) + list(db_history)
@@ -820,6 +833,7 @@ def run_paper_trading_cycle(
                     token_id = str(h_pos.get("token_id"))
                     recent_exit_blacklist.add(token_id)
         except Exception:
+            logger.debug("[WHIPLASH-SHIELD] Skipping malformed history entry")
             continue
     if recent_exit_blacklist:
         logger.warning(f"[WHIPLASH-SHIELD] Active blacklist for {len(recent_exit_blacklist)} tokens: {recent_exit_blacklist}")
@@ -872,7 +886,7 @@ def run_paper_trading_cycle(
             if last_date < now_dt.date():
                 state_meta.pop("circuit_breaker_alert_sent", None)
     except Exception:
-        pass
+        logger.warning("[CIRCUIT-BREAKER] Failed to parse last_cycle_at for daily reset")
 
     if effective_allow_new_entries and _daily_loss >= _drawdown_limit:
         effective_allow_new_entries = False
@@ -1150,10 +1164,9 @@ def run_paper_trading_cycle(
         "current_wallet": float(wallet_after_position_management),
     }
 
-    # [FIX] Cap history to last 500 entries to prevent unbounded memory growth
-    _MAX_HISTORY_ENTRIES = 500
-    if len(next_history) > _MAX_HISTORY_ENTRIES:
-        next_history = next_history[-_MAX_HISTORY_ENTRIES:]
+    # [FIX] Cap history to last N entries to prevent unbounded memory growth
+    if len(next_history) > HISTORY_MAX_ENTRIES:
+        next_history = next_history[-HISTORY_MAX_ENTRIES:]
 
     next_state = {
         "positions": next_open_positions,
@@ -1209,7 +1222,7 @@ def _ensure_take_profit_target(position):
     return normalized
 
 
-def build_paper_position(opportunity, stake_usd=PAPER_STAKE_USD):
+def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_STAKE_USD) -> dict[str, Any]:
     """Create a paper position from an opportunity candidate."""
     from market_discovery_internal.pricing import (
         calculate_depth_adjusted_stake,
@@ -1320,7 +1333,7 @@ def _position_confidence_score(position, current_yes_price, forecast_still_valid
     edge_component = min(edge_now / edge_scale, 1.0)
     price_component = 1.0 - min(abs(current_price - 0.50) / 0.50, 1.0)
 
-    score = (0.70 * base_prob) + (0.20 * edge_component) + (0.10 * price_component)
+    score = (CONFIDENCE_WEIGHT_FORECAST * base_prob) + (CONFIDENCE_WEIGHT_EDGE * edge_component) + (CONFIDENCE_WEIGHT_LIQUIDITY * price_component)
     return round(max(0.0, min(score, 1.0)), 4)
 
 
@@ -1339,13 +1352,13 @@ def _hours_until_resolve_from_end_date(end_date, now_utc=None):
 
 
 def evaluate_hybrid_exit(
-    position,
-    current_yes_price,
-    forecast_still_valid,
-    hours_until_resolve=None,
-    now_utc=None,
-    confidence_score=None,
-):
+    position: dict[str, Any],
+    current_yes_price: float,
+    forecast_still_valid: bool,
+    hours_until_resolve: Optional[float] = None,
+    now_utc: Optional[datetime] = None,
+    confidence_score: Optional[float] = None,
+) -> dict[str, Any]:
     """
     [PACK D] Advanced hybrid exit strategy:
      1) Take-profit at +100% from entry (2x by default).
@@ -1373,7 +1386,7 @@ def evaluate_hybrid_exit(
     updated_peak = max(peak_price, price)
 
     # [PACK D] Partial TP: at 1.5x entry, lock in profit by moving stop to break-even
-    _PARTIAL_TP_MULT = 1.5 - 1e-9  # epsilon tolerance for float precision
+    _PARTIAL_TP_MULT = PARTIAL_TP_MULTIPLIER - 1e-9  # epsilon tolerance for float precision
     partial_tp_taken = bool(position.get("partial_tp_taken", False))
     partial_tp_triggered = False
     if not partial_tp_taken and entry_price > 0 and price >= entry_price * _PARTIAL_TP_MULT:
@@ -1385,8 +1398,8 @@ def evaluate_hybrid_exit(
     # [PACK D] Trailing stop: trigger if price drops 15% from peak AND peak was 20%+ profitable
     # AND price is back at or below entry — avoids premature exit on normal market oscillation.
     # Regular stop_loss handles downside below entry independently.
-    _TRAILING_TRIGGER = 1.20   # position must have been 20%+ profitable to arm trailing stop
-    _TRAILING_PCT = 0.15       # retrace 15% from peak triggers the stop
+    _TRAILING_TRIGGER = TRAILING_STOP_TRIGGER   # position must have been 20%+ profitable to arm trailing stop
+    _TRAILING_PCT = TRAILING_STOP_DISTANCE       # retrace 15% from peak triggers the stop
     if (entry_price > 0
             and updated_peak >= entry_price * _TRAILING_TRIGGER
             and price < updated_peak * (1.0 - _TRAILING_PCT)
@@ -1397,7 +1410,7 @@ def evaluate_hybrid_exit(
             "target_price": target_price,
             "confidence_score": confidence_score,
             "peak_price": round(updated_peak, 4),
-            "partial_tp_taken": partial_tp_taken or (price >= entry_price * 1.5),
+            "partial_tp_taken": partial_tp_taken or (price >= entry_price * _PARTIAL_TP_MULT),
             "stop_loss_price": round(stop_loss_price, 4),
         }
 
@@ -1415,7 +1428,7 @@ def evaluate_hybrid_exit(
             if _age_hours < HYBRID_STOP_LOSS_COOLDOWN_HOURS:
                 _stop_loss_armed = False
         except Exception:
-            pass
+            logger.debug("[STOP-LOSS] Failed to compute cooldown age for position")
 
     if _stop_loss_armed and price <= stop_loss_price:
         return {
@@ -1444,7 +1457,7 @@ def evaluate_hybrid_exit(
         hours = _hours_until_resolve_from_end_date(position.get("end_date"), now_utc=now_utc)
 
     # [PACK D] Thesis decay exit: late stage + low confidence → exit early
-    if hours is not None and hours <= 2.0 and confidence_score < 0.45:
+    if hours is not None and hours <= HYBRID_LATE_WINDOW_HOURS and confidence_score < THESIS_DECAY_THRESHOLD:
         return {
             "action": "sell",
             "reason": "thesis_decay_exit",
@@ -1548,23 +1561,23 @@ def close_paper_position(position, exit_price, reason, now_utc=None):
             raw_prob = float(closed.get("raw_prob") or closed.get("entry_model_prob") or 0.5)
             db.update_calibration(city, direction, horizon_bin, price_bin, outcome, raw_prob)
         except Exception:
-            pass
+            logger.warning("[CALIBRATION] Failed to update calibration for %s", closed.get("city", "?"))
     try:
         db.record_trade_history(closed)
     except Exception:
-        pass
+        logger.warning("[PERSISTENCE] Failed to record trade history for %s", closed.get("token_id", "?"))
 
     return closed
 
 
 def update_paper_position(
-    position,
-    current_yes_price,
-    forecast_still_valid,
-    hours_until_resolve=None,
-    now_utc=None,
-    confidence_score=None,
-):
+    position: dict[str, Any],
+    current_yes_price: float,
+    forecast_still_valid: bool,
+    hours_until_resolve: Optional[float] = None,
+    now_utc: Optional[datetime] = None,
+    confidence_score: Optional[float] = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Apply hybrid exit decision and return updated position plus decision."""
     decision = evaluate_hybrid_exit(
         position=position,
@@ -1922,12 +1935,14 @@ def compute_auto_tuner_adjustments(min_trades=3):
         from market_discovery_internal.config import TARGET_CITIES
         cities = list(TARGET_CITIES.keys())
     except Exception:
+        logger.warning("[AUTO-TUNER] Failed to load TARGET_CITIES config")
         return {}
 
     for city in cities:
         try:
             trades = db.get_trade_history_for_city(city, limit=20)
         except Exception:
+            logger.debug("[AUTO-TUNER] Failed to fetch trade history for %s", city)
             continue
         if len(trades) < min_t:
             continue
@@ -1980,6 +1995,7 @@ def build_profit_attribution_report(limit=200):
     try:
         trades = db.get_recent_trade_history(limit=limit)
     except Exception:
+        logger.warning("[PACK-F] Failed to fetch trade history for attribution report")
         return {}
 
     if not trades:

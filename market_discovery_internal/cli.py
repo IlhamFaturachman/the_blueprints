@@ -1,6 +1,9 @@
 """CLI helpers for market_discovery modes."""
 
+import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 
 def parse_cli_mode_flags(argv):
@@ -59,7 +62,7 @@ def run_main_paper_loop_mode(
         from market_discovery_internal.log_rotator import run_rotator_thread
         run_rotator_thread("/opt/the_blueprints/logs/paper_loop.out")
     except Exception as e:
-        print(f"[BOOT] Log rotator failed to start: {e}")
+        logger.warning("[BOOT] Log rotator failed to start: %s", e)
 
     # [MODUL DB] Gudang Data Warmer Integration (runs in background daemon thread)
     try:
@@ -67,12 +70,12 @@ def run_main_paper_loop_mode(
         from market_discovery_internal.warmer import warmer
         warmer_thread = threading.Thread(target=warmer.start, name="GudangDataWarmer", daemon=True)
         warmer_thread.start()
-        print("[BOOT] Data Warmer started in background thread.", flush=True)
+        logger.info("[BOOT] Data Warmer started in background thread.")
     except Exception as e:
-        print(f"[BOOT] Data Warmer failed to start: {e}")
+        logger.warning("[BOOT] Data Warmer failed to start: %s", e)
 
     # [MODUL U] IP Reputation Guard (Cool-off)
-    print(f"Starting paper loop every {paper_loop_interval_seconds}s. (Cool-off for 30s)...", flush=True)
+    logger.info("Starting paper loop every %ds. (Cool-off for 30s)...", paper_loop_interval_seconds)
     sleep_fn(30)
 
     consecutive_errors = 0
@@ -91,12 +94,12 @@ def run_main_paper_loop_mode(
         while True:
             # [MODUL J] Kill-Switch check — runs before every cycle
             if callable(kill_flag_check_fn) and kill_flag_check_fn():
-                print("[MODUL J] Kill flag detected. Shutting down bot...")
+                logger.info("[MODUL J] Kill flag detected. Shutting down bot...")
                 if callable(on_kill_fn):
                     try:
                         on_kill_fn()
                     except Exception:
-                        pass
+                        logger.warning("[MODUL J] on_kill callback failed", exc_info=True)
                 return
 
             # Dynamic Fallback: Check if WebSocket is healthy
@@ -113,20 +116,20 @@ def run_main_paper_loop_mode(
                     # [FIX] Hard-restart WS from loop level if stale >2x threshold
                     if since_last > (ws_stale_detection_minutes * 60 * 2) and ws_watcher:
                         timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                        print(f"[{timestamp}] 🔄 WS stale >{ws_stale_detection_minutes*2}m. Hard-restarting WS process...")
+                        logger.warning("[%s] WS stale >%dm. Hard-restarting WS process...", timestamp, ws_stale_detection_minutes*2)
                         try:
                             ws_watcher.stop()
                             time.sleep(2)
                             ws_watcher.start()
                             last_ws_update_at.value = time.time()
-                            print(f"[{timestamp}] ✅ WS process restarted successfully.")
+                            logger.info("[%s] WS process restarted successfully.", timestamp)
                         except Exception as _e:
-                            print(f"[{timestamp}] ❌ WS restart failed: {_e}")
+                            logger.error("[%s] WS restart failed: %s", timestamp, _e)
             
             use_aggressive = aggressive_mode or is_stale
             if is_stale:
                 timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                print(f"[{timestamp}] ⚠️ WS Stale ({int(since_last)}s). Using Hybrid Fallback ({current_interval}s).")
+                logger.warning("[%s] WS Stale (%ds). Using Hybrid Fallback (%ds).", timestamp, int(since_last), current_interval)
 
             try:
                 cycle = run_paper_trading_cycle_fn(force_aggressive_scan=use_aggressive)
@@ -143,11 +146,11 @@ def run_main_paper_loop_mode(
                     backoff_base * (2 ** min(consecutive_errors - 1, 6)),
                 )
                 timestamp_utc = datetime.now(timezone.utc).isoformat()
-                print(
-                    f"[{timestamp_utc}] Paper cycle failed "
-                    f"({consecutive_errors} consecutive): {error}"
+                logger.error(
+                    "[%s] Paper cycle failed (%d consecutive): %s",
+                    timestamp_utc, consecutive_errors, error
                 )
-                print(f"Retrying in {retry_in_seconds}s...")
+                logger.info("Retrying in %ds...", retry_in_seconds)
 
                 if callable(report_error_fn):
                     try:
@@ -157,11 +160,11 @@ def run_main_paper_loop_mode(
                             retry_in_seconds=retry_in_seconds,
                         )
                     except Exception:
-                        pass
+                        logger.warning("[ERROR-REPORT] report_error_fn callback failed", exc_info=True)
 
                 sleep_fn(retry_in_seconds)
     except KeyboardInterrupt:
-        print("\nPaper loop stopped.")
+        logger.info("Paper loop stopped.")
 
 
 def run_main_paper_single_mode(

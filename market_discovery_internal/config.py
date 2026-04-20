@@ -193,9 +193,23 @@ ABOVE_RE = re.compile(ABOVE_KEYWORDS, re.IGNORECASE)
 BELOW_RE = re.compile(BELOW_KEYWORDS, re.IGNORECASE)
 WEATHER_CONTEXT_RE = re.compile(WEATHER_CONTEXT_PATTERN, re.IGNORECASE)
 DIRECTION_CANDIDATE_RE = re.compile(DIRECTION_CANDIDATE_PATTERN, re.IGNORECASE)
+# Case-sensitive patterns for short abbreviations that clash with common words.
+# These are compiled separately without re.IGNORECASE.
+_CASE_SENSITIVE_CITY_PATTERNS = {
+    "los angeles": r"\bLA\b",
+    "hong kong":   r"\bHK\b",
+    "denver":      r"\bDEN\b",
+    "seattle":     r"\bSEA\b",
+    "austin":      r"\bAUS\b",
+    "madrid":      r"\bMAD\b",
+}
+
 CITY_REGEXES = [
     (city, re.compile(pattern, re.IGNORECASE))
     for city, pattern in CITY_PATTERNS.items()
+] + [
+    (city, re.compile(pattern))
+    for city, pattern in _CASE_SENSITIVE_CITY_PATTERNS.items()
 ]
 
 # Paper-trading strategy defaults (can be overridden via environment variables)
@@ -408,3 +422,62 @@ WS_BROADCAST_PING_INTERVAL_SECONDS = max(
     5,
     int(os.getenv("WS_BROADCAST_PING_INTERVAL_SECONDS", "20")),
 )
+
+# ---------------------------------------------------------------------------
+# Trading Strategy Magic Numbers (extracted from cycles.py / ws_price_watcher.py)
+# ---------------------------------------------------------------------------
+
+# Sniper take-profit: exit immediately when YES price reaches this level
+SNIPER_TAKE_PROFIT_PRICE = float(os.getenv("SNIPER_TAKE_PROFIT_PRICE", "0.90"))
+
+# Penny bid filter: bids at or below this are market-maker placeholders, not real prices
+PENNY_BID_THRESHOLD = float(os.getenv("PENNY_BID_THRESHOLD", "0.01"))
+
+# Rogue ask threshold: asks at or above this indicate complement/rogue orders
+ROGUE_ASK_THRESHOLD = float(os.getenv("ROGUE_ASK_THRESHOLD", "0.98"))
+
+# Ask sanity: ask above (entry_price * multiplier) or floor is considered rogue
+ASK_SANITY_MULTIPLIER = float(os.getenv("ASK_SANITY_MULTIPLIER", "3.0"))
+ASK_SANITY_FLOOR = float(os.getenv("ASK_SANITY_FLOOR", "0.60"))
+
+# Partial take-profit: at this multiple of entry, move stop to break-even
+PARTIAL_TP_MULTIPLIER = float(os.getenv("PARTIAL_TP_MULTIPLIER", "1.5"))
+
+# Trailing stop: distance (%) from peak that triggers exit
+TRAILING_STOP_DISTANCE = float(os.getenv("TRAILING_STOP_DISTANCE", "0.15"))
+
+# Trailing stop: position must have been this multiple of entry to arm trailing stop
+TRAILING_STOP_TRIGGER = float(os.getenv("TRAILING_STOP_TRIGGER", "1.20"))
+
+# Thesis decay: exit if confidence drops below this in late window
+THESIS_DECAY_THRESHOLD = float(os.getenv("THESIS_DECAY_THRESHOLD", "0.45"))
+
+# Confidence score weights (forecast probability, edge component, liquidity/price component)
+CONFIDENCE_WEIGHT_FORECAST = float(os.getenv("CONFIDENCE_WEIGHT_FORECAST", "0.70"))
+CONFIDENCE_WEIGHT_EDGE = float(os.getenv("CONFIDENCE_WEIGHT_EDGE", "0.20"))
+CONFIDENCE_WEIGHT_LIQUIDITY = float(os.getenv("CONFIDENCE_WEIGHT_LIQUIDITY", "0.10"))
+
+# History cap: max entries kept in state to prevent unbounded memory growth
+HISTORY_MAX_ENTRIES = int(os.getenv("HISTORY_MAX_ENTRIES", "500"))
+
+# Stop-loss cooldown: seconds after entry before price-based SL can fire (WS path)
+SL_COOLDOWN_SECONDS = int(os.getenv("SL_COOLDOWN_SECONDS", "7200"))
+
+# Stop-loss tick count: consecutive ticks below SL before triggering exit
+SL_TICK_COUNT = int(os.getenv("SL_TICK_COUNT", "3"))
+
+# WS callback cleanup interval: clean stale SL counters every N callbacks
+WS_SL_CLEANUP_INTERVAL = int(os.getenv("WS_SL_CLEANUP_INTERVAL", "100"))
+
+# ---------------------------------------------------------------------------
+# Warmer Service Constants
+# ---------------------------------------------------------------------------
+
+# Cooldown after receiving HTTP 429 (seconds)
+WARMER_429_COOLDOWN_SECONDS = int(os.getenv("WARMER_429_COOLDOWN_SECONDS", "600"))
+
+# Politeness delay between bulk forecast fetches (seconds)
+WARMER_POLITENESS_DELAY_SECONDS = int(os.getenv("WARMER_POLITENESS_DELAY_SECONDS", "20"))
+
+# Throttle delay between historical bulk fetches (seconds)
+WARMER_HISTORICAL_THROTTLE_SECONDS = int(os.getenv("WARMER_HISTORICAL_THROTTLE_SECONDS", "60"))

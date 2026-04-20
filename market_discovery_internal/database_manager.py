@@ -128,7 +128,7 @@ class BlueprintsDB:
         try:
             cursor.execute("ALTER TABLE trade_history ADD COLUMN opened_at TEXT")
         except Exception:
-            pass  # Column already exists
+            pass  # Column already exists — expected during normal startup
 
         # 5. Cycle Metrics (For Dashboard UI)
         cursor.execute("""
@@ -209,7 +209,7 @@ class BlueprintsDB:
                 cursor.execute(migration)
                 conn.commit()
             except Exception:
-                pass  # Column already exists
+                pass  # Column already exists — expected during normal startup
 
         conn.commit()
 
@@ -354,8 +354,8 @@ class BlueprintsDB:
         except Exception as e:
             try:
                 conn.execute("ROLLBACK")
-            except Exception:
-                pass
+            except Exception as rollback_err:
+                logger.warning("ROLLBACK also failed during replace_all_positions: %s", rollback_err)
             logger.error("replace_all_positions failed, rolled back: %s", e)
             raise
 
@@ -433,8 +433,8 @@ class BlueprintsDB:
         except Exception as e:
             try:
                 conn.execute("ROLLBACK")
-            except Exception:
-                pass
+            except Exception as rollback_err:
+                logger.warning("ROLLBACK also failed during ai_try_reserve_call: %s", rollback_err)
             logger.error("ai_try_reserve_call failed: %s", e)
             return False
 
@@ -484,6 +484,7 @@ class BlueprintsDB:
             try:
                 obj = json.loads(r["raw_json"]) if r["raw_json"] else {}
             except Exception:
+                logger.debug("Failed to parse raw_json for trade history entry in city %s", city)
                 obj = {}
             obj.setdefault("pnl_usd", r["pnl_usd"])
             obj.setdefault("close_reason", r["close_reason"])
@@ -502,6 +503,7 @@ class BlueprintsDB:
             try:
                 obj = json.loads(r["raw_json"]) if r["raw_json"] else {}
             except Exception:
+                logger.debug("Failed to parse raw_json for recent trade history entry")
                 obj = {}
             obj.setdefault("pnl_usd", r["pnl_usd"])
             obj.setdefault("city", r["city"])

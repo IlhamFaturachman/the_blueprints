@@ -157,10 +157,10 @@ def start_command_server(port=COMMAND_SERVER_PORT, bind=COMMAND_SERVER_BIND):
         server = HTTPServer((bind, port), _CommandHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True, name="cmd-server")
         thread.start()
-        print(f"[MODUL J] Command server listening on {bind}:{port}")
+        _logger.info("[MODUL J] Command server listening on %s:%d", bind, port)
         return server
     except OSError as e:
-        print(f"[MODUL J] Could not start command server on {bind}:{port}: {e}")
+        _logger.error("[MODUL J] Could not start command server on %s:%d: %s", bind, port, e)
         return None
 
 

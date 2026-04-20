@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
 import tempfile
+from typing import Any, Optional
+
 from market_discovery_internal.database_manager import db
 
 logger = logging.getLogger(__name__)
@@ -27,7 +31,7 @@ _EMPTY_STATE = {
 }
 
 
-def load_paper_state(path=None):
+def load_paper_state(path: Optional[str] = None) -> dict[str, Any]:
     """Load paper-trading state from the SQLite Data Warehouse.
 
     If `path` is provided and differs from the default PAPER_STATE_FILE,
@@ -107,7 +111,7 @@ def load_paper_state(path=None):
     return state
 
 
-def save_paper_state(state, path=None):
+def save_paper_state(state: dict[str, Any], path: Optional[str] = None) -> None:
     """Persist paper-trading state to the SQLite Data Warehouse."""
     if not state or not isinstance(state, dict):
         return
@@ -186,6 +190,7 @@ def save_paper_state(state, path=None):
                 os.rename(tmp_path, path)
             except Exception:
                 # Clean up temp file on failure
+                logger.warning("JSON mirror write failed, cleaning up temp file %s", tmp_path)
                 try:
                     os.unlink(tmp_path)
                 except OSError:

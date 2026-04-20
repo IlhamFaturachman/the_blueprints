@@ -1,5 +1,6 @@
 """Common utilities for market_discovery."""
 
+import logging
 import time
 import json
 import os
@@ -8,6 +9,8 @@ from datetime import datetime, timezone
 import requests
 
 from market_discovery_internal.config import LOG_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+logger = logging.getLogger(__name__)
 
 class SafeFormatter(string.Formatter):
     def get_value(self, key, args, kwargs):

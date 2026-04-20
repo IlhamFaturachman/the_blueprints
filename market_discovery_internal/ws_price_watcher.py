@@ -13,6 +13,10 @@ import threading
 import time
 from urllib.parse import urlparse
 
+from market_discovery_internal.config import (
+    SL_COOLDOWN_SECONDS, SL_TICK_COUNT, WS_SL_CLEANUP_INTERVAL,
+)
+
 logger = logging.getLogger(__name__)
 
 class PriceWatcher:
@@ -219,6 +223,7 @@ class PriceWatcher:
         try:
             msg = json.loads(raw)
         except Exception:
+            ilogger.debug("[WS-MPC] Failed to parse JSON message")
             return
         
         # Polymarket often sends single objects or lists
@@ -261,7 +266,7 @@ class PriceWatcher:
                             elif isinstance(first, dict):
                                 price_val = first.get("price") or first.get("best_bid")
                         except Exception:
-                            pass
+                            pass  # Malformed orderbook level — skip silently
                 
                 elif etype == "last_trade_price":
                     price_val = event.get("price")
@@ -295,7 +300,7 @@ class PriceWatcher:
         try:
             self._update_queue.put_nowait(("__ws_heartbeat__", 0.0))
         except Exception:
-            pass
+            pass  # Queue full — heartbeat drop is non-critical
         if random.random() < 0.1:
             self._ilogger.info("[WS-MPC] Pong received (link healthy)")
 
@@ -348,9 +353,9 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                 positions = state.get("positions", [])
 
                 # HIGH-5: Periodically clean up _sl_tick_counters for tokens
-                # no longer in open positions (every 100 callbacks)
+                # no longer in open positions (every N callbacks)
                 _sl_cleanup_counter += 1
-                if _sl_cleanup_counter >= 100:
+                if _sl_cleanup_counter >= WS_SL_CLEANUP_INTERVAL:
                     _sl_cleanup_counter = 0
                     open_token_ids = {
                         p.get("token_id") for p in positions
@@ -372,25 +377,25 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                     
                     reason = None
                     if bid_price <= stop:
-                        # [AUDIT] Fix B: 2h cooldown for price-based Stop Loss
+                        # [AUDIT] Fix B: cooldown for price-based Stop Loss
                         # This prevents "noise" exits during the initial spread friction.
                         opened_at_str = pos.get("opened_at")
                         can_sl_fire = True
                         if opened_at_str:
                             try:
                                 opened_at = datetime.fromisoformat(opened_at_str)
-                                age_hours = (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600
-                                if age_hours < 2:
+                                age_seconds = (datetime.now(timezone.utc) - opened_at).total_seconds()
+                                if age_seconds < SL_COOLDOWN_SECONDS:
                                     can_sl_fire = False
                             except (ValueError, TypeError):
                                 pass
                         
                         if can_sl_fire:
-                            # [HARDENING] 3-Tick Validation
+                            # [HARDENING] N-Tick Validation
                             _sl_cnt = _sl_tick_counters.get(token_id, 0) + 1
                             _sl_tick_counters[token_id] = _sl_cnt
-                            if _sl_cnt < 3:
-                                logger.warning("[WS-HARDENING] SL tick %d/3 for %s @ %.4f (Ignoring spike)", _sl_cnt, pos.get('city','?'), bid_price)
+                            if _sl_cnt < SL_TICK_COUNT:
+                                logger.warning("[WS-HARDENING] SL tick %d/%d for %s @ %.4f (Ignoring spike)", _sl_cnt, SL_TICK_COUNT, pos.get('city','?'), bid_price)
                                 continue # Skip exit until 3rd tick
                             
                             reason = "stop_loss"
@@ -413,7 +418,7 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                             float(state["meta"].get("cash", 0.0)) + exit_value, 4
                         )
                         changed = True
-                        print(f"[WS-EXIT] {pos.get('city','?').upper()} | {reason} @ {bid_price:.4f} | Strategy: {strategy}")
+                        logger.info("[WS-EXIT] %s | %s @ %.4f | Strategy: %s", pos.get('city','?').upper(), reason, bid_price, strategy)
                         if broadcaster:
                             broadcaster.broadcast_closed(token_id, pos.get('city',''), reason, bid_price)
                         break

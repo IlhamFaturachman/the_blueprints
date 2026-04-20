@@ -52,13 +52,14 @@ def test_raises_on_fetch_failure():
             fetch_markets()
 
 
-def test_inspect_mode_exits_after_printing(capsys):
-    with patch("market_discovery_internal.discovery.fetch_with_retry", return_value=EVENTS_RESPONSE):
-        with pytest.raises(SystemExit) as exc_info:
-            fetch_markets(inspect=True)
+def test_inspect_mode_exits_after_printing(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="market_discovery_internal.discovery"):
+        with patch("market_discovery_internal.discovery.fetch_with_retry", return_value=EVENTS_RESPONSE):
+            with pytest.raises(SystemExit) as exc_info:
+                fetch_markets(inspect=True)
     assert exc_info.value.code == 0
-    captured = capsys.readouterr()
-    assert "INSPECT MODE" in captured.out
+    assert "INSPECT MODE" in caplog.text
 
 
 def test_fetch_uses_events_endpoint_with_tag_slug():

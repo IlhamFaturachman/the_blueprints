@@ -1,10 +1,14 @@
 """AI Analysis and weather evidence logic for market_discovery."""
+from __future__ import annotations
 
 import os
 import json
+import logging
 import time
 from datetime import datetime, timezone
-import math
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from market_discovery_internal.config import (
     WEATHER_EVIDENCE_MAX_AGE_HOURS, WEATHER_EVIDENCE_MIN_QUALITY_SCORE,
@@ -25,7 +29,7 @@ from market_discovery_internal.utils import (
     _load_json_blob, _save_json_blob, _clamp, _safe_float, _safe_div
 )
 
-def build_weather_evidence(city, date, forecast_temp_c, source="open-meteo", now_utc=None, fetched_at=None):
+def build_weather_evidence(city: str, date: str, forecast_temp_c: Optional[float], source: str = "open-meteo", now_utc: Optional[datetime] = None, fetched_at: Any = None) -> dict[str, Any]:
     """Compile structured evidence for a market prediction based on forecast data."""
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
@@ -116,6 +120,7 @@ def _reserve_ai_call_slot(call_kind, now_utc=None):
         # 2. Daily call gate — atomic reserve
         return db.ai_try_reserve_call(d_key, call_kind, limit)
     except Exception:
+        logger.warning("[AI-BUDGET] DB unavailable for call slot reservation, falling back to JSON")
         # Fallback to JSON if DB unavailable (graceful degradation)
         try:
             ledger = _load_json_blob(AI_USAGE_LEDGER_FILE, {"monthly": {}, "daily_calls": {}})
@@ -130,6 +135,7 @@ def _reserve_ai_call_slot(call_kind, now_utc=None):
             _save_json_blob(AI_USAGE_LEDGER_FILE, ledger)
             return True
         except Exception:
+            logger.warning("[AI-BUDGET] JSON fallback also failed for call slot reservation")
             return False
 
 def _record_ai_usage_cost(call_kind, model, response, now_utc=None):
@@ -142,6 +148,7 @@ def _record_ai_usage_cost(call_kind, model, response, now_utc=None):
         from market_discovery_internal.database_manager import db
         db.ai_add_month_cost(m_key, cost)
     except Exception:
+        logger.warning("[AI-COST] DB unavailable for cost recording, falling back to JSON")
         # Fallback to JSON mirror
         try:
             ledger = _load_json_blob(AI_USAGE_LEDGER_FILE, {"monthly": {}, "daily_calls": {}})
@@ -150,7 +157,7 @@ def _record_ai_usage_cost(call_kind, model, response, now_utc=None):
             ledger["monthly"][m_key]["total_cost_usd"] += cost
             _save_json_blob(AI_USAGE_LEDGER_FILE, ledger)
         except Exception:
-            pass
+            logger.warning("[AI-COST] JSON fallback also failed for cost recording")
 
 def _extract_response_usage(response):
     if not hasattr(response, 'usage'): return {"input_tokens": 0, "output_tokens": 0}
@@ -183,25 +190,33 @@ def _extract_text_from_anthropic_response(response):
         return ""
 
 def _extract_json_payload(text):
-    """Extract the first valid-looking JSON block from unstructured text using robust regex."""
+    """Extract the first valid-looking JSON block from unstructured text."""
     if not text: return None
+
+    # Priority 1: Try parsing the full text as JSON directly
+    try:
+        return json.loads(text.strip())
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Priority 2: Find the outermost { ... } using bracket matching
+    try:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end+1])
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Priority 3: Greedy regex fallback (least reliable)
     import re
-    # Match the first '{' and corresponding last '}' even with whitespace/newlines
     match = re.search(r'(\{.*\})', text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             pass
-            
-    # Fallback to older bracket searching if regex somehow misses
-    try:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1:
-            return json.loads(text[start:end+1])
-    except json.JSONDecodeError:
-        pass
+
     return None
 
 def _anthropic_create_message(client, *, model, max_tokens, prompt):
@@ -228,7 +243,7 @@ def _haiku_entry_failure_result(reason):
         "reasoning": f"Analysis failed: {reason}"
     }
 
-def _haiku_entry_analysis(opportunity):
+def _haiku_entry_analysis(opportunity: dict[str, Any]) -> dict[str, Any]:
     """Use Claude Haiku to validate a high-alpha entry candidate."""
     if not HAIKU_ENTRY_ENABLED or not ANTHROPIC_API_KEY:
         return _haiku_entry_failure_result("Disabled or missing API key")
@@ -364,7 +379,7 @@ def resolve_station_with_ai(city, description):
             return icao
             
     except Exception as e:
-        print(f"[AI-SENSING] Error: {e}")
+        logger.error("[AI-SENSING] Error: %s", e)
         
     return None
 
@@ -378,7 +393,7 @@ def _get_haiku_monitor_cache():
 def _save_haiku_monitor_cache(cache):
     _save_json_blob(HAIKU_MONITOR_CACHE_FILE, cache)
 
-def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolve=None, current_forecast_temp_c=None):
+def _haiku_position_monitor(position: dict[str, Any], current_yes_price: Optional[float] = None, hours_until_resolve: Optional[float] = None, current_forecast_temp_c: Optional[float] = None) -> dict[str, Any]:
     """Use Claude Haiku to monitor an open position for unexpected risks."""
     if not HAIKU_MONITOR_ENABLED or not ANTHROPIC_API_KEY:
         return {"action": "hold", "confidence": 1.0}
@@ -395,7 +410,7 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
             if age_hours < HAIKU_MONITOR_INTERVAL_HOURS:
                 return entry["result"]
         except Exception:
-            pass
+            logger.debug("[HAIKU-MONITOR] Cache entry parse failed for token %s", token_id)
 
     if not _reserve_ai_call_slot("haiku_monitor"):
         return {"action": "hold", "confidence": 1.0, "reasoning": "Budget or daily limit reached"}
@@ -414,8 +429,9 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
 
         entry_price = position.get("entry_price")
         try:
-            pnl_pct = round(((float(current_yes_price) - float(entry_price)) / float(entry_price)) * 100, 1) if entry_price else None
-        except (TypeError, ValueError):
+            _ep = float(entry_price) if entry_price is not None else 0.0
+            pnl_pct = round(((float(current_yes_price) - _ep) / _ep) * 100, 1) if _ep > 0 else None
+        except (TypeError, ValueError, ZeroDivisionError):
             pnl_pct = None
 
         payload = {
@@ -474,7 +490,7 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
                         opened_at = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
                         age_hours = (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600
                     except Exception:
-                        pass
+                        logger.debug("[NEWBORN-GUARD] Failed to parse opened_at for age calculation")
 
                 is_newborn = age_hours < 2.0  # Position under 2 hours old
 
@@ -487,7 +503,7 @@ def _haiku_position_monitor(position, current_yes_price=None, hours_until_resolv
                     result["action"] = "hold"
                     result["reasoning"] = f"[NEWBORN-GUARD] Blocked: Age={age_hours:.1f}h < 2h, P&L={cur_pnl:.1f}%. Spread still settling. " + result.get("reasoning", "")
             except Exception:
-                pass
+                logger.warning("[PROFIT-GUARD] Guard evaluation failed for position %s", token_id)
 
         _record_ai_usage_cost("haiku_monitor", HAIKU_MONITOR_MODEL, response)
         

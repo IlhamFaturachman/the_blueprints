@@ -47,13 +47,11 @@ def fetch_markets(inspect=False, aggressive_scan=False):
         events = data
 
     if inspect:
-        print("=== INSPECT MODE: First event and its first 3 markets ===\n")
+        logger.info("=== INSPECT MODE: First event and its first 3 markets ===")
         for i, event in enumerate(events[:2], 1):
-            print(f"--- Event {i}: {event.get('title', '')} ---")
+            logger.info("--- Event %d: %s ---", i, event.get('title', ''))
             for j, market in enumerate(event.get("markets", [])[:3], 1):
-                print(f"  Market {j}:")
-                print(json.dumps(market, indent=4, default=str))
-            print()
+                logger.info("  Market %d:\n%s", j, json.dumps(market, indent=4, default=str))
         sys.exit(0)
 
     markets = _events_to_markets(events, reset_family_cache=True)
@@ -152,7 +150,7 @@ def filter_opportunities(
     try:
         bulk_cache = db.get_bulk_cached_forecasts(keys_to_fetch)
     except Exception as e:
-        print(f"[RECOVER] Bulk cache fetch failed: {e}")
+        logger.warning("[RECOVER] Bulk cache fetch failed: %s", e)
         bulk_cache = {}
     
     opportunities = []
@@ -184,9 +182,7 @@ def filter_opportunities(
             if parsed["model_prob"] >= min_model_prob and parsed["edge"] >= min_edge:
                 opportunities.append(parsed)
         except Exception as e:
-            import traceback
-            print(f"[ERROR] Opportunity filtering failed for {parsed.get('city')}: {e}")
-            traceback.print_exc()
+            logger.error("[ERROR] Opportunity filtering failed for %s: %s", parsed.get('city'), e, exc_info=True)
             continue
             
     # Sort by edge descending

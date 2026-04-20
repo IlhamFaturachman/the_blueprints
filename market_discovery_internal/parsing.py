@@ -143,7 +143,7 @@ def parse_market(
     
     # Priority 1: Explicit code in parentheses like "(LGA)" or "(KNYC)"
     # We look for 3 uppercase letters (IATA) or 4 uppercase letters (ICAO)
-    icao_match = re.search(r"\b\(([A-Z]{3,4})\)\b", search_text)
+    icao_match = re.search(r"\(([A-Z]{3,4})\)", search_text)
     if icao_match:
         extracted = icao_match.group(1)
         icao_code = _normalize_icao_code(extracted, city)
@@ -216,7 +216,7 @@ def parse_market(
         # Smart Inference if unit is missing (Common in current Polymarket titles)
         if icao_code and icao_code.startswith("K"):
             unit = "F"
-        elif threshold >= 45: # Realistic heuristic: nobody bets on 45°C weather
+        elif threshold >= 60: # Heuristic: no city reaches 60°C, but 60°F is common
             unit = "F"
         else:
             unit = "C"
@@ -337,37 +337,3 @@ def parse_market(
         "market_slug": market_slug,
     })
 
-
-CITY_PATTERNS = {
-    "new york city": r"\bnew york(?:\s+city)?\b|\bnyc\b|\bjfk\b|\blga\b",
-    "chicago":       r"\bchicago\b|\bord\b|\bmdw\b",
-    "london":        r"\blondon\b|\blhr\b|\bgatwick\b",
-    "hong kong":     r"\bhong kong\b|\bhk\b|\bhkg\b|\bvhhh\b",
-    "miami":         r"\bmiami\b|\bmia\b",
-    "toronto":       r"\btoronto\b|\byyz\b",
-    "paris":         r"\bparis\b|\bcdg\b|\bory\b",
-    "seoul":         r"\bseoul\b|\bicn\b|\bgmp\b",
-    "singapore":     r"\bsingapore\b|\bwsss\b|\bsin\b",
-    "shanghai":      r"\bshanghai\b|\bzspd\b",
-    "beijing":       r"\bbeijing\b|\bzbaa\b",
-    "los angeles":   r"\blos angeles\b|\bla\b|\blax\b",
-    "houston":       r"\bhouston\b|\biah\b",
-    "dallas":        r"\bdallas\b|\bdfw\b",
-    "denver":        r"\bdenver\b|\bden\b",
-    "atlanta":       r"\batlanta\b|\batl\b",
-    "seattle":       r"\bseattle\b|\bsea\b",
-    "austin":        r"\baustin\b|\baus\b",
-    "madrid":        r"\bmadrid\b|\bmad\b",
-    "milan":         r"\bmilan\b|\bmxp\b|\blin\b",
-    "tel aviv":      r"\btel aviv\b|\btlv\b",
-    "warsaw":        r"\bwarsaw\b|\bwaw\b",
-    "ankara":        r"\bankara\b|\besb\b",
-    "taipei":        r"\btaipei\b|\btpe\b",
-    "sao paulo":     r"\bsao paulo\b|\bgru\b",
-    "buenos aires":  r"\bbuenos aires\b|\beze\b",
-    "chengdu":       r"\bchengdu\b|\bctu\b",
-    "chongqing":     r"\bchongqing\b|\bckg\b",
-    "shenzhen":      r"\bshenzhen\b|\bszx\b",
-    "wuhan":         r"\bwuhan\b|\bwuh\b",
-    "lucknow":       r"\blucknow\b|\blko\b",
-}

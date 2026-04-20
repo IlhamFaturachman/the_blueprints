@@ -7,7 +7,10 @@ import time
 import threading
 import logging
 from datetime import datetime, timedelta, timezone
-from market_discovery_internal.config import TARGET_CITIES
+from market_discovery_internal.config import (
+    TARGET_CITIES, WARMER_429_COOLDOWN_SECONDS,
+    WARMER_POLITENESS_DELAY_SECONDS, WARMER_HISTORICAL_THROTTLE_SECONDS,
+)
 from market_discovery_internal.database_manager import db
 from market_discovery_internal.forecasting import (
     _fetch_bulk_historical_weather, _fetch_bulk_forecasts
@@ -36,9 +39,9 @@ class GudangDataWarmer:
                 # [MODUL L] Process Watchdog Update
                 db.update_heartbeat("warmer")
                 
-                # Cooldown check for 429s (10 minute silent period if tripped)
+                # Cooldown check for 429s (silent period if tripped)
                 with self._last_429_lock:
-                    in_cooldown = (time.time() - self._last_429_time) < 600
+                    in_cooldown = (time.time() - self._last_429_time) < WARMER_429_COOLDOWN_SECONDS
                 if in_cooldown:
                     if self._stop_event.wait(60):
                         break
@@ -67,7 +70,7 @@ class GudangDataWarmer:
                 # [MODUL U] Bulk Fetch: Collapse N requests into 1
                 res = _fetch_bulk_forecasts(cities, target_date)
                 # Polite Sleep to avoid 429 during bulk burst
-                time.sleep(20) 
+                time.sleep(WARMER_POLITENESS_DELAY_SECONDS) 
             except Exception as e:
                 if "429" in str(e):
                     self._last_429_time = time.time()
@@ -92,7 +95,7 @@ class GudangDataWarmer:
             try:
                 _fetch_bulk_historical_weather(cities_needed, target_date)
                 # [MODUL L] Aggressive Throttling for historical fetches
-                time.sleep(60) 
+                time.sleep(WARMER_HISTORICAL_THROTTLE_SECONDS) 
             except Exception as e:
                 if "429" in str(e):
                     self._last_429_time = time.time()

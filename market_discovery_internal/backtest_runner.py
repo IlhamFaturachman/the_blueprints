@@ -163,8 +163,16 @@ def run_backtest(days_back=7, limit=100, verbose=True):
     for raw in raw_markets:
         scanned += 1
 
-        # Parse market using the standard pipeline
-        parsed = parse_market(raw)
+        # Parse market using the standard pipeline.
+        # For resolved markets, endDate is in the past so hours_until_resolve would be
+        # negative (causing rejection). We simulate entry at endDate - 6h.
+        end_date_str = raw.get("endDate") or raw.get("end_date") or ""
+        try:
+            _end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+            simulated_now = _end_dt - timedelta(hours=6)
+        except (ValueError, AttributeError):
+            simulated_now = None
+        parsed = parse_market(raw, now_utc=simulated_now)
         if not parsed:
             parse_failed += 1
             continue

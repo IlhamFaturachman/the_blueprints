@@ -68,7 +68,11 @@ class WsBroadcaster:
 
         loop = self._loop
         if loop and loop.is_running():
-            loop.call_soon_threadsafe(lambda: None)
+            # Schedule cancellation of all running tasks to trigger clean shutdown
+            def _cancel_all() -> None:
+                for task in asyncio.all_tasks(loop):
+                    task.cancel()
+            loop.call_soon_threadsafe(_cancel_all)
 
         if self._thread:
             self._thread.join(timeout=5.0)
@@ -162,8 +166,8 @@ class WsBroadcaster:
                     self._handle_client,
                     self._host,
                     self._port,
-                    ping_interval=None,
-                    ping_timeout=None,
+                    ping_interval=30,
+                    ping_timeout=10,
                     reuse_address=True,
                     process_request=self._process_request,
                 ):
@@ -229,8 +233,8 @@ class WsBroadcaster:
             async for _ in websocket:
                 # Read-only channel for browsers; incoming messages are ignored.
                 pass
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[WS-BROADCAST] Client error: %s", exc)
         finally:
             self._clients.discard(websocket)
             logger.info("[WS-BROADCAST] Browser disconnected (%d client(s))", len(self._clients))
@@ -252,19 +256,27 @@ class WsBroadcaster:
             return
 
         wire = json.dumps(payload)
-        stale = []
-        for client in list(self._clients):
+        clients = list(self._clients)
+
+        async def _send_one(client):
             try:
                 await client.send(wire)
+                return None
             except Exception:
-                stale.append(client)
+                logger.debug("[WS-BROADCAST] Send failed to client, marking stale")
+                return client
+
+        results = await asyncio.gather(
+            *(_send_one(c) for c in clients), return_exceptions=True
+        )
 
         self._stats["total_broadcasts"] += 1
         self._stats["last_broadcast_ts"] = int(time.time())
         self._stats["connected_clients"] = len(self._clients)
 
-        for client in stale:
-            self._clients.discard(client)
+        for result in results:
+            if result is not None and not isinstance(result, BaseException):
+                self._clients.discard(result)
 
     def _schedule_broadcast(self, payload: dict) -> None:
         loop = self._loop

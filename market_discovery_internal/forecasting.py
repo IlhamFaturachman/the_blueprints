@@ -1,5 +1,8 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from typing import Any, Optional
 import logging
 import urllib.parse
 import os
@@ -11,7 +14,7 @@ from market_discovery_internal.config import (
     TARGET_CITIES, OPEN_METEO_API, OPEN_METEO_HISTORICAL_API,
     CONSENSUS_MAX_ERROR_C, HISTORICAL_DEVIATION_C, ANOMALY_LOG_FILE
 )
-from market_discovery_internal.utils import fetch_with_retry, send_telegram_alert
+from market_discovery_internal.utils import fetch_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +59,7 @@ def _fetch_historical_average(city, date, allow_live=True):
         results = _fetch_bulk_historical_weather([city], date)
         return results.get(city)
     except Exception as e:
-        print(f"[MODUL-K] Historical fetch fallback error for {city}: {e}")
+        logger.warning("[MODUL-K] Historical fetch fallback error for %s: %s", city, e)
         if entry:
             return entry.get("max_temp")
         return None
@@ -66,6 +69,11 @@ def _fetch_bulk_historical_weather(cities, date):
     Reduces 429 risk by collapsing 31 requests into 1.
     """
     if not cities or not date:
+        return {}
+
+    # Validate date format is YYYY-MM-DD before splitting
+    import re as _re
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date):
         return {}
 
     month_day = date[5:]
@@ -124,7 +132,7 @@ def _fetch_bulk_historical_weather(cities, date):
         
         return results
     except Exception as e:
-        print(f"[MODUL-U] Bulk historical fetch error: {e}")
+        logger.error("[MODUL-U] Bulk historical fetch error: %s", e)
         return {}
 
 def _log_anomaly(city, date, forecast, historical, source="anomaly"):
@@ -134,7 +142,7 @@ def _log_anomaly(city, date, forecast, historical, source="anomaly"):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"[{ts}] REJECTED {city} ({date}): Forecast={forecast}C, Reference={historical}C, Type={source}\n")
 
-def fetch_forecast(city, date, icao_override=None):
+def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) -> Optional[ForecastTemp]:
     """Fetch the daily max temperature forecast from Open-Meteo and wttr.in.
     
     Now uses the SQLite Data Warehouse 'Discovery Cache' for persistent, high-speed lookups.
@@ -180,7 +188,7 @@ def fetch_forecast(city, date, icao_override=None):
                 ]
                 return max(day_temps) if day_temps else None
             except Exception:
-                pass
+                logger.debug("Open-Meteo hourly fetch failed for %s/%s", city, date)
         else:
             params = {
                 "latitude": coords["lat"], "longitude": coords["lon"],
@@ -194,7 +202,7 @@ def fetch_forecast(city, date, icao_override=None):
                 if date in times:
                     return temps[times.index(date)]
             except Exception:
-                pass
+                logger.debug("Open-Meteo daily fetch failed for %s/%s", city, date)
         return None
 
     def _fetch_wttr():
@@ -212,7 +220,7 @@ def fetch_forecast(city, date, icao_override=None):
                         return None
                     return float(raw_val)
         except Exception:
-            pass
+            logger.debug("wttr.in fetch failed for %s/%s", city, date)
         return None
 
     def _fetch_noaa():
@@ -227,7 +235,7 @@ def fetch_forecast(city, date, icao_override=None):
             if temp_c is not None:
                 return float(temp_c)
         except Exception:
-            pass
+            logger.debug("NOAA fetch failed for %s/%s", city, date)
         return None
 
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -312,7 +320,7 @@ def fetch_forecast(city, date, icao_override=None):
                 utc_offset_hours = max(-12, min(14, utc_offset_hours))
                 local_hour = (datetime.now(timezone.utc).hour + utc_offset_hours) % 24
                 is_peak_heat = (12 <= local_hour <= 19)
-                print(f"[WARNING] Timezone precision fallback for {city}: {e}")
+                logger.warning("[WARNING] Timezone precision fallback for %s: %s", city, e)
 
             error_margin = abs(base_avg - t_noaa)
 
@@ -356,7 +364,7 @@ _NEGATIVE_CACHE = {}
 _NEGATIVE_CACHE_LOCK = threading.Lock()
 _NEGATIVE_CACHE_TTL_SECONDS = 300  # 5 minutes
 
-def fetch_forecast_with_cache(city, date, cache, stats=None, *, fetch_forecast_fn, icao_override=None):
+def fetch_forecast_with_cache(city: str, date: str, cache: dict[str, Any], stats: Optional[dict[str, int]] = None, *, fetch_forecast_fn: Any, icao_override: Optional[str] = None) -> Optional[ForecastTemp]:
     """Fetch forecast with per-cycle cache for successful city/date/icao lookups."""
     if not isinstance(cache, dict):
         return fetch_forecast_fn(city, date, icao_override=icao_override)
@@ -394,7 +402,7 @@ def fetch_forecast_with_cache(city, date, cache, stats=None, *, fetch_forecast_f
     return forecast_temp
 
 
-def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_forecast_fn):
+def prefetch_forecasts(cache_keys: list[tuple[str, str, Optional[str]]], cache: dict[str, Any], min_keys: int = 0, max_workers: int = 1, *, fetch_forecast_fn: Any) -> dict[str, Any]:
     """Warm forecast cache in parallel for large unique city/date batches."""
     if not isinstance(cache, dict):
         return {
@@ -455,7 +463,7 @@ def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_fo
     for date, cities in by_date.items():
         try:
             # [MODUL U] Bulk Fetch: 1 hit per date instead of N hits
-            print(f"[MODUL-K] Prefetching {len(cities)} cities for {date} (Bulk Mode)...")
+            logger.info("[MODUL-K] Prefetching %d cities for %s (Bulk Mode)...", len(cities), date)
             results = _fetch_bulk_forecasts(cities, date)
             for city in cities:
                 key = (city, date, None) # Bulk doesn't handle ICAO yet
@@ -467,7 +475,7 @@ def prefetch_forecasts(cache_keys, cache, min_keys=0, max_workers=1, *, fetch_fo
                     # For now, we trust bulk or fail.
                     stats["failed"] += 1
         except Exception as e:
-            print(f"[MODUL-U] Prefetch bulk error for {date}: {e}")
+            logger.error("[MODUL-U] Prefetch bulk error for %s: %s", date, e)
             stats["failed"] += len(cities)
 
     return stats
@@ -524,23 +532,23 @@ def _fetch_bulk_forecasts(cities, date):
         
         return results
     except Exception as e:
-        print(f"[MODUL-U] Bulk forecast fetch error: {e}")
+        logger.error("[MODUL-U] Bulk forecast fetch error: %s", e)
         return {}
 
 
 def forecast_still_valid(
-    position,
-    current_yes_price,
-    hours_until_resolve,
-    forecast_cache=None,
-    forecast_cache_stats=None,
+    position: dict[str, Any],
+    current_yes_price: float,
+    hours_until_resolve: Optional[float],
+    forecast_cache: Optional[dict[str, Any]] = None,
+    forecast_cache_stats: Optional[dict[str, int]] = None,
     *,
-    fetch_forecast_with_cache_fn,
-    build_weather_evidence_fn,
-    is_weather_evidence_valid_fn,
-    position_to_market_fn,
-    calculate_edge_fn,
-):
+    fetch_forecast_with_cache_fn: Any,
+    build_weather_evidence_fn: Any,
+    is_weather_evidence_valid_fn: Any,
+    position_to_market_fn: Any,
+    calculate_edge_fn: Any,
+) -> bool:
     """Evaluate whether forecast still supports the open position thesis."""
     forecast_temp = fetch_forecast_with_cache_fn(
         position["city"],

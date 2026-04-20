@@ -1,10 +1,11 @@
 """Pricing, Orderbook, and Edge calculation logic for market_discovery."""
+from __future__ import annotations
 
-import json
 import logging
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Optional
 
 from market_discovery_internal.config import (
     CLOB_BOOK_API, MODEL_EXACT_SIGMA_C, MARKET_MAX_SPREAD_GATE,
@@ -56,7 +57,8 @@ def _compute_market_implied_prob(token_id):
 
         bid = _safe_float(sibling.get("bestBid"), -1)
         ask = _safe_float(sibling.get("bestAsk"), -1)
-        if bid <= 0 or ask <= 0: continue
+        if not (0 < bid <= 1.0) or not (0 < ask <= 1.0):
+            continue
 
         title = str(sibling.get("question") or sibling.get("title") or "")
         match = THRESHOLD_RE.search(title) or THRESHOLD_RE.search(_market_search_text(sibling))
@@ -102,7 +104,7 @@ def _extract_top_orderbook_price(levels, side="ask"):
     except (IndexError, ValueError, TypeError):
         return None
 
-def fetch_orderbook_quote(token_id):
+def fetch_orderbook_quote(token_id: str) -> Optional[dict[str, Optional[float]]]:
     """Fetch the real-time best bid/ask for a specific token from CLOB."""
     if not token_id: return None
     url = f"{CLOB_BOOK_API}?token_id={token_id}"
@@ -113,6 +115,7 @@ def fetch_orderbook_quote(token_id):
         best_ask = _extract_top_orderbook_price(data.get("asks", []), "ask")
         return {"bid": best_bid, "ask": best_ask}
     except Exception:
+        logger.debug("Orderbook quote fetch failed for token %s", token_id)
         return None
 
 def check_liquidity_depth(token_id, target_stake_usd):
@@ -146,6 +149,7 @@ def check_liquidity_depth(token_id, target_stake_usd):
         depth_usd = price * size
         return depth_usd > float(target_stake_usd)
     except Exception:
+        logger.debug("Liquidity depth check failed for token %s", token_id)
         return False
 
 def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
@@ -223,6 +227,7 @@ def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
         return round(max(0.0, adjusted_stake), 2)
         
     except Exception:
+        logger.debug("Depth-adjusted stake calculation failed for token %s", token_id)
         return 0.0
 
 def _calibrated_prob(city, direction, horizon_bin, price_bin, raw_prob, min_samples=5):
@@ -238,6 +243,7 @@ def _calibrated_prob(city, direction, horizon_bin, price_bin, raw_prob, min_samp
         from market_discovery_internal.database_manager import db
         hits, total, brier_sum = db.get_calibration(city, direction, horizon_bin, price_bin)
     except Exception:
+        logger.debug("Calibration lookup failed for %s/%s, using defaults", city, direction)
         hits, total, brier_sum = 0, 0, 0.0
 
     prior_weight = float(min_samples)
@@ -302,7 +308,7 @@ def compute_regime_score(market, weather_evidence=None):
     return regime_class, regime_score, gates
 
 
-def calculate_edge(market, forecast_temp, hours_until_resolve=None, k_factor_override=None):
+def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours_until_resolve: Optional[float] = None, k_factor_override: Optional[float] = None) -> Optional[dict[str, Any]]:
     """
     Calculate the statistical edge of a market position compared to forecast.
 
@@ -344,7 +350,11 @@ def calculate_edge(market, forecast_temp, hours_until_resolve=None, k_factor_ove
     # Compute model probability only for non-market-implied path
     if market_implied is None:
         raw_prob = 0.0
-        # Sigmoid hardening based on hours remaining
+        # Sigmoid hardening based on hours remaining.
+        # Fallback to 24h when hours_until_resolve is missing — assumes mid-range horizon
+        # to avoid overly aggressive or conservative k-factor selection.
+        if hours_until_resolve is None:
+            logger.warning("hours_until_resolve is None for %s; defaulting to 24.0h", market.get("market_question", "unknown"))
         _h_val = float(hours_until_resolve) if hours_until_resolve is not None else 24.0
         if k_factor_override is not None:
             k = k_factor_override
