@@ -126,7 +126,7 @@ def build_rolling_city_coverage_metrics(previous, city_coverage):
         "min_city_target": int(city_coverage.get("min_city_target", PAPER_MIN_CITY_DIVERSITY)),
     }
 
-def build_cycle_journal_entry(now_utc, cycle_metrics, bucket_counts, cycle, city_coverage_metrics=None, performance_metrics=None):
+def build_cycle_journal_entry(now_utc, cycle_metrics, bucket_counts, cycle, city_coverage_metrics=None, performance_metrics=None, meta=None):
     """Create one compact journal record for this cycle."""
     entry = {
         "timestamp": now_utc.isoformat(),
@@ -149,6 +149,7 @@ def build_cycle_journal_entry(now_utc, cycle_metrics, bucket_counts, cycle, city
             "close_win_rate": cycle_metrics.get("close_win_rate", 0.0),
         },
         "closed_realized_pnl_usd": cycle_metrics.get("closed_realized_pnl_usd", 0.0),
+        "meta": dict(meta) if isinstance(meta, dict) else {},
     }
     if isinstance(city_coverage_metrics, dict):
         entry["city_coverage"] = {

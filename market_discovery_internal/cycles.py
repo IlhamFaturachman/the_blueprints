@@ -1104,6 +1104,7 @@ def run_paper_trading_cycle(
         cycle=cycle_payload,
         city_coverage_metrics=city_coverage_metrics,
         performance_metrics=performance,
+        meta=state_meta,
     )
 
     max_entries = max(1, int(paper_journal_max_entries))
