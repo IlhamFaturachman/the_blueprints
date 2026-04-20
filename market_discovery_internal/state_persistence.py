@@ -52,7 +52,9 @@ def load_paper_state(path=None):
     # [MODUL DB] Migration to Single Source of Truth (SQLite)
     portfolio = db.get_portfolio()
     if not portfolio:
-        return dict(_EMPTY_STATE)
+        empty = dict(_EMPTY_STATE)
+        empty["meta"] = _default_meta()
+        return empty
 
     positions = db.get_active_positions()
     
@@ -64,7 +66,8 @@ def load_paper_state(path=None):
     # Load cycle journal (Last 100 for UI)
     metrics = db.get_latest_metrics(limit=100)
 
-    base_wallet = float(portfolio.get('base_wallet') or 5.0)
+    from market_discovery_internal.config import PAPER_BASE_WALLET
+    base_wallet = float(portfolio.get('base_wallet') or PAPER_BASE_WALLET)
     # [ACCOUNTING FIX] Compute cash from first principles: base_wallet + realized_pnl - open_cost_basis
     # This ensures cash is always accurate regardless of prior accounting bugs.
     realized_pnl_total = sum(float(h.get('realized_pnl_usd', 0.0) or 0.0) for h in history)
@@ -101,9 +104,10 @@ def save_paper_state(state, path=None):
     if not state or not isinstance(state, dict):
         return
 
+    from market_discovery_internal.config import PAPER_BASE_WALLET
     meta = state.get("meta", {})
-    base_wallet = meta.get("base_wallet", 5.0)
-    cash = meta.get("cash", 5.0)
+    base_wallet = meta.get("base_wallet", PAPER_BASE_WALLET)
+    cash = meta.get("cash", PAPER_BASE_WALLET)
     total_pnl = meta.get("acceptance_metrics_rolling", {}).get("closed_realized_pnl_total_usd", 0.0)
 
     # 1. Update Portfolio Summary
