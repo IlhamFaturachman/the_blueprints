@@ -398,7 +398,7 @@
 <div class="modal-overlay" id="reasonModal" onclick="if(event.target===this) this.classList.remove('active')">
     <div class="modal-content">
         <button class="modal-close" onclick="document.getElementById('reasonModal').classList.remove('active')">&times;</button>
-        <h3>📊 AI Entry Reasoning</h3>
+        <h3>📊 Entry Reasoning</h3>
         <div id="modalReasonText"></div>
         <div class="source-badge">✓ Sumber Data: Open-Meteo & ECMWF Ensemble</div>
     </div>
@@ -415,23 +415,82 @@ let latestTotalWallet = 0;
 let cyclePage = 0;
 let cycleRowsCache = [];
 let lastCycleTs = null;
+let lastUpdatedAt = null;
 let wsSocket = null;
 let wsReconnectAttempts = 0;
 let wsReconnectTimer = null;
 let lastReceivedAt = Date.now();
 
-function showReason(city, date, threshold, unit, prob, conf, bucketReason) {
-    const pProb = (Number(prob) * 100).toFixed(1);
-    const pConf = (Number(conf) * 100).toFixed(1);
-    const bucketFormatted = bucketReason ? String(bucketReason).replace(/_/g, ' ') : 'N/A';
+function showReason(posData) {
+    const p = posData;
+    const city = String(p.city || '').toUpperCase();
+    const date = p.date || '?';
+    const direction = String(p.direction || 'above');
+    const threshold = Number(p.threshold || 0);
+    const thresholdHigh = p.threshold_high ? Number(p.threshold_high) : null;
+    const unit = String(p.unit || 'C');
+    const prob = (Number(p.entry_model_prob || p.model_prob || 0) * 100).toFixed(1);
+    const edge = (Number(p.entry_edge || p.edge || 0) * 100).toFixed(1);
+    const price = Number(p.entry_price || p.yes_price || 0);
+    const forecast = p.entry_forecast || p.forecast || null;
+    const costBasis = Number(p.cost_basis || 0);
+    const quantity = Number(p.quantity || 0);
+    const bucket = String(p.entry_bucket || '').replace(/_/g, ' ');
+    const bucketReason = String(p.entry_bucket_reason || '').replace(/_/g, ' ');
+    const strategy = p.target_strategy === 'hold_until_resolve' ? 'Hold to Resolve' : 'Swing';
+    const ensembleApplied = p.entry_ensemble_applied || p.ensemble_applied || false;
+
+    // Direction label
+    const dirLabel = direction === 'above' ? 'ABOVE (forecast must exceed threshold)'
+        : direction === 'below' ? 'BELOW (forecast must be under threshold)'
+        : 'EXACT (forecast must land in bracket)';
+
+    // Threshold display
+    let thresholdDisplay = `${threshold}°${unit}`;
+    if (thresholdHigh) thresholdDisplay = `${threshold}-${thresholdHigh}°${unit}`;
+
+    // Forecast display
+    let forecastLine = '';
+    if (forecast !== null && forecast !== undefined) {
+        const fC = Number(forecast);
+        const fF = (fC * 9/5 + 32).toFixed(1);
+        forecastLine = `<tr><td style="color:#94a3b8">Forecast</td><td><strong style="color:#4ade80">${fC.toFixed(1)}°C (${fF}°F)</strong></td></tr>`;
+    }
+
+    // Convert threshold to C for diff calculation
+    let thresholdC = threshold;
+    if (unit === 'F') thresholdC = (threshold - 32) * 5 / 9;
+    let diffLine = '';
+    if (forecast !== null && forecast !== undefined) {
+        const diff = Number(forecast) - thresholdC;
+        const diffAbs = Math.abs(diff).toFixed(1);
+        const diffDir = diff > 0 ? 'above' : diff < 0 ? 'below' : 'at';
+        const diffColor = (direction === 'above' && diff > 0) || (direction === 'below' && diff < 0) ? '#4ade80' : '#f87171';
+        diffLine = `<tr><td style="color:#94a3b8">Margin</td><td><strong style="color:${diffColor}">${diffAbs}°C ${diffDir} threshold</strong></td></tr>`;
+    }
+
     const text = `
-        <div class="modal-reason-box">
-            <strong>Open-Meteo Ensemble</strong> yakin sebesar <strong style="color: #4ade80;">${pProb}%</strong> bahwa pada tanggal <strong>${date}</strong>, puncak temperatur di <strong>${String(city).toUpperCase()}</strong> akan sesuai dengan target bracket yaitu <strong style="color: #38bdf8;">${threshold}°${unit}</strong>.
-        </div>
-        <p style="margin-bottom: 10px; color: #a1a1aa;">Hal ini dikarenakan tren cuaca menunjukkan simpangan yang solid.</p>
-        <p style="color: #a1a1aa;"><strong>Alasan Spesifik Bot (Bucket):</strong> Jatuh ke kategori <em style="color: #fca5a5;">${bucketFormatted}</em> dengan kekuatan Compound Score <strong style="color: #fff;">${pConf}%</strong> melawan harga badar.</p>
+        <table style="width:100%; border-collapse:collapse; margin-bottom:16px;">
+            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0; width:120px;">Market</td><td><strong>${city}</strong> — ${dirLabel}</td></tr>
+            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Date</td><td>${date}</td></tr>
+            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Threshold</td><td><strong style="color:#38bdf8">${thresholdDisplay}</strong></td></tr>
+            ${forecastLine}
+            ${diffLine}
+            <tr><td colspan="2" style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.1)"></td></tr>
+            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Probability</td><td><strong style="color:#a5b4fc">${prob}%</strong> (max 95%)</td></tr>
+            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Market Price</td><td>$${price.toFixed(4)}</td></tr>
+            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Edge</td><td><strong style="color:#4ade80">+${edge}%</strong> (prob - price)</td></tr>
+            <tr><td colspan="2" style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.1)"></td></tr>
+            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Strategy</td><td><span class="pill ${strategy === 'Swing' ? 'pill-green' : 'pill-blue'}">${strategy}</span></td></tr>
+            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Shares</td><td>${quantity.toFixed(0)} shares @ $${price.toFixed(4)} = $${costBasis.toFixed(2)}</td></tr>
+        </table>
+        ${bucketReason ? `<div style="color:#94a3b8; font-size:0.85rem; margin-top:8px;"><strong>Bucket:</strong> ${bucketReason}</div>` : ''}
     `;
     document.getElementById('modalReasonText').innerHTML = text;
+    const srcBadge = document.querySelector('.source-badge');
+    if (srcBadge) srcBadge.innerHTML = ensembleApplied
+        ? '✓ Sources: Open-Meteo + GFS Ensemble + wtr.in'
+        : '✓ Sources: Open-Meteo + wtr.in';
     document.getElementById('reasonModal').classList.add('active');
 }
 
@@ -593,7 +652,7 @@ function renderPositionsTable() {
                         <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #0284c7; text-decoration: none; color: white;">↗ Poly</a>
                     </div>
                     <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: linear-gradient(135deg, #10b981, #059669); border: none; width: 100%;"
-                        onclick="showReason('${escapeHtml(pos.city||'')}', '${escapeHtml(pos.date||'')}', '${escapeHtml(pos.threshold||'')}', '${escapeHtml(pos.unit||'')}', ${modelProb}, ${Number(pos.entry_confidence_score||0)}, '${escapeHtml(pos.entry_bucket_reason||'')}')">
+                        onclick="showReason(latestPositions[${idx}])">
                         💡 Logic
                     </button>
                 </td>
@@ -767,8 +826,9 @@ async function fetchData() {
         const dailyPnl = currentTotal - latestDailyBaseline;
         document.getElementById('valCBMeta').innerHTML = `Gate: <strong>${escapeHtml(gateReason)}</strong> | Day ΔP: ${dailyPnl >= 0 ? '+' : ''}$${dailyPnl.toFixed(4)}`;
 
-        // Bot Health
+        // Bot Health — use most recent of cycle journal or updated_at
         lastCycleTs = last_cycle ? new Date(last_cycle.timestamp) : null;
+        lastUpdatedAt = data.updated_at ? new Date(data.updated_at) : null;
         updateBotHealth();
 
         // Wallet mode
@@ -874,15 +934,23 @@ function updateBotHealth() {
     const healthEl = document.getElementById('valBotHealth');
     const metaEl = document.getElementById('valBotMeta');
     if (!healthEl || !metaEl) return;
-    if (!lastCycleTs) { healthEl.innerHTML = 'No cycle yet'; return; }
-    const ageMs = Date.now() - lastCycleTs.getTime();
+    // Use the most recent timestamp: cycle journal OR updated_at (state file write)
+    const effectiveTs = lastCycleTs || lastUpdatedAt;
+    if (!effectiveTs) { healthEl.innerHTML = 'No cycle yet'; return; }
+    const ageMs = Date.now() - effectiveTs.getTime();
     const ageS = Math.floor(ageMs / 1000);
     const nextInS = Math.max(0, PAPER_LOOP_INTERVAL_S - ageS);
-    const isStale = ageS > PAPER_LOOP_INTERVAL_S * 2;
-    healthEl.innerHTML = isStale
-        ? `<span class="cb-closed">⚠️ STALE ${fmtDuration(ageMs)}</span>`
-        : `<span class="cb-open">✅ ${fmtDuration(ageMs)} ago</span>`;
-    metaEl.innerHTML = `Next cycle ~${fmtDuration(nextInS * 1000)} | Last: ${fmtWib(lastCycleTs.toISOString())}`;
+    // Consider stale only if no activity for >10 minutes (cycles can take 5+ min with ensemble)
+    const isStale = ageS > 600;
+    const isInCycle = ageS > PAPER_LOOP_INTERVAL_S && ageS <= 600;
+    if (isStale) {
+        healthEl.innerHTML = `<span class="cb-closed">⚠️ STALE ${fmtDuration(ageMs)}</span>`;
+    } else if (isInCycle) {
+        healthEl.innerHTML = `<span style="color:#fbbf24">⏳ In cycle... ${fmtDuration(ageMs)}</span>`;
+    } else {
+        healthEl.innerHTML = `<span class="cb-open">✅ ${fmtDuration(ageMs)} ago</span>`;
+    }
+    metaEl.innerHTML = `Next cycle ~${fmtDuration(nextInS * 1000)} | Last: ${fmtWib(effectiveTs.toISOString())}`;
 }
 
 function updateRealtimeClocks() {
