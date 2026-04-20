@@ -1230,13 +1230,17 @@ function updatePositionLiveByToken(tokenId, bidPrice) {
 function handleWsMessage(raw) {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+
+    // Every message (including ping) proves the connection is alive
+    lastReceivedAt = Date.now();
+    setWsStatus('live', 'Live');
+
     if (msg.type === 'price_update') {
-        lastReceivedAt = Date.now();
         updatePositionLiveByToken(String(msg.token_id || ''), Number(msg.bid_price || 0));
     } else if (msg.type === 'position_closed' || msg.type === 'position_opened') {
-        lastReceivedAt = Date.now();
         setTimeout(fetchData, 500);
     }
+    // 'ping' messages: no extra action needed — timestamp already updated above
 }
 
 function connectBrowserWs() {
