@@ -448,7 +448,11 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
                 raw_prob = min(raw_prob, 0.87)
             elif abs_diff < 3.0 * _sigma_ratio:
                 raw_prob = min(raw_prob, 0.94)
-            # abs_diff >= 3.0 * _sigma_ratio: no cap — margin is large enough to justify high confidence
+            else:
+                # Absolute hard cap: weather is NEVER 100% certain.
+                # Even with large margins, forecast error ±2-3°C means
+                # there's always residual uncertainty.
+                raw_prob = min(raw_prob, 0.95)
 
             # [FIX] Consensus Guard: Detect "Too-Good-To-Be-True" bargains that are likely traps.
             # If we are < 12h from resolve and we are 90%+ sure, but market price is < 30c,
@@ -539,6 +543,12 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
             ensemble_applied = True
         except (TypeError, ValueError):
             pass  # Fall back to model_prob without ensemble
+
+    # [ABSOLUTE CAP] Weather probability must NEVER exceed 95%.
+    # Forecast models have inherent ±2-3°C error, resolution source may differ
+    # from forecast source, and unexpected weather events always have >0% chance.
+    # This cap applies AFTER all adjustments (calibration, ensemble, NOAA).
+    model_prob = min(model_prob, 0.95)
 
     # [MODUL P] Spread-Aware Slippage Penalty
     # Use gamma_spread from parsed market dict if available; floor at 1.75%.
