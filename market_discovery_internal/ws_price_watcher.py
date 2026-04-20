@@ -320,21 +320,42 @@ class PriceWatcher:
         self._ilogger.info("[WS-MPC] Connection closed: Code=%s, Msg=%s", code, msg)
 
     def _send_op(self, ws, ids, op, ilogger):
-        """Send subscription/unsubscription operation to Polymarket CLOB."""
-        # Standard Polymarket CLOB subscription follows this pattern:
-        payload = {
-            "type": "subscribe", # or 'unsubscribe' logic
-            "topic": "price_change", # Monitor price changes for these specific assets
-            "assets_ids": ids
-        }
+        """Send subscription/unsubscription operation to Polymarket CLOB.
         
-        if op == "unsubscribe":
-             payload["type"] = "unsubscribe"
+        Polymarket Market Channel subscription format (from official docs):
+        {
+            "assets_ids": ["<token_id_1>", ...],
+            "type": "market",
+            "custom_feature_enabled": true
+        }
+        Unsubscribe uses the same format but no "type" field — just send
+        an updated subscription with only the assets you want.
+        
+        Note: We subscribe per batch. For unsubscribe, Polymarket doesn't
+        have a dedicated unsubscribe message — the server tracks what you
+        subscribed to and you simply stop receiving updates for assets
+        not in your latest subscription.
+        """
+        # Ensure all IDs are strings (Polymarket expects string token IDs)
+        str_ids = [str(tid) for tid in ids]
+        
+        if op == "subscribe":
+            payload = {
+                "assets_ids": str_ids,
+                "type": "market",
+                "custom_feature_enabled": True,
+            }
+        else:
+            # Unsubscribe: re-subscribe with empty list or just log
+            # Polymarket WS doesn't have explicit unsubscribe — we just
+            # don't include these assets in the next subscription.
+            ilogger.info("[WS-MPC] Unsubscribe requested for %d assets (will exclude from next sub)", len(str_ids))
+            return
         
         msg = json.dumps(payload)
         try:
             ws.send(msg)
-            ilogger.info("[WS-MPC] Sent %s for %d assets (%s...)", op, len(ids), str(ids[0])[:12] if ids else "")
+            ilogger.info("[WS-MPC] Sent %s for %d assets (%s...)", op, len(str_ids), str(str_ids[0])[:20] if str_ids else "")
         except Exception as e:
             ilogger.warning("[WS-MPC] Send error: %s", e)
 

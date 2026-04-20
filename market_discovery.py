@@ -370,8 +370,8 @@ def _start_background_services():
                 if token_id == "__ws_heartbeat__":
                     continue
                 
-                # Update UI
-                if _ws_broadcaster:
+                # Update UI (filter penny bids — $0.01 market-maker placeholders)
+                if _ws_broadcaster and price > 0.01:
                     _ws_broadcaster.broadcast_price(token_id, price)
                 
                 # Check Exits (Atomic)
