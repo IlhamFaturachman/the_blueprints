@@ -15,6 +15,7 @@ from market_discovery_internal.config import (
 from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
 from market_discovery_internal.database_manager import db
+from market_discovery_internal.reporting import parse_utc_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -780,7 +781,6 @@ def run_paper_trading_cycle(
     
     # Combined pool: memory history + database history
     try:
-        from market_discovery_internal.database_manager import db
         db_history = db.get_recent_trade_history(limit=50)
     except Exception:
         db_history = []
@@ -791,7 +791,6 @@ def run_paper_trading_cycle(
         try:
             closed_at_str = h_pos.get("closed_at")
             if not closed_at_str: continue
-            from market_discovery_internal.reporting import parse_utc_datetime
             closed_dt = parse_utc_datetime(closed_at_str)
             if not closed_dt: continue
             
@@ -974,7 +973,6 @@ def run_paper_trading_cycle(
             forecast = pos.get('forecast_temp_c', 'N/A')
             
             # Calculate hours until resolve for better context
-            from market_discovery_internal.reporting import parse_utc_datetime
             now_utc = datetime.now(timezone.utc)
             end_dt = parse_utc_datetime(pos.get('end_date'))
             
