@@ -368,12 +368,12 @@ def test_ws_callback_closes_on_stop_loss():
         lock = threading.Lock()
         callback = make_ws_exit_callback(state_path=state_path, lock=lock)
 
-        # Flash Crash Shield L2: ticks must span >= 90 seconds.
+        # Flash Crash Shield L2: ticks must span >= 30 seconds.
         # Mock time.time() to simulate real time passing between ticks.
         sl_price = stop_loss_price - 0.01
         base_time = 1700000000.0
         call_count = [0]
-        times = [base_time, base_time + 45, base_time + 100]
+        times = [base_time, base_time + 15, base_time + 35]
         original_time = time.time
         def mock_time_fn():
             if call_count[0] < len(times):
@@ -387,8 +387,8 @@ def test_ws_callback_closes_on_stop_loss():
             # Also disable REST confirmation for unit test (no network)
             with patch("market_discovery_internal.ws_price_watcher.FLASH_CRASH_REST_CONFIRM_ENABLED", False):
                 callback("tok_sl", sl_price)  # tick 1 — no exit yet
-                callback("tok_sl", sl_price)  # tick 2 — no exit yet (elapsed < 90s)
-                callback("tok_sl", sl_price)  # tick 3 — exit fires (elapsed 100s > 90s)
+                callback("tok_sl", sl_price)  # tick 2 — no exit yet (elapsed < 30s)
+                callback("tok_sl", sl_price)  # tick 3 — exit fires (elapsed 35s > 30s)
 
         state = _load_state_from_json(state_path)
         closed = [p for p in state.get("history", []) if p.get("token_id") == "tok_sl"]

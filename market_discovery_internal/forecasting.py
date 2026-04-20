@@ -113,7 +113,7 @@ def fetch_ensemble_forecast(city: str, date: str, lat: float, lon: float,
             "end_date": date,
             "models": "gfs_seamless",
         }
-        data = fetch_with_retry(OPEN_METEO_ENSEMBLE_API, params=params, max_retries=2)
+        data = fetch_with_retry(OPEN_METEO_ENSEMBLE_API, params=params, max_retries=1, timeout=5)
         if not data:
             return None
 

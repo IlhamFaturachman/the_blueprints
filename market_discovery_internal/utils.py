@@ -86,7 +86,7 @@ def send_telegram_alert(message, is_html=True):
              logger.warning(f"[TELEGRAM RESP] {response.text}")
         return False
 
-def fetch_with_retry(url, params=None, headers=None, max_retries=3, fail_fast_on_429=False):
+def fetch_with_retry(url, params=None, headers=None, max_retries=3, fail_fast_on_429=False, timeout=10):
     """
     GET a URL and return parsed JSON. Retries up to max_retries times
     with exponential backoff (1s, 2s, 4s) on any request error.
@@ -97,7 +97,7 @@ def fetch_with_retry(url, params=None, headers=None, max_retries=3, fail_fast_on
     last_error = None
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, params=params, headers=headers, timeout=10)
+            response = requests.get(url, params=params, headers=headers, timeout=timeout)
             if response.status_code == 429:
                 if fail_fast_on_429:
                     raise requests.HTTPError(f"429 Client Error: Too Many Requests (Fail-Fast) for url: {url}", response=response)

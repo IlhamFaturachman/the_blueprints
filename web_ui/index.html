@@ -5,413 +5,726 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Bot Paper Trading Dashboard</title>
+    <title>THE BLUEPRINTS — Trading Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        
         :root {
-            --bg: #0d0f12;
-            --surface: #171b21;
-            --surface-hover: #1f252d;
-            --primary: #6366f1;     /* Indigo */
-            --primary-glow: rgba(99, 102, 241, 0.4);
-            --secondary: #2dd4bf;   /* Teal */
+            --bg: #0b0d10;
+            --card: #13161b;
+            --card-hover: #181c23;
+            --border: #1e2330;
+            --border-light: #2a3040;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.25);
+            --green: #10b981;
+            --green-dim: rgba(16, 185, 129, 0.15);
+            --red: #ef4444;
+            --red-dim: rgba(239, 68, 68, 0.15);
+            --yellow: #f59e0b;
+            --yellow-dim: rgba(245, 158, 11, 0.15);
+            --blue: #3b82f6;
+            --blue-dim: rgba(59, 130, 246, 0.15);
             --text: #e2e8f0;
-            --text-muted: #94a3b8;
-            --error: #ef4444;       /* Red */
-            --success: #10b981;     /* Emerald */
-            --border: #2e3541;
+            --text-muted: #64748b;
+            --text-dim: #475569;
         }
-        
-        * { box-sizing: border-box; }
-        
-        body { 
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
-            background-color: var(--bg); 
-            color: var(--text); 
-            margin: 0; 
-            padding: 20px 20px 60px; 
-            background-image: radial-gradient(circle at top right, rgba(99, 102, 241, 0.05), transparent 400px);
-            background-attachment: fixed;
-        }
-        
-        h1, h2, h3 { color: #fff; margin-top: 0; font-weight: 600; letter-spacing: -0.02em; }
-        h1 { font-size: 1.8rem; background: linear-gradient(135deg, #fff, #a5b4fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        
-        .container { max-width: 1250px; margin: 0 auto; }
-        
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
-        
-        .card { 
-            background: var(--surface); 
-            padding: 24px; 
-            border-radius: 16px; 
-            border: 1px solid var(--border);
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.2), 0 2px 4px -2px rgba(0,0,0,0.1); 
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        .card:hover { border-color: rgba(99, 102, 241, 0.3); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); }
-        .card h3 { font-size: 0.9rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;}
-        
-        .value { font-size: 2.2rem; font-weight: 700; margin: 12px 0; color: #fff; letter-spacing: -0.02em; }
-        .small-value { font-size: 0.85rem; color: var(--text-muted); line-height: 1.4;}
-        
-        .good { color: var(--success); text-shadow: 0 0 12px rgba(16, 185, 129, 0.2); }
-        .bad { color: var(--error); text-shadow: 0 0 12px rgba(239, 68, 68, 0.2); }
-        .neutral { color: var(--secondary); }
-        
-        .table-responsive { width: 100%; overflow-x: auto; }
-        table { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 5px; }
-        th, td { padding: 16px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.95rem; }
-        th { background: rgba(23, 27, 33, 0.95); position: sticky; top: 0; color: var(--text-muted); font-weight: 500; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; border-top: none; }
-        tr:hover td { background: var(--surface-hover); }
-        
-        .badge { display: inline-flex; align-items: center; justify-content: center; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-        .mode-auto { background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); }
-        .mode-manual { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
-        
-        header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 24px; margin-bottom: 30px; border-bottom: 1px solid var(--border); }
-        header p { color: var(--text-muted); margin: 8px 0 0 0; font-size: 0.95rem; }
-        
-        .refresh-btn { 
-            background: linear-gradient(135deg, var(--primary), #4f46e5); 
-            color: #fff; 
-            border: none; 
-            padding: 10px 20px; 
-            border-radius: 8px; 
-            font-weight: 600; 
-            font-size: 0.9rem;
-            cursor: pointer; 
-            transition: all 0.2s;
-            box-shadow: 0 4px 12px var(--primary-glow);
-            font-family: inherit;
-        }
-        .refresh-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 16px var(--primary-glow); }
-        .refresh-btn:active { transform: translateY(0); }
-        
-        .action-btn-red { background: linear-gradient(135deg, var(--error), #dc2626); box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3); }
-        .action-btn-red:hover { box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4); }
-        
-        .action-btn-blue { background: linear-gradient(135deg, #0ea5e9, #0284c7); box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3); }
-        .action-btn-blue:hover { box-shadow: 0 6px 16px rgba(14, 165, 233, 0.4); }
-        
-        .pagination { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-top: 1px solid var(--border); }
-        .pagination-info { font-size: 0.9rem; color: var(--text-muted); }
-        
-        .ws-indicator { background: rgba(0,0,0,0.3); padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); margin-right: 16px; font-size: 0.85rem; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; }
-        .ws-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
-        .ws-live { color: var(--success); }
-        .ws-stale { color: var(--error); animation: pulse 1s infinite; }
-        .ws-reconnecting { color: #f59e0b; animation: pulse 1.5s infinite; }
-        .ws-disconnected { color: var(--error); }
-        .data-age { color: #94a3b8; font-family: monospace; font-size: 0.8rem; }
 
-        /* Log feed */
-        .log-feed { background: #0a0c0f; border: 1px solid var(--border); border-radius: 12px; padding: 16px; font-family: 'Courier New', monospace; font-size: 0.78rem; color: #a0aec0; max-height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* ===== HEADER ===== */
+        .header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(11, 13, 16, 0.92);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 20px;
+        }
+        .header-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+        .header-title {
+            font-size: 1rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            color: #fff;
+            white-space: nowrap;
+        }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .live-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            background: rgba(0,0,0,0.3);
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+        }
+        .live-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 6px var(--green);
+            animation: pulse-dot 2s infinite;
+        }
+        .live-dot.stale { background: var(--red); box-shadow: 0 0 6px var(--red); }
+        .live-dot.reconnecting { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); animation: pulse-dot 1s infinite; }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        .btn {
+            font-family: inherit;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 7px 14px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .btn:active { transform: scale(0.96); }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: #5558e6; }
+        .btn-danger { background: var(--red); color: #fff; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-sm { padding: 4px 10px; font-size: 0.7rem; }
+
+        /* ===== MAIN CONTAINER ===== */
+        .main {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px 16px 60px;
+        }
+
+        /* ===== SECTION TITLES ===== */
+        .section-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #fff;
+            margin: 28px 0 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section-title .count-badge {
+            font-size: 0.7rem;
+            background: var(--accent);
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+
+        /* ===== STATS GRID ===== */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+        }
+        .stat-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+            transition: border-color 0.2s;
+        }
+        .stat-card:hover { border-color: var(--border-light); }
+        .stat-label {
+            font-size: 0.65rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 6px;
+        }
+        .stat-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #fff;
+            line-height: 1.2;
+        }
+        .stat-meta {
+            font-size: 0.68rem;
+            color: var(--text-dim);
+            margin-top: 4px;
+            line-height: 1.3;
+        }
+        .stat-value.good { color: var(--green); }
+        .stat-value.bad { color: var(--red); }
+
+        /* ===== TIME ROW ===== */
+        .time-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .time-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 14px;
+        }
+        .time-label {
+            font-size: 0.62rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 4px;
+        }
+        .time-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #fff;
+            font-variant-numeric: tabular-nums;
+        }
+        .time-meta {
+            font-size: 0.65rem;
+            color: var(--text-dim);
+            margin-top: 3px;
+        }
+
+        /* ===== TABLES (Desktop) ===== */
+        .table-wrap {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .table-scroll { overflow-x: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+        }
+        thead th {
+            background: rgba(0,0,0,0.3);
+            padding: 10px 12px;
+            text-align: left;
+            font-size: 0.68rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+        }
+        tbody td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+        }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr:hover td { background: var(--card-hover); }
+
+        .text-green { color: var(--green); }
+        .text-red { color: var(--red); }
+        .text-yellow { color: var(--yellow); }
+        .text-blue { color: var(--blue); }
+        .text-muted { color: var(--text-muted); }
+        .text-dim { color: var(--text-dim); }
+        .text-white { color: #fff; }
+        .font-mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; }
+
+        /* ===== BADGES / PILLS ===== */
+        .pill {
+            display: inline-block;
+            padding: 2px 7px;
+            border-radius: 4px;
+            font-size: 0.62rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .pill-green { background: var(--green-dim); color: var(--green); }
+        .pill-red { background: var(--red-dim); color: var(--red); }
+        .pill-yellow { background: var(--yellow-dim); color: var(--yellow); }
+        .pill-blue { background: var(--blue-dim); color: var(--blue); }
+        .pill-accent { background: var(--accent-glow); color: #a5b4fc; }
+
+        /* ===== POLY LINK ===== */
+        .poly-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            background: var(--blue-dim);
+            color: var(--blue);
+            text-decoration: none;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+        .poly-btn:hover { background: rgba(59, 130, 246, 0.25); }
+
+        .logic-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            background: var(--green-dim);
+            color: var(--green);
+            border: none;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: background 0.15s;
+        }
+        .logic-btn:hover { background: rgba(16, 185, 129, 0.25); }
+
+        /* ===== PAGINATION ===== */
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            border-top: 1px solid var(--border);
+            font-size: 0.72rem;
+            color: var(--text-muted);
+        }
+
+        /* ===== LOG FEED ===== */
+        .log-feed {
+            background: #080a0d;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            max-height: 280px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            line-height: 1.5;
+        }
         .log-feed .log-err { color: #f87171; }
         .log-feed .log-warn { color: #fbbf24; }
         .log-feed .log-ok { color: #34d399; }
         .log-feed .log-info { color: #60a5fa; }
-        .cb-open { color: var(--success); font-weight: 700; }
-        .cb-closed { color: var(--error); font-weight: 700; }
-        .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
-        .pill-green { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
-        .pill-red { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
-        .pill-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
-        .pill-blue { background: rgba(99,102,241,0.15); color: #818cf8; border: 1px solid rgba(99,102,241,0.3); }
-        
-        .flash-up { animation: flashUp 1.5s cubic-bezier(0.4, 0, 0.2, 1); }
-        .flash-down { animation: flashDown 1.5s cubic-bezier(0.4, 0, 0.2, 1); }
-        .flash-close { animation: flashClose 2s cubic-bezier(0.4, 0, 0.2, 1); }
-        
-        @keyframes flashUp { 0% { background-color: rgba(16, 185, 129, 0.3); } 100% { background-color: transparent; } }
-        @keyframes flashDown { 0% { background-color: rgba(239, 68, 68, 0.3); } 100% { background-color: transparent; } }
-        @keyframes flashClose { 0% { background-color: rgba(45, 212, 191, 0.2); transform: scale(0.98); opacity: 0.5; } 100% { background-color: transparent; transform: scale(1); opacity: 1; } }
-        
-        .skeleton { background: linear-gradient(90deg, #2e3541 25%, #3f4756 50%, #2e3541 75%); background-size: 200% 100%; height: 36px; border-radius: 6px; animation: shine 2s infinite linear; }
-        @keyframes shine { to { background-position: -200% 0; } }
 
-        .pulse-row { 
-            border-left: 2px solid var(--success); 
-            transition: all 0.3s;
-        }
-
-        /* Modal Styles */
+        /* ===== MODAL ===== */
         .modal-overlay {
-            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center;
-            z-index: 1000; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+            padding: 16px;
         }
         .modal-overlay.active { opacity: 1; pointer-events: all; }
-        .modal-content {
-            background: #1e1e2e; padding: 30px; border-radius: 12px; max-width: 500px; width: 90%;
-            color: #e0e0e0; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid var(--border);
-            transform: translateY(20px); transition: transform 0.2s ease;
+        .modal-box {
+            background: var(--card);
+            border: 1px solid var(--border-light);
+            border-radius: 12px;
+            max-width: 480px;
+            width: 100%;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 24px;
+            transform: translateY(10px);
+            transition: transform 0.2s;
         }
-        .modal-overlay.active .modal-content { transform: translateY(0); }
-        .modal-content h3 { margin-top: 0; color: #fff; margin-bottom: 20px; }
+        .modal-overlay.active .modal-box { transform: translateY(0); }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .modal-title {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: #fff;
+        }
         .modal-close {
-            float: right; cursor: pointer; color: #bbb; border: none; background: none; font-size: 24px; outline: none; padding: 0; margin-top: -5px; line-height: 1;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 4px;
+            line-height: 1;
         }
         .modal-close:hover { color: #fff; }
-        .modal-reason-box {
-            background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; border-left: 4px solid var(--primary);
-            line-height: 1.6; font-size: 0.95rem; margin-bottom: 15px;
+        .modal-body {
+            font-size: 0.82rem;
+            line-height: 1.6;
         }
-        .source-badge {
-            display: inline-block; background: rgba(14, 165, 233, 0.2); color: #38bdf8;
-            padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; margin-top: 10px;
+        .modal-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border);
         }
+        .modal-row:last-child { border-bottom: none; }
+        .modal-row-label { color: var(--text-muted); font-size: 0.75rem; }
+        .modal-row-value { color: #fff; font-weight: 600; font-size: 0.78rem; text-align: right; }
+        .modal-divider { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+        .modal-source {
+            margin-top: 14px;
+            font-size: 0.68rem;
+            color: var(--text-dim);
+            padding: 6px 10px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 6px;
+        }
+
+        /* ===== SKELETON ===== */
+        .skeleton {
+            background: linear-gradient(90deg, var(--border) 25%, #2a3040 50%, var(--border) 75%);
+            background-size: 200% 100%;
+            height: 24px;
+            border-radius: 4px;
+            animation: shimmer 1.5s infinite linear;
+        }
+        @keyframes shimmer { to { background-position: -200% 0; } }
+
+        /* ===== FLASH ANIMATIONS ===== */
+        .flash-up { animation: flashUp 1.2s ease-out; }
+        .flash-down { animation: flashDown 1.2s ease-out; }
+        @keyframes flashUp { 0% { background-color: rgba(16, 185, 129, 0.2); } 100% { background-color: transparent; } }
+        @keyframes flashDown { 0% { background-color: rgba(239, 68, 68, 0.2); } 100% { background-color: transparent; } }
+
+        /* ===== CLOSE REASON DETAIL ===== */
+        .close-detail {
+            font-size: 0.65rem;
+            color: var(--text-dim);
+            margin-top: 3px;
+            line-height: 1.3;
+        }
+
+        /* ===== MOBILE CARDS (hidden on desktop) ===== */
+        .mobile-cards { display: none; }
 
         /* ============================================================
-           MOBILE RESPONSIVE (iPhone Chrome)
+           MOBILE RESPONSIVE
            ============================================================ */
         @media (max-width: 768px) {
-            body { padding: 12px 8px 40px; }
-            h1 { font-size: 1.3rem; }
-            h2 { font-size: 1.1rem; }
-            .container { max-width: 100%; }
-            .grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-            .card { padding: 14px; border-radius: 12px; }
-            .card h3 { font-size: 0.72rem; margin-bottom: 6px; }
-            .value { font-size: 1.4rem; margin: 6px 0; }
-            .small-value { font-size: 0.72rem; }
+            .header-inner { flex-direction: column; align-items: stretch; gap: 8px; }
+            .header-right { justify-content: space-between; }
+            .header-title { font-size: 0.9rem; }
 
-            header { flex-direction: column; gap: 12px; align-items: stretch; }
-            header > div:last-child { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
-            .ws-indicator { margin-right: 0; font-size: 0.75rem; padding: 6px 10px; }
-            .refresh-btn { padding: 8px 14px; font-size: 0.8rem; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+            .stat-card { padding: 10px 12px; }
+            .stat-value { font-size: 1rem; }
+            .stat-label { font-size: 0.6rem; }
 
-            /* Tables: card-style on mobile */
-            table { display: block; }
-            thead { display: none; }
-            tbody { display: block; }
-            tr { display: flex; flex-wrap: wrap; padding: 14px; border-bottom: 1px solid var(--border); gap: 8px; position: relative; }
-            td { display: block; border: none; padding: 2px 0; font-size: 0.82rem; }
+            .time-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+            .time-value { font-size: 0.95rem; }
 
-            /* Open positions mobile layout */
-            #positionsTable tr { flex-direction: column; }
-            #positionsTable td { width: 100%; }
-            #positionsTable td:first-child { font-size: 0.85rem; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 4px; }
+            .main { padding: 14px 10px 40px; }
 
-            /* History mobile layout */
-            #historyTable tr { flex-direction: column; }
-            #historyTable td { width: 100%; }
-            #historyTable td:first-child { font-size: 0.85rem; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 4px; }
+            /* Hide desktop tables, show mobile cards */
+            .desktop-table { display: none; }
+            .mobile-cards { display: block; }
 
-            /* Cycle table mobile */
-            #cycleTable tr { flex-direction: row; flex-wrap: wrap; }
-            #cycleTable td { flex: 1 1 45%; min-width: 80px; }
+            .m-card {
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 12px;
+                margin-bottom: 8px;
+            }
+            .m-card-header {
+                font-size: 0.78rem;
+                font-weight: 600;
+                color: #fff;
+                margin-bottom: 6px;
+                line-height: 1.3;
+            }
+            .m-card-sub {
+                font-size: 0.68rem;
+                color: var(--text-muted);
+                margin-bottom: 8px;
+            }
+            .m-card-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 6px 12px;
+            }
+            .m-card-item-label {
+                font-size: 0.6rem;
+                color: var(--text-dim);
+                text-transform: uppercase;
+                letter-spacing: 0.03em;
+            }
+            .m-card-item-value {
+                font-size: 0.75rem;
+                font-weight: 600;
+                color: var(--text);
+            }
+            .m-card-actions {
+                display: flex;
+                gap: 6px;
+                margin-top: 8px;
+                padding-top: 8px;
+                border-top: 1px solid var(--border);
+            }
 
-            .pagination { padding: 12px; gap: 8px; }
-            .log-feed { max-height: 200px; font-size: 0.7rem; }
-            .modal-content { padding: 20px; width: 95%; max-height: 85vh; overflow-y: auto; }
-
-            /* 2-column stats grid on mobile */
-            #statsGrid { grid-template-columns: repeat(2, 1fr); }
-            #statsGrid .value { font-size: 1.2rem; }
+            .log-feed { max-height: 200px; font-size: 0.65rem; }
+            .modal-box { padding: 18px; }
+            .section-title { font-size: 0.8rem; margin: 20px 0 10px; }
         }
 
         @media (max-width: 380px) {
-            .grid { grid-template-columns: 1fr; }
-            #statsGrid { grid-template-columns: repeat(2, 1fr); }
-            .value { font-size: 1.1rem; }
+            .stats-grid { gap: 6px; }
+            .stat-value { font-size: 0.9rem; }
+            .stat-card { padding: 8px 10px; }
         }
-
-        /* History action buttons */
-        .hist-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
-        .poly-link-btn {
-            display: inline-flex; align-items: center; gap: 4px;
-            background: linear-gradient(135deg, #0ea5e9, #0284c7);
-            color: #fff; text-decoration: none;
-            padding: 4px 10px; border-radius: 6px;
-            font-size: 0.72rem; font-weight: 600;
-            transition: all 0.2s;
-            box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
-        }
-        .poly-link-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(14, 165, 233, 0.4); }
-
-        .close-reason-detail { font-size: 0.72rem; color: #94a3b8; margin-top: 4px; line-height: 1.3; }
     </style>
 </head>
 <body>
 
-<div class="container">
-        <header>
-        <div>
-            <h1>🔵 THE BLUEPRINTS UI</h1>
-            <p>Enterprise Grade Weather Trading & Price Monitoring System.</p>
-        </div>
-        <div style="display:flex; align-items:center;">
-            <div id="wsIndicator" class="ws-indicator">
-                <div class="ws-dot"></div>
-                <span id="wsStatus">Connecting...</span>
-                <span id="lastUpdateAt" class="data-age">--:--:--</span>
+<!-- ===== HEADER ===== -->
+<div class="header">
+    <div class="header-inner">
+        <div class="header-title">THE BLUEPRINTS</div>
+        <div class="header-right">
+            <div class="live-indicator">
+                <div class="live-dot" id="wsDot"></div>
+                <span id="wsStatusText">Connecting...</span>
+                <span id="wsTime" class="font-mono" style="color:var(--text-dim)">--:--:--</span>
             </div>
-            <button class="refresh-btn" onclick="fetchData()">Refresh Data</button>
-            <button class="refresh-btn action-btn-red" onclick="triggerKillSwitch()" style="margin-left:10px;" title="[MODUL J] Hentikan bot secara darurat">🛑 Kill Bot</button>
+            <button class="btn btn-primary" onclick="fetchData()">Refresh</button>
+            <button class="btn btn-danger" onclick="triggerKillSwitch()">Kill Bot</button>
         </div>
-    </header>
-
-    <!-- Row 1: Core financials + time -->
-    <div class="grid" id="statsGrid">
-        <div class="card">
-            <h3>💳 Portfolio Value</h3>
-            <div class="value" id="valWallet"><div class="skeleton"></div></div>
-            <div class="small-value" id="valWalletMode">Base: - | Cash: -</div>
-        </div>
-        <div class="card">
-            <h3>📈 Total Floating PnL</h3>
-            <div class="value" id="valOpenPnl"><div class="skeleton"></div></div>
-            <div class="small-value" id="valOpenPositions">Active deals: -</div>
-        </div>
-        <div class="card">
-            <h3>💸 Total Realized PnL</h3>
-            <div class="value" id="valPnl"><div class="skeleton"></div></div>
-            <div class="small-value" id="valClosed">Closed deals: -</div>
-        </div>
-        <div class="card">
-            <h3>🏆 Win Rate</h3>
-            <div class="value" id="valWinRate" style="font-size:1.8rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valWinMeta">W: - | L: - | Avg PnL: -</div>
-        </div>
-        <div class="card">
-            <h3>🎯 Daily Target (UTC)</h3>
-            <div class="value" id="valDailyTarget"><div class="skeleton"></div></div>
-            <div class="small-value" id="valDailyGate">Gate: -</div>
-        </div>
-        <div class="card">
-            <h3>🛡️ Circuit Breaker</h3>
-            <div class="value" id="valCB" style="font-size:1.6rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valCBMeta">Daily loss vs baseline: -</div>
-        </div>
-        <div class="card">
-            <h3>⚡ Bot Health</h3>
-            <div class="value" id="valBotHealth" style="font-size:1.2rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valBotMeta">Next cycle: - | Coverage: -</div>
-        </div>
-        <div class="card">
-            <h3>💰 Total Fees Paid</h3>
-            <div class="value" id="valFees" style="font-size:1.6rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valFeesMeta">Entry: - | Exit: -</div>
-        </div>
-    </div>
-
-    <!-- Row 2: Time + tuner -->
-    <div class="grid" style="margin-top:24px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
-        <div class="card">
-            <h3>🕒 UTC Real Time</h3>
-            <div class="value" id="valUtcClock" style="font-size: 1.35rem;">--:--:--</div>
-            <div class="small-value" id="valLastRun">Last cycle: -</div>
-        </div>
-        <div class="card">
-            <h3>🇮🇩 WIB Jakarta</h3>
-            <div class="value" id="valWibClock" style="font-size: 1.35rem;">--:--:--</div>
-            <div class="small-value" id="valWibDate">Asia/Jakarta</div>
-        </div>
-        <div class="card">
-            <h3>🧠 Self-Learning</h3>
-            <div class="value" id="valTuner" style="font-size: 1.2rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valTunerMeta">Tracked: - | Min: -</div>
-        </div>
-        <div class="card">
-            <h3>📊 Last Cycle Stats</h3>
-            <div class="value" id="valCycleStats" style="font-size:1.1rem;"><div class="skeleton"></div></div>
-            <div class="small-value" id="valCycleMeta">Cities: - | Skipped: -</div>
-        </div>
-    </div>
-
-    <h2 style="margin-top: 40px;">🟢 Live Open Positions <span id="posCountBadge" class="badge mode-auto">0</span></h2>
-    <div class="card table-responsive" style="padding: 0;">
-        <table>
-            <thead>
-                <tr>
-                    <th>Market</th>
-                    <th>Buy / SL / TP</th>
-                    <th>Shares (Cost+Fee)</th>
-                    <th>Bid (Live)</th>
-                    <th>Floating PnL</th>
-                    <th>Prob / Edge</th>
-                    <th>Opened</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody id="positionsTable">
-                <tr><td colspan="8" style="text-align:center; padding: 40px;">Memuat data...</td></tr>
-            </tbody>
-        </table>
-    </div>
-
-    <h2 style="margin-top: 40px;">📜 Closed History <span id="closedCountBadge" class="badge mode-manual">0</span></h2>
-    <div class="card" style="padding: 0; overflow-x: auto;">
-        <table>
-            <thead>
-                <tr>
-                    <th>Market</th>
-                    <th>Buy → Exit</th>
-                    <th>ROI %</th>
-                    <th>Net PnL</th>
-                    <th>Fees (In+Out)</th>
-                    <th>Duration</th>
-                    <th>Close Reason</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody id="historyTable">
-                <tr><td colspan="8" style="text-align:center;">Memuat data...</td></tr>
-            </tbody>
-        </table>
-    </div>
-
-    <h2 style="margin-top: 40px;">📓 Recent Discovery Cycles</h2>
-    <div class="card" style="padding: 0; overflow-x: auto;">
-        <table>
-            <thead>
-                <tr>
-                    <th>Timestamp (WIB)</th>
-                    <th>Mode</th>
-                    <th>Entry Gate</th>
-                    <th>Opportunities</th>
-                    <th>Opened</th>
-                    <th>Skipped / Errors</th>
-                    <th>Duration</th>
-                </tr>
-            </thead>
-            <tbody id="cycleTable">
-                <tr><td colspan="7" style="text-align:center;">Memuat data...</td></tr>
-            </tbody>
-        </table>
-        <div class="pagination">
-            <button id="cyclePrevBtn" class="refresh-btn" style="padding: 8px 16px;" onclick="cyclePrevPage()">Prev</button>
-            <div id="cyclePageInfo" class="pagination-info">Page 1 / 1</div>
-            <button id="cycleNextBtn" class="refresh-btn" style="padding: 8px 16px;" onclick="cycleNextPage()">Next</button>
-        </div>
-    </div>
-
-    <h2 style="margin-top: 40px;">📋 Live Bot Log <button class="refresh-btn" style="padding: 6px 14px; font-size:0.8rem; margin-left:10px;" onclick="fetchLogs()">Refresh Logs</button></h2>
-    <div class="card" style="padding: 16px;">
-        <div id="logFeed" class="log-feed">Loading logs...</div>
     </div>
 </div>
 
-<!-- Modal Element -->
-<div class="modal-overlay" id="reasonModal" onclick="if(event.target===this) this.classList.remove('active')">
-    <div class="modal-content">
-        <button class="modal-close" onclick="document.getElementById('reasonModal').classList.remove('active')">&times;</button>
-        <h3>📊 Entry Reasoning</h3>
-        <div id="modalReasonText"></div>
-        <div class="source-badge">✓ Sumber Data: Open-Meteo & ECMWF Ensemble</div>
+<!-- ===== MAIN ===== -->
+<div class="main">
+
+    <!-- Stats Row -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-label">Portfolio Value</div>
+            <div class="stat-value" id="valPortfolio"><div class="skeleton"></div></div>
+            <div class="stat-meta" id="metaPortfolio">Cash: -- | Deployed: --</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Floating PnL</div>
+            <div class="stat-value" id="valFloating"><div class="skeleton"></div></div>
+            <div class="stat-meta" id="metaFloating">Active: -- | Cost: --</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Realized PnL</div>
+            <div class="stat-value" id="valRealized"><div class="skeleton"></div></div>
+            <div class="stat-meta" id="metaRealized">Closed: --</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Win Rate</div>
+            <div class="stat-value" id="valWinRate"><div class="skeleton"></div></div>
+            <div class="stat-meta" id="metaWinRate">W: -- | L: -- | Avg: --</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Daily Target</div>
+            <div class="stat-value" id="valDailyTarget"><div class="skeleton"></div></div>
+            <div class="stat-meta" id="metaDailyTarget">Baseline: --</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Circuit Breaker</div>
+            <div class="stat-value" id="valCB"><div class="skeleton"></div></div>
+            <div class="stat-meta" id="metaCB">Gate: --</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Bot Health</div>
+            <div class="stat-value" id="valHealth" style="font-size:1rem;"><div class="skeleton"></div></div>
+            <div class="stat-meta" id="metaHealth">Next: -- | Last: --</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Total Fees</div>
+            <div class="stat-value" id="valFees"><div class="skeleton"></div></div>
+            <div class="stat-meta" id="metaFees">Entry: -- | Exit: --</div>
+        </div>
+    </div>
+
+    <!-- Time Row -->
+    <div class="time-grid">
+        <div class="time-card">
+            <div class="time-label">UTC</div>
+            <div class="time-value" id="clockUTC">--:--:--</div>
+            <div class="time-meta" id="metaLastCycle">Last cycle: --</div>
+        </div>
+        <div class="time-card">
+            <div class="time-label">WIB Jakarta</div>
+            <div class="time-value" id="clockWIB">--:--:--</div>
+            <div class="time-meta" id="metaWIBDate">--</div>
+        </div>
+        <div class="time-card">
+            <div class="time-label">Self-Learning</div>
+            <div class="time-value" id="valTuner" style="font-size:0.9rem;">--</div>
+            <div class="time-meta" id="metaTuner">Tracked: -- | Min: --</div>
+        </div>
+        <div class="time-card">
+            <div class="time-label">Last Cycle</div>
+            <div class="time-value" id="valCycleStats" style="font-size:0.9rem;">--</div>
+            <div class="time-meta" id="metaCycleStats">Cities: -- | Skip: --</div>
+        </div>
+    </div>
+
+    <!-- ===== OPEN POSITIONS ===== -->
+    <div class="section-title">
+        Open Positions <span class="count-badge" id="posCount">0</span>
+    </div>
+
+    <!-- Desktop Table -->
+    <div class="table-wrap desktop-table">
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th>Entry / SL / TP</th>
+                        <th>Shares (Cost+Fee)</th>
+                        <th>Live Bid</th>
+                        <th>Floating PnL</th>
+                        <th>Prob / Edge</th>
+                        <th>Opened</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="positionsTable">
+                    <tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Mobile Cards -->
+    <div class="mobile-cards" id="positionsMobile"></div>
+
+    <!-- ===== CLOSED HISTORY ===== -->
+    <div class="section-title">
+        Closed History <span class="count-badge" id="closedCount">0</span>
+    </div>
+
+    <!-- Desktop Table -->
+    <div class="table-wrap desktop-table">
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th>Entry → Exit</th>
+                        <th>ROI%</th>
+                        <th>Net PnL</th>
+                        <th>Fees</th>
+                        <th>Duration</th>
+                        <th>Close Reason</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="historyTable">
+                    <tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Mobile Cards -->
+    <div class="mobile-cards" id="historyMobile"></div>
+
+    <!-- ===== DISCOVERY CYCLES ===== -->
+    <div class="section-title">Discovery Cycles</div>
+    <div class="table-wrap">
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp (WIB)</th>
+                        <th>Mode</th>
+                        <th>Entry Gate</th>
+                        <th>Opportunities</th>
+                        <th>Opened</th>
+                        <th>Skipped / Errors</th>
+                        <th>Duration</th>
+                    </tr>
+                </thead>
+                <tbody id="cycleTable">
+                    <tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="pagination">
+            <button class="btn btn-primary btn-sm" id="cyclePrevBtn" onclick="cyclePrevPage()">Prev</button>
+            <span id="cyclePageInfo">Page 1 / 1</span>
+            <button class="btn btn-primary btn-sm" id="cycleNextBtn" onclick="cycleNextPage()">Next</button>
+        </div>
+    </div>
+
+    <!-- ===== LIVE LOG ===== -->
+    <div class="section-title">
+        Live Bot Log
+        <button class="btn btn-primary btn-sm" onclick="fetchLogs()" style="margin-left:auto;">Refresh Logs</button>
+    </div>
+    <div class="log-feed" id="logFeed">Loading logs...</div>
+
+</div>
+
+<!-- ===== MODAL ===== -->
+<div class="modal-overlay" id="reasonModal" onclick="if(event.target===this)this.classList.remove('active')">
+    <div class="modal-box">
+        <div class="modal-header">
+            <div class="modal-title" id="modalTitle">Entry Reasoning</div>
+            <button class="modal-close" onclick="document.getElementById('reasonModal').classList.remove('active')">&times;</button>
+        </div>
+        <div class="modal-body" id="modalBody"></div>
+        <div class="modal-source" id="modalSource">Sources: Open-Meteo & ECMWF Ensemble</div>
     </div>
 </div>
 
 <script>
+// ===== CONSTANTS =====
 const CYCLE_PAGE_SIZE = 10;
-const PAPER_LOOP_INTERVAL_S = 300; // 5 min default — used for Next Cycle ETA
+const PAPER_LOOP_INTERVAL_S = 300;
+const STALE_THRESHOLD_MS = 600000;   // 10 minutes
+const IN_CYCLE_THRESHOLD_MS = 300000; // 5 minutes
+
+// ===== STATE =====
 let latestPositions = [];
 let latestCash = 0;
 let latestDailyBaseline = 0;
 let latestDailyTarget = 0;
-let latestTotalWallet = 0;
 let cyclePage = 0;
 let cycleRowsCache = [];
 let lastCycleTs = null;
@@ -419,154 +732,24 @@ let lastUpdatedAt = null;
 let wsSocket = null;
 let wsReconnectAttempts = 0;
 let wsReconnectTimer = null;
-let lastReceivedAt = Date.now();
+let lastReceivedAt = 0;
 
-function showReason(posData) {
-    const p = posData;
-    const city = String(p.city || '').toUpperCase();
-    const date = p.date || '?';
-    const direction = String(p.direction || 'above');
-    const threshold = Number(p.threshold || 0);
-    const thresholdHigh = p.threshold_high ? Number(p.threshold_high) : null;
-    const unit = String(p.unit || 'C');
-    const prob = (Number(p.entry_model_prob || p.model_prob || 0) * 100).toFixed(1);
-    const edge = (Number(p.entry_edge || p.edge || 0) * 100).toFixed(1);
-    const price = Number(p.entry_price || p.yes_price || 0);
-    const forecast = p.entry_forecast || p.forecast || null;
-    const costBasis = Number(p.cost_basis || 0);
-    const quantity = Number(p.quantity || 0);
-    const bucket = String(p.entry_bucket || '').replace(/_/g, ' ');
-    const bucketReason = String(p.entry_bucket_reason || '').replace(/_/g, ' ');
-    const strategy = p.target_strategy === 'hold_until_resolve' ? 'Hold to Resolve' : 'Swing';
-    const ensembleApplied = p.entry_ensemble_applied || p.ensemble_applied || false;
-
-    // Direction label
-    const dirLabel = direction === 'above' ? 'ABOVE (forecast must exceed threshold)'
-        : direction === 'below' ? 'BELOW (forecast must be under threshold)'
-        : 'EXACT (forecast must land in bracket)';
-
-    // Threshold display
-    let thresholdDisplay = `${threshold}°${unit}`;
-    if (thresholdHigh) thresholdDisplay = `${threshold}-${thresholdHigh}°${unit}`;
-
-    // Forecast display
-    let forecastLine = '';
-    if (forecast !== null && forecast !== undefined) {
-        const fC = Number(forecast);
-        const fF = (fC * 9/5 + 32).toFixed(1);
-        forecastLine = `<tr><td style="color:#94a3b8">Forecast</td><td><strong style="color:#4ade80">${fC.toFixed(1)}°C (${fF}°F)</strong></td></tr>`;
-    }
-
-    // Convert threshold to C for diff calculation
-    let thresholdC = threshold;
-    if (unit === 'F') thresholdC = (threshold - 32) * 5 / 9;
-    let diffLine = '';
-    if (forecast !== null && forecast !== undefined) {
-        const diff = Number(forecast) - thresholdC;
-        const diffAbs = Math.abs(diff).toFixed(1);
-        const diffDir = diff > 0 ? 'above' : diff < 0 ? 'below' : 'at';
-        const diffColor = (direction === 'above' && diff > 0) || (direction === 'below' && diff < 0) ? '#4ade80' : '#f87171';
-        diffLine = `<tr><td style="color:#94a3b8">Margin</td><td><strong style="color:${diffColor}">${diffAbs}°C ${diffDir} threshold</strong></td></tr>`;
-    }
-
-    const text = `
-        <table style="width:100%; border-collapse:collapse; margin-bottom:16px;">
-            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0; width:120px;">Market</td><td><strong>${city}</strong> — ${dirLabel}</td></tr>
-            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Date</td><td>${date}</td></tr>
-            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Threshold</td><td><strong style="color:#38bdf8">${thresholdDisplay}</strong></td></tr>
-            ${forecastLine}
-            ${diffLine}
-            <tr><td colspan="2" style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.1)"></td></tr>
-            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Probability</td><td><strong style="color:#a5b4fc">${prob}%</strong> (max 95%)</td></tr>
-            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Market Price</td><td>$${price.toFixed(4)}</td></tr>
-            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Edge</td><td><strong style="color:#4ade80">+${edge}%</strong> (prob - price)</td></tr>
-            <tr><td colspan="2" style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.1)"></td></tr>
-            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Strategy</td><td><span class="pill ${strategy === 'Swing' ? 'pill-green' : 'pill-blue'}">${strategy}</span></td></tr>
-            <tr><td style="color:#94a3b8; padding:6px 12px 6px 0;">Shares</td><td>${quantity.toFixed(0)} shares @ $${price.toFixed(4)} = $${costBasis.toFixed(2)}</td></tr>
-        </table>
-        ${bucketReason ? `<div style="color:#94a3b8; font-size:0.85rem; margin-top:8px;"><strong>Bucket:</strong> ${bucketReason}</div>` : ''}
-    `;
-    document.getElementById('modalReasonText').innerHTML = text;
-    const srcBadge = document.querySelector('.source-badge');
-    if (srcBadge) srcBadge.innerHTML = ensembleApplied
-        ? '✓ Sources: Open-Meteo + GFS Ensemble + wtr.in'
-        : '✓ Sources: Open-Meteo + wtr.in';
-    document.getElementById('reasonModal').classList.add('active');
-}
-
+// ===== UTILITIES =====
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 }
 
-function truncateText(value, maxLen = 100) {
+function truncateText(value, maxLen = 90) {
     const text = String(value ?? '').trim();
     return text.length <= maxLen ? text : text.slice(0, maxLen - 3) + '...';
 }
 
 function getMarketLabel(pos) {
     const q = String(pos?.market_question || '').trim();
-    if (q) return truncateText(q, 96);
+    if (q) return truncateText(q, 90);
     const c = String(pos?.city || '').trim();
     if (c) return c.toUpperCase() + ' market';
     return pos?.token_id ? 'Token ' + String(pos.token_id).slice(0, 8) : 'Unknown';
-}
-
-function getWsUrl() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host || 'localhost:8080';
-    return `${protocol}//${host}/ws`;
-}
-
-function setWsStatus(state, text) {
-    const statusEl = document.getElementById('wsStatus');
-    const lastUpdateAtEl = document.getElementById('lastUpdateAt');
-    if (!statusEl) return;
-    let cls = 'ws-disconnected';
-    if (state === 'live') cls = 'ws-live';
-    if (state === 'reconnecting') cls = 'ws-reconnecting';
-    statusEl.innerHTML = `<span class="ws-dot ${cls}"></span>${text}`;
-    if (lastUpdateAtEl) lastUpdateAtEl.textContent = new Date().toLocaleTimeString();
-}
-
-function scheduleWsReconnect() {
-    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-    wsReconnectAttempts++;
-    const delayMs = Math.min(30000, 3000 * (2 ** Math.min(wsReconnectAttempts - 1, 4)));
-    setWsStatus('reconnecting', `Reconnecting... (${Math.round(delayMs / 1000)}s)`);
-    wsReconnectTimer = setTimeout(connectBrowserWs, delayMs);
-}
-
-function updateAggregateCards() {
-    let openPnlTotal = 0;
-    let openCostBasis = 0;
-    let openMarkValue = 0;
-    latestPositions.forEach(p => {
-        const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
-        const posValue = markBid * Number(p.quantity || 0);
-        openMarkValue += posValue;
-        openCostBasis += Number(p.cost_basis || 0);
-        openPnlTotal += (posValue - Number(p.cost_basis || 0));
-    });
-    const totalLiquidationValue = latestCash + openMarkValue;
-
-    const pnlEl = document.getElementById('valOpenPnl');
-    if (pnlEl) {
-        pnlEl.innerHTML = `$${openPnlTotal.toFixed(4)}`;
-        pnlEl.className = openPnlTotal >= 0 ? 'value good' : 'value bad';
-    }
-    document.getElementById('valOpenPositions').innerHTML = `Active: ${latestPositions.length} | Deployed: $${openCostBasis.toFixed(4)}`;
-
-    const walletEl = document.getElementById('valWallet');
-    if (walletEl) walletEl.innerHTML = `$${totalLiquidationValue.toFixed(4)}`;
-
-    const targetEl = document.getElementById('valDailyTarget');
-    if (targetEl && latestDailyBaseline > 0) {
-        const gain = totalLiquidationValue - latestDailyBaseline;
-        const targetGain = latestDailyTarget - latestDailyBaseline;
-        const progress = targetGain > 0 ? (gain / targetGain) * 100 : (gain >= 0 ? 100 : 0);
-        targetEl.innerHTML = `${progress.toFixed(2)}%`;
-        targetEl.className = totalLiquidationValue >= latestDailyTarget ? 'value good' : 'value';
-    }
 }
 
 function fmtDuration(ms) {
@@ -576,88 +759,488 @@ function fmtDuration(ms) {
     const m = Math.floor(s / 60); const rs = s % 60;
     if (m < 60) return `${m}m ${rs}s`;
     const h = Math.floor(m / 60); const rm = m % 60;
-    return `${h}h ${rm}m`;
+    if (h < 24) return `${h}h ${rm}m`;
+    const d = Math.floor(h / 24); const rh = h % 24;
+    return `${d}d ${rh}h`;
 }
 
 function fmtWib(isoStr) {
     if (!isoStr) return '-';
-    try { return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short', hour12: false }).format(new Date(isoStr)); }
-    catch { return isoStr; }
+    try {
+        return new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Asia/Jakarta',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            day: '2-digit', month: 'short', hour12: false
+        }).format(new Date(isoStr));
+    } catch { return isoStr; }
 }
 
-function renderPositionsTable() {
-    const tPos = document.getElementById('positionsTable');
-    if (!tPos) return;
-    tPos.innerHTML = "";
-    if (latestPositions.length === 0) {
-        tPos.innerHTML = "<tr><td colspan='8' style='text-align:center; padding: 40px;'>No active positions.</td></tr>";
+function getPolyUrl(pos) {
+    let cleanSlug = (pos.market_slug || '').replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
+    return cleanSlug
+        ? `https://polymarket.com/event/${cleanSlug}`
+        : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city || '')}`;
+}
+
+// ===== SHOW REASON MODAL =====
+function showReason(posData) {
+    const p = posData;
+    if (!p) return;
+
+    const city = String(p.city || '').toUpperCase();
+    const date = p.date || '?';
+    const direction = String(p.direction || 'above').toLowerCase();
+    const threshold = Number(p.threshold || 0);
+    const thresholdHigh = p.threshold_high ? Number(p.threshold_high) : null;
+    const unit = String(p.unit || 'C');
+    const prob = (Number(p.entry_model_prob || 0) * 100).toFixed(1);
+    const edge = (Number(p.entry_edge || 0) * 100).toFixed(1);
+    const price = Number(p.entry_price || 0);
+    const forecast = p.entry_forecast != null ? Number(p.entry_forecast) : null;
+    const quantity = Number(p.quantity || 0);
+    const costBasis = Number(p.cost_basis || 0);
+    const entryFee = Number(p.entry_fee_usd || 0);
+    const strategy = p.target_strategy === 'hold_until_resolve' ? 'FORTRESS (Hold to Resolve)' : 'SWING';
+    const ensembleApplied = p.entry_ensemble_applied || false;
+    const confidence = p.entry_confidence_score ? Number(p.entry_confidence_score).toFixed(2) : null;
+
+    // Direction label
+    let dirLabel = '';
+    if (direction === 'above') {
+        const tF = unit === 'C' ? (threshold * 9/5 + 32).toFixed(1) : threshold;
+        const tC = unit === 'F' ? ((threshold - 32) * 5/9).toFixed(1) : threshold;
+        dirLabel = `ABOVE ${threshold}°${unit}` + (unit === 'C' ? ` (${(threshold * 9/5 + 32).toFixed(1)}°F)` : ` (${((threshold-32)*5/9).toFixed(1)}°C)`);
+    } else if (direction === 'below') {
+        dirLabel = `BELOW ${threshold}°${unit}`;
+    } else {
+        dirLabel = thresholdHigh ? `BETWEEN ${threshold}-${thresholdHigh}°${unit}` : `EXACT ${threshold}°${unit}`;
+    }
+
+    // Forecast and margin
+    let forecastLine = '';
+    let marginLine = '';
+    if (forecast !== null) {
+        const fC = forecast;
+        const fF = (fC * 9/5 + 32).toFixed(1);
+        forecastLine = `<div class="modal-row"><span class="modal-row-label">Forecast</span><span class="modal-row-value text-green">${fC.toFixed(1)}°C (${fF}°F)</span></div>`;
+
+        let thresholdC = unit === 'F' ? (threshold - 32) * 5/9 : threshold;
+        const diff = fC - thresholdC;
+        const diffAbs = Math.abs(diff).toFixed(1);
+        const diffDir = diff > 0 ? 'above' : 'below';
+        const isGood = (direction === 'above' && diff > 0) || (direction === 'below' && diff < 0);
+        marginLine = `<div class="modal-row"><span class="modal-row-label">Margin</span><span class="modal-row-value ${isGood ? 'text-green' : 'text-red'}">+${diffAbs}°C ${diffDir} threshold ${isGood ? '✓' : '✗'}</span></div>`;
+    }
+
+    const html = `
+        <div class="modal-row"><span class="modal-row-label">Direction</span><span class="modal-row-value">${dirLabel}</span></div>
+        ${forecastLine}
+        ${marginLine}
+        <hr class="modal-divider">
+        <div class="modal-row"><span class="modal-row-label">Probability</span><span class="modal-row-value text-blue">${prob}% (capped)</span></div>
+        <div class="modal-row"><span class="modal-row-label">Market Price</span><span class="modal-row-value">$${price.toFixed(4)}</span></div>
+        <div class="modal-row"><span class="modal-row-label">Edge</span><span class="modal-row-value text-green">+${edge}% (prob - price)</span></div>
+        <hr class="modal-divider">
+        <div class="modal-row"><span class="modal-row-label">Strategy</span><span class="modal-row-value"><span class="pill ${strategy.startsWith('SWING') ? 'pill-green' : 'pill-blue'}">${strategy}</span></span></div>
+        <div class="modal-row"><span class="modal-row-label">Stake</span><span class="modal-row-value">${quantity.toFixed(0)} shares × $${price.toFixed(4)} = $${costBasis.toFixed(2)} + $${entryFee.toFixed(2)} fee</span></div>
+        ${confidence ? `<div class="modal-row"><span class="modal-row-label">Confidence</span><span class="modal-row-value">${confidence}</span></div>` : ''}
+        ${p.entry_bucket_reason ? `<div class="modal-row"><span class="modal-row-label">Bucket</span><span class="modal-row-value" style="font-size:0.7rem;max-width:200px;text-align:right;">${escapeHtml(String(p.entry_bucket_reason).replace(/_/g, ' '))}</span></div>` : ''}
+    `;
+
+    document.getElementById('modalTitle').textContent = `Entry Reasoning — ${city}`;
+    document.getElementById('modalBody').innerHTML = html;
+    document.getElementById('modalSource').textContent = ensembleApplied
+        ? '✓ Sources: Open-Meteo + GFS Ensemble + wtr.in'
+        : '✓ Sources: Open-Meteo + wtr.in';
+    document.getElementById('reasonModal').classList.add('active');
+}
+
+// ===== BOT HEALTH (FIXED STALE DETECTION) =====
+function updateBotHealth() {
+    const healthEl = document.getElementById('valHealth');
+    const metaEl = document.getElementById('metaHealth');
+    if (!healthEl || !metaEl) return;
+
+    // Use the MOST RECENT of all available timestamps
+    const timestamps = [];
+    if (lastCycleTs) timestamps.push(lastCycleTs.getTime());
+    if (lastUpdatedAt) timestamps.push(lastUpdatedAt.getTime());
+    if (lastReceivedAt) timestamps.push(lastReceivedAt);
+
+    const mostRecent = timestamps.length ? Math.max(...timestamps) : 0;
+
+    if (!mostRecent) {
+        healthEl.innerHTML = '<span class="text-muted">No data</span>';
+        metaEl.textContent = 'Waiting for first cycle...';
         return;
     }
+
+    const ageMs = Date.now() - mostRecent;
+    const ageS = Math.floor(ageMs / 1000);
+    const nextInS = Math.max(0, PAPER_LOOP_INTERVAL_S - ageS);
+
+    // Stale = no activity for >10 minutes
+    if (ageMs > STALE_THRESHOLD_MS) {
+        healthEl.innerHTML = `<span class="text-red">STALE ${fmtDuration(ageMs)}</span>`;
+        healthEl.className = 'stat-value bad';
+    }
+    // In-cycle = 5-10 minutes (ensemble enrichment can be slow)
+    else if (ageMs > IN_CYCLE_THRESHOLD_MS) {
+        healthEl.innerHTML = `<span class="text-yellow">In cycle... ${fmtDuration(ageMs)}</span>`;
+        healthEl.className = 'stat-value';
+    }
+    // Healthy = <5 minutes
+    else {
+        healthEl.innerHTML = `<span class="text-green">Healthy ${fmtDuration(ageMs)}</span>`;
+        healthEl.className = 'stat-value good';
+    }
+
+    const lastTs = new Date(mostRecent);
+    metaEl.textContent = `Next ~${fmtDuration(nextInS * 1000)} | Last: ${fmtWib(lastTs.toISOString())}`;
+}
+
+// ===== AGGREGATE CARDS =====
+function updateAggregateCards() {
+    let openPnlTotal = 0;
+    let openCostBasis = 0;
+    let openMarkValue = 0;
+
+    latestPositions.forEach(p => {
+        const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
+        const posValue = markBid * Number(p.quantity || 0);
+        openMarkValue += posValue;
+        openCostBasis += Number(p.cost_basis || 0);
+        openPnlTotal += (posValue - Number(p.cost_basis || 0));
+    });
+
+    const totalLiquidationValue = latestCash + openMarkValue;
+
+    // Portfolio Value
+    const portEl = document.getElementById('valPortfolio');
+    if (portEl) portEl.textContent = `$${totalLiquidationValue.toFixed(2)}`;
+    document.getElementById('metaPortfolio').textContent = `Cash: $${latestCash.toFixed(2)} | Deployed: $${openCostBasis.toFixed(2)}`;
+
+    // Floating PnL
+    const floatEl = document.getElementById('valFloating');
+    if (floatEl) {
+        floatEl.textContent = `${openPnlTotal >= 0 ? '+' : ''}$${openPnlTotal.toFixed(4)}`;
+        floatEl.className = 'stat-value ' + (openPnlTotal >= 0 ? 'good' : 'bad');
+    }
+    document.getElementById('metaFloating').textContent = `Active: ${latestPositions.length} | Cost: $${openCostBasis.toFixed(2)}`;
+
+    // Daily Target
+    const targetEl = document.getElementById('valDailyTarget');
+    if (targetEl && latestDailyBaseline > 0) {
+        const gain = totalLiquidationValue - latestDailyBaseline;
+        const targetGain = latestDailyTarget - latestDailyBaseline;
+        const progress = targetGain > 0 ? (gain / targetGain) * 100 : (gain >= 0 ? 100 : 0);
+        targetEl.textContent = `${progress.toFixed(1)}%`;
+        targetEl.className = 'stat-value ' + (totalLiquidationValue >= latestDailyTarget ? 'good' : '');
+    }
+}
+
+// ===== RENDER POSITIONS TABLE (Desktop) =====
+function renderPositionsTable() {
+    const tPos = document.getElementById('positionsTable');
+    const mPos = document.getElementById('positionsMobile');
+    if (!tPos) return;
+
+    document.getElementById('posCount').textContent = latestPositions.length;
+
+    if (latestPositions.length === 0) {
+        tPos.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">No active positions</td></tr>';
+        if (mPos) mPos.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:0.8rem;">No active positions</div>';
+        return;
+    }
+
+    // Calculate PnL and sort
     latestPositions.forEach(p => {
         const markBid = Number(p.last_price || p.entry_quote_best_bid || 0);
         p.current_pnl = (markBid * (p.quantity || 0)) - (p.cost_basis || 0);
     });
-    latestPositions.sort((a,b) => (b.current_pnl || 0) - (a.current_pnl || 0));
+    latestPositions.sort((a, b) => (b.current_pnl || 0) - (a.current_pnl || 0));
+
+    // Desktop table
+    let tableHtml = '';
+    // Mobile cards
+    let mobileHtml = '';
+
     latestPositions.forEach((pos, idx) => {
         const markBid = Number(pos.last_price || pos.entry_quote_best_bid || 0);
         const unPnl = pos.current_pnl || 0;
-        const pnlCls = unPnl >= 0 ? "good" : "bad";
+        const pnlCls = unPnl >= 0 ? 'text-green' : 'text-red';
         const pnlPct = pos.cost_basis ? ((unPnl / pos.cost_basis) * 100) : 0;
         const marketLabel = getMarketLabel(pos);
-        let cleanSlug = (pos.market_slug || "").replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
-        const marketUrl = cleanSlug ? `https://polymarket.com/event/${cleanSlug}` : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city)}`;
+        const marketUrl = getPolyUrl(pos);
         const entryFee = Number(pos.entry_fee_usd || 0);
-        const sharesCost = Number(pos.shares_cost || pos.cost_basis || 0);
         const modelProb = Number(pos.entry_model_prob || 0);
         const edge = Number(pos.entry_edge || 0);
         const openedAgo = pos.opened_at ? fmtDuration(Date.now() - new Date(pos.opened_at).getTime()) : '-';
         const slPrice = Number(pos.stop_loss_price || 0);
         const tpPrice = Number(pos.target_price || 0);
-        const stratBadge = pos.target_strategy === 'hold_until_resolve'
-            ? `<span class="pill pill-blue">🏰 FORTRESS</span>`
-            : `<span class="pill pill-green">📉 SWING</span>`;
+        const stratPill = pos.target_strategy === 'hold_until_resolve'
+            ? '<span class="pill pill-blue">FORTRESS</span>'
+            : '<span class="pill pill-green">SWING</span>';
 
-        tPos.innerHTML += `
-            <tr data-token-id="${pos.token_id}" data-index="${idx}">
+        tableHtml += `
+            <tr data-token-id="${pos.token_id}">
                 <td>
-                    <strong>${escapeHtml(marketLabel)}</strong><br>
-                    <small style="color:#94a3b8">${escapeHtml(pos.city||'').toUpperCase()} · ${pos.date||''}</small><br>
-                    ${stratBadge}
+                    <div style="font-weight:600;color:#fff;margin-bottom:2px;max-width:200px;line-height:1.3;">${escapeHtml(marketLabel)}</div>
+                    <div class="text-muted" style="font-size:0.68rem;">${escapeHtml(pos.city||'').toUpperCase()} · ${pos.date||''}</div>
+                    <div style="margin-top:3px;">${stratPill}</div>
                 </td>
                 <td>
-                    <span style="color:#e2e8f0">Buy: <strong>$${Number(pos.entry_price||0).toFixed(4)}</strong></span><br>
-                    <span style="color:#f87171">SL: $${slPrice.toFixed(4)}</span><br>
-                    <span style="color:#34d399">TP: $${tpPrice.toFixed(4)}</span>
+                    <div>Buy: <strong>$${Number(pos.entry_price||0).toFixed(4)}</strong></div>
+                    <div class="text-red" style="font-size:0.72rem;">SL: $${slPrice.toFixed(4)}</div>
+                    <div class="text-green" style="font-size:0.72rem;">TP: $${tpPrice.toFixed(4)}</div>
                 </td>
                 <td>
-                    ${Number(pos.quantity||0).toFixed(2)} shares<br>
-                    <small>Cost: $${sharesCost.toFixed(4)}</small><br>
-                    <small style="color:#fbbf24">Fee: $${entryFee.toFixed(4)}</small>
+                    <div>${Number(pos.quantity||0).toFixed(2)} shares</div>
+                    <div class="text-muted" style="font-size:0.72rem;">Cost: $${Number(pos.cost_basis||0).toFixed(4)}</div>
+                    <div class="text-yellow" style="font-size:0.72rem;">Fee: $${entryFee.toFixed(4)}</div>
                 </td>
-                <td class="js-bid-price"><strong>$${markBid.toFixed(4)}</strong></td>
-                <td class="js-upnl ${pnlCls}">
-                    <strong>$${unPnl.toFixed(4)}</strong><br>
-                    <small>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</small>
-                </td>
-                <td>
-                    <span style="color:#a5b4fc">P: ${(modelProb*100).toFixed(1)}%</span><br>
-                    <span style="color:#34d399">E: ${(edge*100).toFixed(1)}%</span>
+                <td class="js-bid-price"><strong class="font-mono">$${markBid.toFixed(4)}</strong></td>
+                <td class="js-upnl">
+                    <div class="${pnlCls}" style="font-weight:700;">$${unPnl.toFixed(4)}</div>
+                    <div class="${pnlCls}" style="font-size:0.72rem;">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</div>
                 </td>
                 <td>
-                    <small>${fmtWib(pos.opened_at)}</small><br>
-                    <small style="color:#94a3b8">~${openedAgo} ago</small>
+                    <div class="text-blue" style="font-size:0.75rem;">P: ${(modelProb*100).toFixed(1)}%</div>
+                    <div class="text-green" style="font-size:0.75rem;">E: ${(edge*100).toFixed(1)}%</div>
                 </td>
                 <td>
-                    <div style="display:flex; gap: 6px; margin-bottom: 6px;">
-                        <a href="${marketUrl}" target="_blank" class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: #0284c7; text-decoration: none; color: white;">↗ Poly</a>
+                    <div style="font-size:0.72rem;">${fmtWib(pos.opened_at)}</div>
+                    <div class="text-dim" style="font-size:0.68rem;">~${openedAgo} ago</div>
+                </td>
+                <td>
+                    <div style="display:flex;flex-direction:column;gap:4px;">
+                        <a href="${marketUrl}" target="_blank" class="poly-btn">↗ Poly</a>
+                        <button class="logic-btn" onclick="showReason(latestPositions[${idx}])">Logic</button>
                     </div>
-                    <button class="refresh-btn" style="padding: 5px 10px; font-size:12px; background: linear-gradient(135deg, #10b981, #059669); border: none; width: 100%;"
-                        onclick="showReason(latestPositions[${idx}])">
-                        💡 Logic
-                    </button>
                 </td>
             </tr>`;
+
+        // Mobile card
+        mobileHtml += `
+            <div class="m-card">
+                <div class="m-card-header">${escapeHtml(marketLabel)}</div>
+                <div class="m-card-sub">${escapeHtml(pos.city||'').toUpperCase()} · ${pos.date||''} ${stratPill}</div>
+                <div class="m-card-grid">
+                    <div><div class="m-card-item-label">Entry</div><div class="m-card-item-value">$${Number(pos.entry_price||0).toFixed(4)}</div></div>
+                    <div><div class="m-card-item-label">Live Bid</div><div class="m-card-item-value font-mono">$${markBid.toFixed(4)}</div></div>
+                    <div><div class="m-card-item-label">SL / TP</div><div class="m-card-item-value"><span class="text-red">$${slPrice.toFixed(2)}</span> / <span class="text-green">$${tpPrice.toFixed(2)}</span></div></div>
+                    <div><div class="m-card-item-label">Floating PnL</div><div class="m-card-item-value ${pnlCls}">$${unPnl.toFixed(4)} (${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}%)</div></div>
+                    <div><div class="m-card-item-label">Shares / Cost</div><div class="m-card-item-value">${Number(pos.quantity||0).toFixed(1)} / $${Number(pos.cost_basis||0).toFixed(2)}</div></div>
+                    <div><div class="m-card-item-label">Prob / Edge</div><div class="m-card-item-value"><span class="text-blue">${(modelProb*100).toFixed(0)}%</span> / <span class="text-green">${(edge*100).toFixed(0)}%</span></div></div>
+                </div>
+                <div class="m-card-actions">
+                    <a href="${marketUrl}" target="_blank" class="poly-btn">↗ Poly</a>
+                    <button class="logic-btn" onclick="showReason(latestPositions[${idx}])">Logic</button>
+                    <span class="text-dim" style="font-size:0.62rem;margin-left:auto;">~${openedAgo} ago</span>
+                </div>
+            </div>`;
     });
+
+    tPos.innerHTML = tableHtml;
+    if (mPos) mPos.innerHTML = mobileHtml;
+}
+
+// ===== RENDER HISTORY =====
+function renderHistory(d_closed) {
+    const tHist = document.getElementById('historyTable');
+    const mHist = document.getElementById('historyMobile');
+    document.getElementById('closedCount').textContent = d_closed.length;
+
+    if (!d_closed.length) {
+        tHist.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">No closed trades</td></tr>';
+        if (mHist) mHist.innerHTML = '';
+        return;
+    }
+
+    const sorted = [...d_closed].sort((a, b) => new Date(b.closed_at) - new Date(a.closed_at)).slice(0, 50);
+
+    let tableHtml = '';
+    let mobileHtml = '';
+
+    sorted.forEach(pos => {
+        const rPnl = Number(pos.realized_pnl_usd || 0);
+        const roi = Number(pos.realized_roi_pct || 0);
+        const pnlCls = rPnl >= 0 ? 'text-green' : 'text-red';
+        const totalFee = Number(pos.entry_fee_usd || 0) + Number(pos.exit_fee_usd || 0);
+        const duration = (pos.opened_at && pos.closed_at)
+            ? fmtDuration(new Date(pos.closed_at) - new Date(pos.opened_at)) : '-';
+        const reason = pos.close_reason || pos.reason || 'unknown';
+        const marketUrl = getPolyUrl(pos);
+
+        // Close reason badge + description
+        const { pillClass, label, detail } = getCloseReasonDisplay(reason);
+
+        tableHtml += `
+            <tr>
+                <td>
+                    <div style="font-weight:600;color:#fff;max-width:180px;line-height:1.3;">${escapeHtml(getMarketLabel(pos))}</div>
+                    <div class="text-muted" style="font-size:0.68rem;">${escapeHtml(pos.city||'').toUpperCase()} · ${pos.date||''}</div>
+                </td>
+                <td>
+                    <div class="text-muted" style="font-size:0.75rem;">$${Number(pos.entry_price||0).toFixed(4)}</div>
+                    <div style="font-size:0.75rem;">→ $${Number(pos.exit_price||0).toFixed(4)}</div>
+                </td>
+                <td class="${pnlCls}"><strong>${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</strong></td>
+                <td class="${pnlCls}"><strong>$${rPnl.toFixed(4)}</strong></td>
+                <td class="text-yellow" style="font-size:0.75rem;">$${totalFee.toFixed(4)}</td>
+                <td>
+                    <div style="font-size:0.72rem;">${duration}</div>
+                    <div class="text-dim" style="font-size:0.65rem;">${fmtWib(pos.closed_at)}</div>
+                </td>
+                <td>
+                    <span class="pill ${pillClass}">${label}</span>
+                    <div class="close-detail">${detail}</div>
+                </td>
+                <td><a href="${marketUrl}" target="_blank" class="poly-btn">↗ Poly</a></td>
+            </tr>`;
+
+        // Mobile card
+        mobileHtml += `
+            <div class="m-card">
+                <div class="m-card-header">${escapeHtml(getMarketLabel(pos))}</div>
+                <div class="m-card-sub">${escapeHtml(pos.city||'').toUpperCase()} · ${pos.date||''}</div>
+                <div class="m-card-grid">
+                    <div><div class="m-card-item-label">Entry → Exit</div><div class="m-card-item-value">$${Number(pos.entry_price||0).toFixed(2)} → $${Number(pos.exit_price||0).toFixed(2)}</div></div>
+                    <div><div class="m-card-item-label">Net PnL</div><div class="m-card-item-value ${pnlCls}">$${rPnl.toFixed(4)} (${roi>=0?'+':''}${roi.toFixed(1)}%)</div></div>
+                    <div><div class="m-card-item-label">Fees</div><div class="m-card-item-value text-yellow">$${totalFee.toFixed(4)}</div></div>
+                    <div><div class="m-card-item-label">Duration</div><div class="m-card-item-value">${duration}</div></div>
+                </div>
+                <div style="margin-top:6px;"><span class="pill ${pillClass}">${label}</span><div class="close-detail">${detail}</div></div>
+                <div class="m-card-actions">
+                    <a href="${marketUrl}" target="_blank" class="poly-btn">↗ Poly</a>
+                    <span class="text-dim" style="font-size:0.62rem;margin-left:auto;">${fmtWib(pos.closed_at)}</span>
+                </div>
+            </div>`;
+    });
+
+    tHist.innerHTML = tableHtml;
+    if (mHist) mHist.innerHTML = mobileHtml;
+}
+
+function getCloseReasonDisplay(reason) {
+    const r = String(reason).toLowerCase();
+    let pillClass = 'pill-yellow';
+    let label = reason.replace(/_/g, ' ').toUpperCase();
+    let detail = '';
+
+    if (/take_profit_100pct/.test(r)) {
+        pillClass = 'pill-green';
+        label = 'TAKE PROFIT';
+        detail = 'Target price reached (2x entry)';
+    } else if (/sniper_take_profit|sniper/.test(r)) {
+        pillClass = 'pill-green';
+        label = 'SNIPER TP';
+        detail = 'Price surged above $0.90';
+    } else if (/stop_loss/.test(r)) {
+        pillClass = 'pill-red';
+        label = 'STOP LOSS';
+        detail = 'Price dropped below stop-loss after Flash Crash Shield validation';
+    } else if (/hold_to_resolve|resolve/.test(r)) {
+        pillClass = 'pill-blue';
+        label = 'RESOLVED';
+        detail = 'Held until market resolution';
+    } else if (/haiku_monitor_exit|haiku|ai|monitor/.test(r)) {
+        pillClass = 'pill-yellow';
+        label = 'AI EXIT';
+        detail = 'AI monitor recommended exit';
+    } else if (/broken_thesis/.test(r)) {
+        pillClass = 'pill-yellow';
+        label = 'BROKEN THESIS';
+        detail = 'Forecast changed — thesis no longer valid';
+    } else if (/trailing_stop|trailing/.test(r)) {
+        pillClass = 'pill-yellow';
+        label = 'TRAILING STOP';
+        detail = 'Trailing stop triggered after pullback from peak';
+    }
+
+    return { pillClass, label, detail };
+}
+
+// ===== RENDER CYCLE TABLE =====
+function renderCycleTable() {
+    const tCyc = document.getElementById('cycleTable');
+    if (!tCyc) return;
+
+    if (!cycleRowsCache.length) {
+        tCyc.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">No cycles recorded</td></tr>';
+        return;
+    }
+
+    const totalPages = Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE);
+    cyclePage = Math.min(cyclePage, totalPages - 1);
+    const pageRows = cycleRowsCache.slice(cyclePage * CYCLE_PAGE_SIZE, (cyclePage + 1) * CYCLE_PAGE_SIZE);
+
+    let html = '';
+    pageRows.forEach(c => {
+        const gateOpen = c.entry_gate_open !== false;
+        const gateReason = c.entry_gate_reason || 'unknown';
+        const gatePill = gateOpen
+            ? `<span class="pill pill-green">${escapeHtml(gateReason)}</span>`
+            : `<span class="pill pill-red">${escapeHtml(gateReason)}</span>`;
+        const modePill = c.aggressive_scan
+            ? '<span class="pill pill-yellow">SCAN</span>'
+            : '<span class="pill pill-blue">LOOP</span>';
+        const skipped = (c.counts?.skipped || 0) + (c.counts?.exact_skipped || 0);
+        const errors = c.counts?.errors || 0;
+        const durMs = c.performance?.total_ms || 0;
+
+        html += `
+            <tr>
+                <td style="font-size:0.72rem;">${fmtWib(c.timestamp)}</td>
+                <td>${modePill}</td>
+                <td>${gatePill}</td>
+                <td>${c.counts?.opportunities || 0}</td>
+                <td>${c.counts?.opened || 0}</td>
+                <td>
+                    <span class="text-muted">Skip: ${skipped}</span>
+                    ${errors > 0 ? ` <span class="text-red">Err: ${errors}</span>` : ''}
+                </td>
+                <td>${durMs > 0 ? (durMs/1000).toFixed(1) + 's' : '-'}</td>
+            </tr>`;
+    });
+
+    tCyc.innerHTML = html;
+    document.getElementById('cyclePageInfo').textContent = `Page ${cyclePage + 1} / ${totalPages}`;
+    document.getElementById('cyclePrevBtn').disabled = cyclePage <= 0;
+    document.getElementById('cycleNextBtn').disabled = cyclePage >= totalPages - 1;
+}
+
+function cyclePrevPage() { if (cyclePage > 0) { cyclePage--; renderCycleTable(); } }
+function cycleNextPage() { if (cyclePage < Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE) - 1) { cyclePage++; renderCycleTable(); } }
+
+// ===== WEBSOCKET =====
+function getWsUrl() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host || 'localhost:8080';
+    return `${protocol}//${host}/ws`;
+}
+
+function setWsStatus(state, text) {
+    const dot = document.getElementById('wsDot');
+    const statusText = document.getElementById('wsStatusText');
+    const timeEl = document.getElementById('wsTime');
+    if (!dot || !statusText) return;
+
+    dot.className = 'live-dot';
+    if (state === 'live') dot.classList.add('');
+    else if (state === 'reconnecting') dot.classList.add('reconnecting');
+    else dot.classList.add('stale');
+
+    statusText.textContent = text;
+    if (timeEl) timeEl.textContent = new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
+
+function scheduleWsReconnect() {
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectAttempts++;
+    const delayMs = Math.min(30000, 3000 * (2 ** Math.min(wsReconnectAttempts - 1, 4)));
+    setWsStatus('reconnecting', `Reconnecting (${Math.round(delayMs/1000)}s)`);
+    wsReconnectTimer = setTimeout(connectBrowserWs, delayMs);
 }
 
 function updatePositionLiveByToken(tokenId, bidPrice) {
@@ -666,15 +1249,11 @@ function updatePositionLiveByToken(tokenId, bidPrice) {
     pos.last_price = Number(bidPrice);
     updateAggregateCards();
     renderPositionsTable();
-    const row = document.querySelector(`#positionsTable tr[data-token-id="${tokenId}"]`);
-    if (row) {
-        row.classList.add('pulse-row');
-        setTimeout(() => row.classList.remove('pulse-row'), 1000);
-    }
 }
 
 function handleWsMessage(raw) {
-    let msg; try { msg = JSON.parse(raw); } catch { return; }
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
     if (msg.type === 'price_update') {
         lastReceivedAt = Date.now();
         updatePositionLiveByToken(String(msg.token_id || ''), Number(msg.bid_price || 0));
@@ -691,87 +1270,52 @@ function connectBrowserWs() {
         wsSocket.onopen = () => { wsReconnectAttempts = 0; setWsStatus('live', 'Live'); };
         wsSocket.onmessage = e => handleWsMessage(e.data);
         wsSocket.onclose = () => { setWsStatus('reconnecting', 'Reconnecting...'); scheduleWsReconnect(); };
+        wsSocket.onerror = () => {};
     } catch { scheduleWsReconnect(); }
 }
 
-function renderCycleTable() {
-    const tCyc = document.getElementById('cycleTable');
-    if (!tCyc) return;
-    tCyc.innerHTML = '';
-    if (!cycleRowsCache.length) {
-        tCyc.innerHTML = "<tr><td colspan='7' style='text-align:center;'>Empty.</td></tr>";
-        return;
-    }
-    const totalPages = Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE);
-    cyclePage = Math.min(cyclePage, totalPages - 1);
-    const pageRows = cycleRowsCache.slice(cyclePage * CYCLE_PAGE_SIZE, (cyclePage + 1) * CYCLE_PAGE_SIZE);
-    pageRows.forEach(c => {
-        const gateOpen = c.entry_gate_open !== false;
-        const gateReason = c.entry_gate_reason || 'unknown';
-        const gateBadge = gateOpen
-            ? `<span class="pill pill-green">✅ ${escapeHtml(gateReason)}</span>`
-            : `<span class="pill pill-red">🔒 ${escapeHtml(gateReason)}</span>`;
-        const modeBadge = c.aggressive_scan
-            ? `<span class="pill pill-yellow">⚡ SCAN</span>`
-            : `<span class="pill pill-blue">🔄 LOOP</span>`;
-        const skipped = (c.counts?.skipped || 0) + (c.counts?.exact_skipped || 0);
-        const errors = c.counts?.errors || 0;
-        const durMs = c.performance?.total_ms || 0;
-        tCyc.innerHTML += `
-            <tr>
-                <td><small>${fmtWib(c.timestamp)}</small></td>
-                <td>${modeBadge}</td>
-                <td>${gateBadge}</td>
-                <td>${c.counts?.opportunities || 0}</td>
-                <td>${c.counts?.opened || 0}</td>
-                <td>
-                    <span style="color:#94a3b8">Skip: ${skipped}</span>
-                    ${errors > 0 ? `<br><span style="color:#f87171">Err: ${errors}</span>` : ''}
-                </td>
-                <td>${durMs > 0 ? durMs.toFixed(0) + 'ms' : '-'}</td>
-            </tr>`;
-    });
-    document.getElementById('cyclePageInfo').innerHTML = `Page ${cyclePage + 1} / ${totalPages}`;
-    document.getElementById('cyclePrevBtn').disabled = cyclePage <= 0;
-    document.getElementById('cycleNextBtn').disabled = cyclePage >= totalPages - 1;
-}
-
-function cyclePrevPage() { if (cyclePage > 0) { cyclePage--; renderCycleTable(); } }
-function cycleNextPage() { if (cyclePage < Math.ceil(cycleRowsCache.length / CYCLE_PAGE_SIZE) - 1) { cyclePage++; renderCycleTable(); } }
-
+// ===== FETCH LOGS =====
 async function fetchLogs() {
     try {
-        const res = await fetch('/api/logs?n=80', { cache: "no-store" });
+        const res = await fetch('/api/logs?n=80', { cache: 'no-store' });
         const data = await res.json();
         const feed = document.getElementById('logFeed');
         if (!feed) return;
-        const lines = (data.lines || []);
+        const lines = data.lines || [];
         feed.innerHTML = lines.map(line => {
             const esc = escapeHtml(line);
             if (/error|exception|traceback|failed/i.test(line)) return `<div class="log-err">${esc}</div>`;
-            if (/warn|warning|⚠|stale/i.test(line)) return `<div class="log-warn">${esc}</div>`;
+            if (/warn|warning|stale/i.test(line)) return `<div class="log-warn">${esc}</div>`;
             if (/ok|started|running|opened|entry|trade|cycle.*ok/i.test(line)) return `<div class="log-ok">${esc}</div>`;
             if (/\[boot\]|\[modul|\[ws-|\[paper|\[entry|\[exit|\[cb\]|\[kill\]/i.test(line)) return `<div class="log-info">${esc}</div>`;
             return `<div>${esc}</div>`;
         }).join('');
         feed.scrollTop = feed.scrollHeight;
     } catch (e) {
-        document.getElementById('logFeed').innerHTML = `<span class="log-err">Failed to load logs: ${e.message}</span>`;
+        const feed = document.getElementById('logFeed');
+        if (feed) feed.innerHTML = `<span class="log-err">Failed to load logs: ${e.message}</span>`;
     }
 }
 
+// ===== FETCH DATA =====
 async function fetchData() {
     try {
-        const res = await fetch('../logs/paper_positions_5usd.json?t=' + Date.now(), { cache: "no-store" });
+        const res = await fetch('../logs/paper_positions_5usd.json?t=' + Date.now(), { cache: 'no-store' });
         const data = await res.json();
 
+        // Cycle journal
         const rawCycles = data.cycle_journal || [];
         const seenTs = new Set();
         cycleRowsCache = rawCycles
             .filter(c => { if (!c.timestamp || seenTs.has(c.timestamp)) return false; seenTs.add(c.timestamp); return true; })
-            .sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-        latestPositions = (data.positions || []).map(p => ({ ...p, last_price: Number(p.last_price || p.entry_quote_best_bid || 0) }));
+        // Positions
+        latestPositions = (data.positions || []).map(p => ({
+            ...p,
+            last_price: Number(p.last_price || p.entry_quote_best_bid || 0)
+        }));
+
         const d_closed = data.history || [];
         const meta = data.meta || {};
         const baseWallet = Number(meta.base_wallet || 5.0);
@@ -787,30 +1331,41 @@ async function fetchData() {
             totalFeeEntry += Number(p.entry_fee_usd || 0);
             totalFeeExit += Number(p.exit_fee_usd || 0);
         });
-        // Also count entry fees from still-open positions
         (data.positions || []).forEach(p => { totalFeeEntry += Number(p.entry_fee_usd || 0); });
-        const pnlEl = document.getElementById('valPnl');
-        if (pnlEl) { pnlEl.innerHTML = `$${total_pnl.toFixed(4)}`; pnlEl.className = total_pnl >= 0 ? "value good" : "value bad"; }
-        document.getElementById('valClosed').innerHTML = `Closed deals: ${d_closed.length}`;
+
+        // Realized PnL card
+        const realEl = document.getElementById('valRealized');
+        if (realEl) {
+            realEl.textContent = `${total_pnl >= 0 ? '+' : ''}$${total_pnl.toFixed(4)}`;
+            realEl.className = 'stat-value ' + (total_pnl >= 0 ? 'good' : 'bad');
+        }
+        document.getElementById('metaRealized').textContent = `Closed: ${d_closed.length}`;
 
         // Win rate
         const total_closed = wins + losses;
         const winRate = total_closed > 0 ? (wins / total_closed * 100) : 0;
         const avgPnl = total_closed > 0 ? (total_pnl / total_closed) : 0;
         const wrEl = document.getElementById('valWinRate');
-        if (wrEl) { wrEl.innerHTML = `${winRate.toFixed(1)}%`; wrEl.className = winRate >= 50 ? 'value good' : 'value bad'; }
-        document.getElementById('valWinMeta').innerHTML = `W: ${wins} | L: ${losses} | Avg: $${avgPnl.toFixed(4)}`;
+        if (wrEl) {
+            wrEl.textContent = `${winRate.toFixed(1)}%`;
+            wrEl.className = 'stat-value ' + (winRate >= 50 ? 'good' : 'bad');
+        }
+        document.getElementById('metaWinRate').textContent = `W: ${wins} | L: ${losses} | Avg: $${avgPnl.toFixed(4)}`;
 
-        // Fees (closed entry+exit + open entry fees)
+        // Fees
         const totalFees = totalFeeEntry + totalFeeExit;
         const feesEl = document.getElementById('valFees');
-        if (feesEl) { feesEl.innerHTML = `$${totalFees.toFixed(4)}`; feesEl.className = 'value bad'; }
-        document.getElementById('valFeesMeta').innerHTML = `Entry: $${totalFeeEntry.toFixed(4)} | Exit: $${totalFeeExit.toFixed(4)}`;
+        if (feesEl) {
+            feesEl.textContent = `$${totalFees.toFixed(4)}`;
+            feesEl.className = 'stat-value bad';
+        }
+        document.getElementById('metaFees').textContent = `Entry: $${totalFeeEntry.toFixed(4)} | Exit: $${totalFeeExit.toFixed(4)}`;
 
         // Daily session
         const daily = meta.daily_session || {};
         latestDailyBaseline = Number(daily.baseline_wallet || baseWallet);
         latestDailyTarget = Number(daily.target_wallet || latestDailyBaseline * 2.0);
+        document.getElementById('metaDailyTarget').textContent = `Baseline: $${latestDailyBaseline.toFixed(2)} | Target: $${latestDailyTarget.toFixed(2)}`;
 
         // Circuit Breaker
         const last_cycle = cycleRowsCache[0];
@@ -818,177 +1373,93 @@ async function fetchData() {
         const gateReason = last_cycle?.entry_gate_reason || daily.entry_gate_reason || 'unknown';
         const cbEl = document.getElementById('valCB');
         if (cbEl) {
-            cbEl.innerHTML = gateOpen ? '✅ OPEN' : '🔒 TRIPPED';
-            cbEl.className = gateOpen ? 'value cb-open' : 'value cb-closed';
+            cbEl.innerHTML = gateOpen
+                ? '<span class="text-green">OPEN</span>'
+                : '<span class="text-red">TRIPPED</span>';
+            cbEl.className = 'stat-value';
         }
         const openCostBasis = latestPositions.reduce((s, p) => s + Number(p.cost_basis || 0), 0);
         const currentTotal = cash + openCostBasis;
         const dailyPnl = currentTotal - latestDailyBaseline;
-        document.getElementById('valCBMeta').innerHTML = `Gate: <strong>${escapeHtml(gateReason)}</strong> | Day ΔP: ${dailyPnl >= 0 ? '+' : ''}$${dailyPnl.toFixed(4)}`;
+        document.getElementById('metaCB').innerHTML = `Gate: ${escapeHtml(gateReason)} | Day: ${dailyPnl >= 0 ? '+' : ''}$${dailyPnl.toFixed(2)}`;
 
-        // Bot Health — use most recent of cycle journal or updated_at
+        // Bot Health timestamps
         lastCycleTs = last_cycle ? new Date(last_cycle.timestamp) : null;
         lastUpdatedAt = data.updated_at ? new Date(data.updated_at) : null;
         updateBotHealth();
 
-        // Wallet mode
-        document.getElementById('posCountBadge').innerHTML = latestPositions.length;
-        document.getElementById('valWalletMode').innerHTML = `Base: $${baseWallet.toFixed(4)} | Cash: $${cash.toFixed(4)}`;
-        document.getElementById('valDailyGate').innerHTML = `Baseline: $${latestDailyBaseline.toFixed(4)} | Gate: ${gateOpen ? '<span style="color:#34d399">OPEN</span>' : '<span style="color:#f87171">CLOSED</span>'}`;
-
         // Tuner
         const tuner = meta.auto_tuner || {};
         const sum = tuner.summary || {};
-        document.getElementById('valTuner').innerHTML = `A:${sum.aggressive||0} | C:${sum.cautious||0} | B:${sum.blacklist||0}`;
-        document.getElementById('valTunerMeta').innerHTML = `Tracked: ${sum.cities_total||0} | Min: ${tuner.min_trades||0}`;
+        document.getElementById('valTuner').textContent = `A:${sum.aggressive||0} C:${sum.cautious||0} B:${sum.blacklist||0}`;
+        document.getElementById('metaTuner').textContent = `Tracked: ${sum.cities_total||0} | Min: ${tuner.min_trades||0}`;
 
         // Last cycle stats
         if (last_cycle) {
             const cov = last_cycle.city_coverage || {};
             const skipped = (last_cycle.counts?.skipped || 0) + (last_cycle.counts?.exact_skipped || 0);
-            document.getElementById('valCycleStats').innerHTML = `Opps: ${last_cycle.counts?.opportunities||0} | Opened: ${last_cycle.counts?.opened||0}`;
-            document.getElementById('valCycleMeta').innerHTML = `Cities: ${cov.unique_opportunity_cities||'-'}/${cov.min_city_target||'-'} | Skip: ${skipped}`;
-            document.getElementById('valLastRun').innerHTML = `Last cycle: ${fmtWib(last_cycle.timestamp)}`;
+            document.getElementById('valCycleStats').textContent = `Opps: ${last_cycle.counts?.opportunities||0} | Open: ${last_cycle.counts?.opened||0}`;
+            document.getElementById('metaCycleStats').textContent = `Cities: ${cov.unique_opportunity_cities||'-'}/${cov.min_city_target||'-'} | Skip: ${skipped}`;
+            document.getElementById('metaLastCycle').textContent = `Last cycle: ${fmtWib(last_cycle.timestamp)}`;
         } else if (data.updated_at) {
-            document.getElementById('valLastRun').innerHTML = `Updated: ${fmtWib(data.updated_at)}`;
+            document.getElementById('metaLastCycle').textContent = `Updated: ${fmtWib(data.updated_at)}`;
         }
 
-        // History table
-        const tHist = document.getElementById('historyTable');
-        tHist.innerHTML = "";
-        document.getElementById('closedCountBadge').innerHTML = d_closed.length;
-        if (!d_closed.length) {
-            tHist.innerHTML = "<tr><td colspan='8' style='text-align:center;'>No history.</td></tr>";
-        } else {
-            [...d_closed].sort((a,b) => new Date(b.closed_at) - new Date(a.closed_at)).slice(0, 50).forEach(pos => {
-                const rPnl = Number(pos.realized_pnl_usd || 0);
-                const roi = Number(pos.realized_roi_pct || 0);
-                const pnlCls = rPnl >= 0 ? "good" : "bad";
-                const totalFee = Number(pos.entry_fee_usd||0) + Number(pos.exit_fee_usd||0);
-                const duration = (pos.opened_at && pos.closed_at)
-                    ? fmtDuration(new Date(pos.closed_at) - new Date(pos.opened_at)) : '-';
-                const reason = pos.close_reason || pos.reason || 'unknown';
-                const reasonCls = /take_profit|tp/i.test(reason) ? 'pill-green'
-                    : /stop_loss|sl/i.test(reason) ? 'pill-red'
-                    : /hold_to_resolve|resolve/i.test(reason) ? 'pill-blue'
-                    : /haiku|ai|monitor/i.test(reason) ? 'pill-yellow' : 'pill-yellow';
-                const reasonLabel = escapeHtml(reason.replace(/_/g,' ').toUpperCase());
-
-                // Build close reason detail text
-                let reasonDetail = '';
-                if (/stop_loss/i.test(reason)) {
-                    reasonDetail = 'Price dropped below stop-loss threshold after Flash Crash Shield validation.';
-                } else if (/take_profit_100pct/i.test(reason)) {
-                    reasonDetail = 'Price reached target price (2x entry for swing strategy).';
-                } else if (/sniper/i.test(reason)) {
-                    reasonDetail = 'Price surged above $0.90 — sniper take-profit triggered.';
-                } else if (/hold_to_resolve/i.test(reason)) {
-                    reasonDetail = 'Position held until market resolution.';
-                } else if (/haiku|ai|monitor/i.test(reason)) {
-                    reasonDetail = 'AI monitor detected thesis deterioration and recommended exit.';
-                } else if (/broken_thesis/i.test(reason)) {
-                    reasonDetail = 'Forecast changed significantly — original thesis no longer valid.';
-                } else if (/trailing/i.test(reason)) {
-                    reasonDetail = 'Trailing stop triggered after price pulled back from peak.';
-                }
-
-                // Polymarket link
-                let cleanSlug = (pos.market_slug || "").replace(/-[0-9]+([cf](orhigher|orbelow)?)?$/i, '');
-                const marketUrl = cleanSlug
-                    ? `https://polymarket.com/event/${cleanSlug}`
-                    : `https://polymarket.com/search?query=${encodeURIComponent(pos.market_question || pos.city || '')}`;
-
-                tHist.innerHTML += `
-                    <tr>
-                        <td>
-                            <strong>${escapeHtml(getMarketLabel(pos))}</strong><br>
-                            <small style="color:#94a3b8">${escapeHtml(pos.city||'').toUpperCase()} · ${pos.date||''}</small>
-                        </td>
-                        <td>
-                            <span style="color:#94a3b8">In: $${Number(pos.entry_price||0).toFixed(4)}</span><br>
-                            <span style="color:#e2e8f0">Out: $${Number(pos.exit_price||0).toFixed(4)}</span>
-                        </td>
-                        <td class="${pnlCls}"><strong>${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</strong></td>
-                        <td class="${pnlCls}"><strong>$${rPnl.toFixed(4)}</strong></td>
-                        <td style="color:#fbbf24">$${totalFee.toFixed(4)}</td>
-                        <td><small>${duration}</small><br><small style="color:#64748b">${fmtWib(pos.closed_at)}</small></td>
-                        <td>
-                            <span class="pill ${reasonCls}">${reasonLabel}</span>
-                            ${reasonDetail ? `<div class="close-reason-detail">${reasonDetail}</div>` : ''}
-                        </td>
-                        <td>
-                            <a href="${marketUrl}" target="_blank" class="poly-link-btn">↗ Poly</a>
-                        </td>
-                    </tr>`;
-            });
-        }
-
-        latestTotalWallet = currentTotal;
+        // Render all
         updateAggregateCards();
         renderPositionsTable();
+        renderHistory(d_closed);
         renderCycleTable();
-    } catch (e) { console.error('[fetchData]', e); }
-}
 
-function updateBotHealth() {
-    const healthEl = document.getElementById('valBotHealth');
-    const metaEl = document.getElementById('valBotMeta');
-    if (!healthEl || !metaEl) return;
-    // Use the most recent timestamp: cycle journal OR updated_at (state file write)
-    const effectiveTs = lastCycleTs || lastUpdatedAt;
-    if (!effectiveTs) { healthEl.innerHTML = 'No cycle yet'; return; }
-    const ageMs = Date.now() - effectiveTs.getTime();
-    const ageS = Math.floor(ageMs / 1000);
-    const nextInS = Math.max(0, PAPER_LOOP_INTERVAL_S - ageS);
-    // Consider stale only if no activity for >10 minutes (cycles can take 5+ min with ensemble)
-    const isStale = ageS > 600;
-    const isInCycle = ageS > PAPER_LOOP_INTERVAL_S && ageS <= 600;
-    if (isStale) {
-        healthEl.innerHTML = `<span class="cb-closed">⚠️ STALE ${fmtDuration(ageMs)}</span>`;
-    } else if (isInCycle) {
-        healthEl.innerHTML = `<span style="color:#fbbf24">⏳ In cycle... ${fmtDuration(ageMs)}</span>`;
-    } else {
-        healthEl.innerHTML = `<span class="cb-open">✅ ${fmtDuration(ageMs)} ago</span>`;
+    } catch (e) {
+        console.error('[fetchData]', e);
     }
-    metaEl.innerHTML = `Next cycle ~${fmtDuration(nextInS * 1000)} | Last: ${fmtWib(effectiveTs.toISOString())}`;
 }
 
-function updateRealtimeClocks() {
+// ===== CLOCKS =====
+function updateClocks() {
     const now = new Date();
-    const fmtTime = (tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(now);
-    const fmtDate = (tz) => new Intl.DateTimeFormat('id-ID', { timeZone: tz, weekday: 'short', day: '2-digit', month: 'short' }).format(now);
-    const utcEl = document.getElementById('valUtcClock');
-    if (utcEl) utcEl.innerHTML = fmtTime('UTC');
-    const wibEl = document.getElementById('valWibClock');
-    if (wibEl) wibEl.innerHTML = fmtTime('Asia/Jakarta');
-    const wibDate = document.getElementById('valWibDate');
-    if (wibDate) wibDate.innerHTML = `WIB · ${fmtDate('Asia/Jakarta')}`;
+    const fmtTime = (tz) => new Intl.DateTimeFormat('en-GB', {
+        timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).format(now);
+    const fmtDate = (tz) => new Intl.DateTimeFormat('en-GB', {
+        timeZone: tz, weekday: 'short', day: '2-digit', month: 'short'
+    }).format(now);
+
+    const utcEl = document.getElementById('clockUTC');
+    if (utcEl) utcEl.textContent = fmtTime('UTC');
+    const wibEl = document.getElementById('clockWIB');
+    if (wibEl) wibEl.textContent = fmtTime('Asia/Jakarta');
+    const wibDate = document.getElementById('metaWIBDate');
+    if (wibDate) wibDate.textContent = `WIB · ${fmtDate('Asia/Jakarta')}`;
+
     updateBotHealth();
 }
 
-// [MODUL J] Emergency Kill-Switch
+// ===== KILL SWITCH =====
 function triggerKillSwitch() {
-    if (!confirm('⚠️ EMERGENCY KILL-SWITCH\n\nBot akan dihentikan setelah cycle berikutnya selesai.\nSemua posisi terbuka tetap tersimpan di state.\n\nLanjutkan?')) return;
-    const btn = document.querySelector('button[onclick="triggerKillSwitch()"]');
-    if (btn) { btn.disabled = true; btn.textContent = 'Sending kill signal...'; }
+    if (!confirm('EMERGENCY KILL-SWITCH\n\nThe bot will stop after the current cycle completes.\nAll open positions remain saved in state.\n\nContinue?')) return;
+    const btn = document.querySelector('.btn-danger');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
     fetch('/api/kill', { method: 'POST' })
         .then(r => r.json())
         .then(data => {
-            alert('✅ Kill signal sent.\nBot akan berhenti setelah cycle selesai.\n\n' + (data.message || ''));
-            if (btn) { btn.textContent = '🛑 Kill Sent'; }
+            alert('Kill signal sent. Bot will stop after cycle completes.\n\n' + (data.message || ''));
+            if (btn) { btn.textContent = 'Kill Sent'; }
         })
         .catch(err => {
-            alert('❌ Failed to send kill signal: ' + err);
-            if (btn) { btn.disabled = false; btn.textContent = '🛑 Kill Bot'; }
+            alert('Failed to send kill signal: ' + err);
+            if (btn) { btn.disabled = false; btn.textContent = 'Kill Bot'; }
         });
 }
 
+// ===== INIT =====
 fetchData();
 fetchLogs();
 connectBrowserWs();
-updateRealtimeClocks();
+updateClocks();
 setInterval(fetchData, 10000);
-setInterval(updateRealtimeClocks, 1000);
+setInterval(updateClocks, 1000);
 setInterval(fetchLogs, 30000);
 </script>
 </body>

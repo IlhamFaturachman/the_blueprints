@@ -503,7 +503,7 @@ WARMER_HISTORICAL_THROTTLE_SECONDS = int(os.getenv("WARMER_HISTORICAL_THROTTLE_S
 FLASH_CRASH_MAX_DROP_PCT = float(os.getenv("FLASH_CRASH_MAX_DROP_PCT", "0.40"))
 
 # L2: Time-windowed ticks — SL ticks must span at least this many seconds
-FLASH_CRASH_MIN_TICK_WINDOW_SECONDS = float(os.getenv("FLASH_CRASH_MIN_TICK_WINDOW_SECONDS", "90.0"))
+FLASH_CRASH_MIN_TICK_WINDOW_SECONDS = float(os.getenv("FLASH_CRASH_MIN_TICK_WINDOW_SECONDS", "30.0"))
 
 # L3: REST confirmation — verify price via REST API before executing SL exit
 FLASH_CRASH_REST_CONFIRM_ENABLED = _env_bool("FLASH_CRASH_REST_CONFIRM_ENABLED", True)
