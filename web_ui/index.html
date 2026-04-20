@@ -61,7 +61,7 @@
             gap: 12px;
         }
         .header-title {
-            font-size: 1rem;
+            font-size: 1.3rem;
             font-weight: 800;
             letter-spacing: 0.05em;
             color: #fff;
@@ -124,7 +124,7 @@
 
         /* ===== SECTION TITLES ===== */
         .section-title {
-            font-size: 0.85rem;
+            font-size: 1.1rem;
             font-weight: 700;
             color: #fff;
             margin: 28px 0 12px;
@@ -155,25 +155,26 @@
             transition: border-color 0.2s;
         }
         .stat-card:hover { border-color: var(--border-light); }
+        .stat-card { padding: 18px; }
         .stat-label {
-            font-size: 0.65rem;
+            font-size: 0.85rem;
             font-weight: 600;
             color: var(--text-muted);
             text-transform: uppercase;
             letter-spacing: 0.04em;
-            margin-bottom: 6px;
+            margin-bottom: 8px;
         }
         .stat-value {
-            font-size: 1.25rem;
+            font-size: 1.9rem;
             font-weight: 700;
             color: #fff;
             line-height: 1.2;
         }
         .stat-meta {
-            font-size: 0.68rem;
+            font-size: 0.85rem;
             color: var(--text-dim);
-            margin-top: 4px;
-            line-height: 1.3;
+            margin-top: 6px;
+            line-height: 1.4;
         }
         .stat-value.good { color: var(--green); }
         .stat-value.bad { color: var(--red); }
@@ -192,23 +193,23 @@
             padding: 12px 14px;
         }
         .time-label {
-            font-size: 0.62rem;
+            font-size: 0.8rem;
             font-weight: 600;
             color: var(--text-muted);
             text-transform: uppercase;
             letter-spacing: 0.04em;
-            margin-bottom: 4px;
+            margin-bottom: 6px;
         }
         .time-value {
-            font-size: 1.1rem;
+            font-size: 1.5rem;
             font-weight: 700;
             color: #fff;
             font-variant-numeric: tabular-nums;
         }
         .time-meta {
-            font-size: 0.65rem;
+            font-size: 0.85rem;
             color: var(--text-dim);
-            margin-top: 3px;
+            margin-top: 4px;
         }
 
         /* ===== TABLES (Desktop) ===== */
@@ -222,13 +223,13 @@
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.8rem;
+            font-size: 0.85rem;
         }
         thead th {
             background: rgba(0,0,0,0.3);
             padding: 10px 12px;
             text-align: left;
-            font-size: 0.68rem;
+            font-size: 0.75rem;
             font-weight: 600;
             color: var(--text-muted);
             text-transform: uppercase;
@@ -315,26 +316,6 @@
             font-size: 0.72rem;
             color: var(--text-muted);
         }
-
-        /* ===== LOG FEED ===== */
-        .log-feed {
-            background: #080a0d;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 12px;
-            font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
-            font-size: 0.7rem;
-            color: var(--text-muted);
-            max-height: 280px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            word-break: break-all;
-            line-height: 1.5;
-        }
-        .log-feed .log-err { color: #f87171; }
-        .log-feed .log-warn { color: #fbbf24; }
-        .log-feed .log-ok { color: #34d399; }
-        .log-feed .log-info { color: #60a5fa; }
 
         /* ===== MODAL ===== */
         .modal-overlay {
@@ -446,11 +427,11 @@
 
             .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
             .stat-card { padding: 10px 12px; }
-            .stat-value { font-size: 1rem; }
-            .stat-label { font-size: 0.6rem; }
+            .stat-value { font-size: 1.3rem; }
+            .stat-label { font-size: 0.7rem; }
 
             .time-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-            .time-value { font-size: 0.95rem; }
+            .time-value { font-size: 1.1rem; }
 
             .main { padding: 14px 10px 40px; }
 
@@ -466,14 +447,14 @@
                 margin-bottom: 8px;
             }
             .m-card-header {
-                font-size: 0.78rem;
+                font-size: 0.85rem;
                 font-weight: 600;
                 color: #fff;
                 margin-bottom: 6px;
                 line-height: 1.3;
             }
             .m-card-sub {
-                font-size: 0.68rem;
+                font-size: 0.75rem;
                 color: var(--text-muted);
                 margin-bottom: 8px;
             }
@@ -483,13 +464,13 @@
                 gap: 6px 12px;
             }
             .m-card-item-label {
-                font-size: 0.6rem;
+                font-size: 0.68rem;
                 color: var(--text-dim);
                 text-transform: uppercase;
                 letter-spacing: 0.03em;
             }
             .m-card-item-value {
-                font-size: 0.75rem;
+                font-size: 0.8rem;
                 font-weight: 600;
                 color: var(--text);
             }
@@ -501,14 +482,13 @@
                 border-top: 1px solid var(--border);
             }
 
-            .log-feed { max-height: 200px; font-size: 0.65rem; }
             .modal-box { padding: 18px; }
             .section-title { font-size: 0.8rem; margin: 20px 0 10px; }
         }
 
         @media (max-width: 380px) {
             .stats-grid { gap: 6px; }
-            .stat-value { font-size: 0.9rem; }
+            .stat-value { font-size: 1.1rem; }
             .stat-card { padding: 8px 10px; }
         }
     </style>
@@ -691,13 +671,6 @@
             <button class="btn btn-primary btn-sm" id="cycleNextBtn" onclick="cycleNextPage()">Next</button>
         </div>
     </div>
-
-    <!-- ===== LIVE LOG ===== -->
-    <div class="section-title">
-        Live Bot Log
-        <button class="btn btn-primary btn-sm" onclick="fetchLogs()" style="margin-left:auto;">Refresh Logs</button>
-    </div>
-    <div class="log-feed" id="logFeed">Loading logs...</div>
 
 </div>
 
@@ -1216,8 +1189,11 @@ function cycleNextPage() { if (cyclePage < Math.ceil(cycleRowsCache.length / CYC
 // ===== WEBSOCKET =====
 function getWsUrl() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host || 'localhost:8080';
-    return `${protocol}//${host}/ws`;
+    const hostname = window.location.hostname || 'localhost';
+    // WebSocket broadcaster runs on port 8081
+    // If we're on the VPS (port 8080), connect to 8081
+    // If we're on localhost with a different port, still use 8081
+    return `${protocol}//${hostname}:8081`;
 }
 
 function setWsStatus(state, text) {
@@ -1272,29 +1248,6 @@ function connectBrowserWs() {
         wsSocket.onclose = () => { setWsStatus('reconnecting', 'Reconnecting...'); scheduleWsReconnect(); };
         wsSocket.onerror = () => {};
     } catch { scheduleWsReconnect(); }
-}
-
-// ===== FETCH LOGS =====
-async function fetchLogs() {
-    try {
-        const res = await fetch('/api/logs?n=80', { cache: 'no-store' });
-        const data = await res.json();
-        const feed = document.getElementById('logFeed');
-        if (!feed) return;
-        const lines = data.lines || [];
-        feed.innerHTML = lines.map(line => {
-            const esc = escapeHtml(line);
-            if (/error|exception|traceback|failed/i.test(line)) return `<div class="log-err">${esc}</div>`;
-            if (/warn|warning|stale/i.test(line)) return `<div class="log-warn">${esc}</div>`;
-            if (/ok|started|running|opened|entry|trade|cycle.*ok/i.test(line)) return `<div class="log-ok">${esc}</div>`;
-            if (/\[boot\]|\[modul|\[ws-|\[paper|\[entry|\[exit|\[cb\]|\[kill\]/i.test(line)) return `<div class="log-info">${esc}</div>`;
-            return `<div>${esc}</div>`;
-        }).join('');
-        feed.scrollTop = feed.scrollHeight;
-    } catch (e) {
-        const feed = document.getElementById('logFeed');
-        if (feed) feed.innerHTML = `<span class="log-err">Failed to load logs: ${e.message}</span>`;
-    }
 }
 
 // ===== FETCH DATA =====
@@ -1455,12 +1408,10 @@ function triggerKillSwitch() {
 
 // ===== INIT =====
 fetchData();
-fetchLogs();
 connectBrowserWs();
 updateClocks();
 setInterval(fetchData, 10000);
 setInterval(updateClocks, 1000);
-setInterval(fetchLogs, 30000);
 </script>
 </body>
 </html>
