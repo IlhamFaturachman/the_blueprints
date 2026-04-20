@@ -41,6 +41,21 @@ def fetch_noaa_metar(icao: str) -> Optional[float]:
             return None
         # METAR data: temp field (already in Celsius)
         latest = data[0]
+        # Staleness check: reject observations older than 1 hour
+        report_time = latest.get("reportTime") or latest.get("obsTime")
+        if report_time:
+            try:
+                if isinstance(report_time, (int, float)):
+                    obs_age_s = time.time() - float(report_time)
+                else:
+                    from datetime import datetime as _dt
+                    obs_dt = _dt.fromisoformat(str(report_time).replace("Z", "+00:00"))
+                    obs_age_s = (datetime.now(timezone.utc) - obs_dt).total_seconds()
+                if obs_age_s > 3600:  # > 1 hour old
+                    logger.warning("[NOAA] METAR %s: observation %.0f min old — too stale, skipping", icao, obs_age_s / 60)
+                    return None
+            except Exception:
+                pass  # Can't parse time — proceed with caution
         temp_c = latest.get("temp")
         if temp_c is None:
             # Try parsing from rawOb

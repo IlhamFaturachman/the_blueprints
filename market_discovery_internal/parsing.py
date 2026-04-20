@@ -9,7 +9,7 @@ from market_discovery_internal.config import (
     LOG_FILE, DAILY_RESOLVE_ONLY, DAILY_MIN_HOURS_TO_RESOLVE,
     DAILY_MIN_RESOLVE_DAYS_AHEAD, DAILY_MAX_RESOLVE_DAYS_AHEAD,
     GOLDEN_WINDOW_HOURS_MAX, GOLDEN_WINDOW_HOURS_MIN,
-    THRESHOLD_RE, EXACT_RE, ABOVE_RE, BELOW_RE,
+    THRESHOLD_RE, RANGE_THRESHOLD_RE, EXACT_RE, ABOVE_RE, BELOW_RE,
     WEATHER_CONTEXT_RE, CITY_REGEXES, TARGET_CITIES,
     AIRPORT_IATA_TO_ICAO, STATION_NAME_TO_ICAO, CITY_STATIONS
 )
@@ -199,16 +199,22 @@ def parse_market(
     if not has_weather_context and not has_temperature_hint:
         return _with_reason(None)
 
-    # Step 2: Extract threshold
-    match = THRESHOLD_RE.search(question)
-    if not match:
-        match = THRESHOLD_RE.search(search_text)
-    if not match:
-        _log_unmatched(question, "no temperature threshold found")
-        return _with_reason(None)
-
-    threshold = float(match.group(1))
-    unit_match = match.group(2)
+    # Step 2: Extract threshold (try range bracket first, then single value)
+    threshold_high = None  # Upper bound for range brackets like "50-51°F"
+    range_match = RANGE_THRESHOLD_RE.search(question) or RANGE_THRESHOLD_RE.search(search_text)
+    if range_match:
+        threshold = float(range_match.group(1))
+        threshold_high = float(range_match.group(2))
+        unit_match = range_match.group(3)
+    else:
+        match = THRESHOLD_RE.search(question)
+        if not match:
+            match = THRESHOLD_RE.search(search_text)
+        if not match:
+            _log_unmatched(question, "no temperature threshold found")
+            return _with_reason(None)
+        threshold = float(match.group(1))
+        unit_match = match.group(2)
     
     if unit_match:
         unit = unit_match.upper()
@@ -324,6 +330,7 @@ def parse_market(
         "market_question": question,
         "description": raw.get("description", ""),
         "threshold": threshold,
+        "threshold_high": threshold_high,
         "unit": unit,
         "direction": direction,
         "yes_price": yes_price,

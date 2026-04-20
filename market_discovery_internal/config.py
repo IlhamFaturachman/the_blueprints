@@ -186,6 +186,9 @@ CITY_PATTERNS = {
 # Matches: "75F", "80F", "25C", "30 C", "75 degrees F", or just "15" in a weather context
 THRESHOLD_PATTERN = r"(\d+(?:\.\d+)?)\s*(?:degrees?\s*)?(?:°\s*)?([FC])?\b"
 
+# Matches range brackets: "50-51°F", "between 50-51°F", "50-51 degrees F"
+RANGE_THRESHOLD_PATTERN = r"(?:between\s+)?(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*(?:degrees?\s*)?(?:°\s*)?([FC])?\b"
+
 # Direction hints
 EXACT_KEYWORDS = r"\b(exact(?:ly)?|equal(?:s| to)?|at exactly|precisely|on the dot)\b"
 ABOVE_KEYWORDS = r"\bor higher\b|\bor above\b|\bor more\b|\bat least\b|\b(above|over|exceed|reach|hit)\b"
@@ -195,6 +198,7 @@ DIRECTION_CANDIDATE_PATTERN = r"\b(above|below|under|over|exceed|reach|hit|drop|
 
 # Precompiled regex keeps hot-path parsing/candidate checks faster and cleaner.
 THRESHOLD_RE = re.compile(THRESHOLD_PATTERN, re.IGNORECASE)
+RANGE_THRESHOLD_RE = re.compile(RANGE_THRESHOLD_PATTERN, re.IGNORECASE)
 EXACT_RE = re.compile(EXACT_KEYWORDS, re.IGNORECASE)
 ABOVE_RE = re.compile(ABOVE_KEYWORDS, re.IGNORECASE)
 BELOW_RE = re.compile(BELOW_KEYWORDS, re.IGNORECASE)

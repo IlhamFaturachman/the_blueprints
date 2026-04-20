@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from market_discovery_internal.config import (
     GAMMA_EVENTS_API, DISCOVERY_MAX_FETCH_PAGES, DISCOVERY_AGGRESSIVE_SCAN_PAGES,
     STRATEGY_MAX_YES_PRICE, STRATEGY_MIN_MODEL_PROB, STRATEGY_MIN_EDGE,
+    STRATEGY_EXACT_MIN_MODEL_PROB, STRATEGY_EXACT_MIN_EDGE,
     DAILY_TARGET_MULTIPLIER
 )
 from market_discovery_internal.utils import fetch_with_retry
@@ -178,8 +179,11 @@ def filter_opportunities(
             parsed.update(edge_data)
             parsed["forecast_source"] = getattr(forecast_temp, "source", "unknown")
             
-            # Strategy filters
-            if parsed["model_prob"] >= min_model_prob and parsed["edge"] >= min_edge:
+            # Strategy filters — use lower thresholds for exact bracket markets
+            _dir = parsed.get("direction", "")
+            _min_prob = STRATEGY_EXACT_MIN_MODEL_PROB if _dir == "exact" else min_model_prob
+            _min_edge = STRATEGY_EXACT_MIN_EDGE if _dir == "exact" else min_edge
+            if parsed["model_prob"] >= _min_prob and parsed["edge"] >= _min_edge:
                 opportunities.append(parsed)
         except Exception as e:
             logger.error("[ERROR] Opportunity filtering failed for %s: %s", parsed.get('city'), e, exc_info=True)

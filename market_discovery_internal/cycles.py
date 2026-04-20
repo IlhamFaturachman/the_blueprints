@@ -175,6 +175,7 @@ def enrich_discovery_markets(
             continue
 
         # [ENSEMBLE] Fetch GFS 31-member ensemble forecast for probability weighting
+        # Dedup: cache per city+date to avoid N API calls for N brackets of same event
         ensemble_data = None
         threshold_c = market.get("threshold")
         direction = market.get("direction", "above")
@@ -187,12 +188,47 @@ def enrich_discovery_markets(
                     _threshold_c_val = float(threshold_c)
                     if market.get("unit", "").upper() == "F":
                         _threshold_c_val = (_threshold_c_val - 32) * 5.0 / 9.0
-                    from market_discovery_internal.forecasting import fetch_ensemble_forecast
-                    ensemble_data = fetch_ensemble_forecast(
-                        city=city, date=date,
-                        lat=city_info["lat"], lon=city_info["lon"],
-                        threshold_c=_threshold_c_val, direction=direction
-                    )
+                    # Dedup key: city+date (ensemble members are same regardless of threshold)
+                    _ens_cache_key = f"{city}_{date}"
+                    if _ens_cache_key not in forecast_cache:
+                        from market_discovery_internal.forecasting import fetch_ensemble_forecast
+                        _ens_raw = fetch_ensemble_forecast(
+                            city=city, date=date,
+                            lat=city_info["lat"], lon=city_info["lon"],
+                            threshold_c=_threshold_c_val, direction=direction
+                        )
+                        forecast_cache[_ens_cache_key] = _ens_raw
+                    else:
+                        _ens_raw = forecast_cache[_ens_cache_key]
+                    # Recompute probability for THIS market's specific threshold/direction
+                    if _ens_raw and isinstance(_ens_raw, dict) and _ens_raw.get("ensemble_mean") is not None:
+                        members_mean = _ens_raw["ensemble_mean"]
+                        member_count = _ens_raw.get("member_count", 30)
+                        spread = _ens_raw.get("ensemble_spread", 2.0)
+                        # Recompute prob for this specific threshold using normal approximation
+                        import math
+                        if spread > 0 and member_count > 0:
+                            z = (_threshold_c_val - members_mean) / spread
+                            if direction == "above":
+                                _ens_prob = 0.5 * (1 + math.erf(-z / math.sqrt(2)))
+                            elif direction == "below":
+                                _ens_prob = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+                            else:  # exact
+                                # Probability within ±0.5°C of threshold
+                                _z_lo = (_threshold_c_val - 0.5 - members_mean) / spread
+                                _z_hi = (_threshold_c_val + 0.5 - members_mean) / spread
+                                _ens_prob = 0.5 * (math.erf(_z_hi / math.sqrt(2)) - math.erf(_z_lo / math.sqrt(2)))
+                            ensemble_data = {
+                                "ensemble_prob": max(0.0, min(1.0, _ens_prob)),
+                                "ensemble_mean": members_mean,
+                                "ensemble_spread": spread,
+                                "member_count": member_count,
+                                "source": "gfs_ensemble",
+                            }
+                        else:
+                            ensemble_data = _ens_raw
+                    else:
+                        ensemble_data = _ens_raw
             except Exception as _ens_err:
                 logger.debug("[ENSEMBLE] Enrichment fetch failed for %s/%s: %s", city, date, _ens_err)
         market["ensemble_data"] = ensemble_data
@@ -1268,14 +1304,14 @@ def compute_kelly_stake(
         return min(PAPER_STAKE_USD, available_cash)
 
     if edge < KELLY_MIN_EDGE_FOR_BET or model_prob <= 0 or model_prob >= 1:
-        return KELLY_MIN_STAKE
+        return 0.0  # Signal: don't bet — insufficient edge
 
     p = model_prob
     q = 1.0 - p
 
     # For YES token: you pay entry_price, win (1 - entry_price) if correct
     if entry_price <= 0 or entry_price >= 1:
-        return KELLY_MIN_STAKE
+        return 0.0  # Invalid price — don't bet
 
     b = (1.0 - entry_price) / entry_price  # Payout odds
 
@@ -1283,7 +1319,7 @@ def compute_kelly_stake(
     kelly_f = (p * b - q) / b
 
     if kelly_f <= 0:
-        return KELLY_MIN_STAKE  # Negative Kelly = don't bet, but we use minimum
+        return 0.0  # Negative Kelly = don't bet
 
     # Apply fractional Kelly
     stake = available_cash * kelly_f * KELLY_FRACTION
@@ -1333,6 +1369,8 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
             available_cash=available_cash,
             entry_price=effective_price,
         )
+        if kelly_stake <= 0:
+            return None  # Kelly says don't bet — skip this opportunity
         target_usd = max(kelly_stake, STRATEGY_MIN_STAKE_USD)
     else:
         # Fallback: use fixed stake
@@ -1942,6 +1980,9 @@ def append_opened_positions_from_candidates(
             entry_opportunity["entry_quote_best_bid"] = round(best_bid, 4)
 
         position = build_paper_position(entry_opportunity, stake_usd=risk_weighted_stake, available_cash=remaining_cash)
+        if position is None:
+            logger.info("[KELLY] Skipping %s — Kelly says don't bet (edge insufficient)", opportunity.get("city", "?"))
+            continue
 
         # [ACCOUNTING GUARD] Hard block if cost_basis exceeds remaining cash
         position_cost = float(position.get("cost_basis", 0.0))

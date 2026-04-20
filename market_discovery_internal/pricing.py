@@ -14,6 +14,7 @@ from market_discovery_internal.config import (
     NOAA_OVERRIDE_CONFIRM_PROB, NOAA_OVERRIDE_CONTRADICT_PROB,
     SIGMA_TROPICAL, SIGMA_FOUR_SEASON, SIGMA_DEFAULT,
     TROPICAL_CITIES, FOUR_SEASON_CITIES,
+    ENSEMBLE_WEIGHT, POINT_FORECAST_WEIGHT, WTRIN_WEIGHT,
 )
 from market_discovery_internal.utils import (
     fetch_with_retry, _safe_float
@@ -327,7 +328,7 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     Calculate the statistical edge of a market position compared to forecast.
 
     Logic:
-    - Above/Below: sigmoid model probability around threshold (threshold already in °C from parse_market).
+    - Above/Below: sigmoid model probability around threshold (converted to °C at entry).
     - Exact: Gaussian probability around forecast.
     - If market_implied_prob available: takes priority over model (prob_source="market_implied").
     - [PACK A] Calibrated probability applied via Bayesian shrinkage.
@@ -340,9 +341,28 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     Formula: half-spread approximates one-way transaction cost.
     """
     price = market.get("yes_price")
-    threshold = market.get("threshold")
+    threshold_raw = market.get("threshold")
     direction = market.get("direction")
     city = str(market.get("city", "")).lower()
+    unit = str(market.get("unit", "C")).upper()
+
+    # [CRITICAL FIX] Convert threshold to Celsius for all calculations.
+    # parse_market stores threshold in original units (F or C).
+    # Forecast is always in Celsius (from Open-Meteo), so threshold must match.
+    if threshold_raw is not None:
+        threshold = float(threshold_raw)
+        if unit == "F":
+            threshold = (threshold - 32.0) * 5.0 / 9.0
+    else:
+        threshold = None
+
+    # For range brackets (e.g., "50-51°F"), also convert the upper bound
+    threshold_high_raw = market.get("threshold_high")
+    threshold_high = None
+    if threshold_high_raw is not None:
+        threshold_high = float(threshold_high_raw)
+        if unit == "F":
+            threshold_high = (threshold_high - 32.0) * 5.0 / 9.0
 
     # Market-implied probability path: use sibling family data when available.
     # This takes priority over the model because it embeds live market consensus.
@@ -389,17 +409,27 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
             diff = max(-50, min(50, (threshold - forecast)))
             raw_prob = 1.0 / (1.0 + math.exp(-k * diff))
         elif direction == "exact":
-            # Probability that the daily high lands in the ±0.5°C bracket around threshold.
-            # Uses Gaussian CDF integral: P = Φ((threshold+0.5 - forecast)/σ) - Φ((threshold-0.5 - forecast)/σ)
-            # This replaces the old PDF-height formula which incorrectly gave 100% when forecast==threshold.
+            # Probability that the daily high lands within the bracket.
+            # For range brackets (e.g., "50-51°F" → threshold_high available):
+            #   P = Φ((upper - forecast)/σ) - Φ((lower - forecast)/σ)
+            # For point brackets (e.g., "4°C"):
+            #   P = Φ((threshold+0.5 - forecast)/σ) - Φ((threshold-0.5 - forecast)/σ)
             # Per-region sigma: tropical cities get tighter sigma (less variance),
             # four-season cities get wider sigma (more variance).
             from math import erf as _erf, sqrt as _sqrt
             sigma = _get_city_sigma(city)
             _s2 = sigma * _sqrt(2)
+            if threshold_high is not None:
+                # Range bracket: integrate over [threshold, threshold_high] (already in °C)
+                lower_bound = threshold
+                upper_bound = threshold_high
+            else:
+                # Point bracket: ±0.5°C window around threshold
+                lower_bound = threshold - 0.5
+                upper_bound = threshold + 0.5
             raw_prob = max(0.0, min(1.0, 0.5 * (
-                _erf((threshold + 0.5 - forecast) / _s2) -
-                _erf((threshold - 0.5 - forecast) / _s2)
+                _erf((upper_bound - forecast) / _s2) -
+                _erf((lower_bound - forecast) / _s2)
             )))
 
         # [FIX] Hard ceiling: cap confidence based on forecast margin.
@@ -434,25 +464,25 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     # [NOAA METAR] Real-time Override (only in last N hours before resolution)
     # -------------------------------------------------------------------------
     hours_left = float(hours_until_resolve) if hours_until_resolve is not None else 24.0
-    if NOAA_OVERRIDE_ENABLED and hours_left <= NOAA_OVERRIDE_WINDOW_HOURS:
-        icao = market.get("icao") or ""
+    if NOAA_OVERRIDE_ENABLED and hours_left <= NOAA_OVERRIDE_WINDOW_HOURS and threshold is not None:
+        icao = market.get("icao_code") or ""
         if icao:
             from market_discovery_internal.forecasting import fetch_noaa_metar
             noaa_temp = fetch_noaa_metar(icao)
             if noaa_temp is not None:
-                # threshold is already in °C (converted by parse_market)
-                if direction == "above":
+                # threshold is already in °C (converted above)
+                # Price cap: don't override if market price > $0.80 (avoid overpaying)
+                _price_safe = price is not None and float(price) <= 0.80
+                if direction == "above" and _price_safe:
                     if noaa_temp > threshold:
-                        # NOAA confirms: current temp already above threshold
                         logger.info("[NOAA-OVERRIDE] %s: %.1f°C > %.1f°C threshold. Overriding prob to %.2f",
                                     city, noaa_temp, threshold, NOAA_OVERRIDE_CONFIRM_PROB)
                         raw_prob = max(raw_prob, NOAA_OVERRIDE_CONFIRM_PROB)
                     elif noaa_temp < threshold - 5.0 and hours_left <= 2.0:
-                        # NOAA contradicts: current temp way below threshold with <2h left
                         logger.info("[NOAA-OVERRIDE] %s: %.1f°C << %.1f°C with %.1fh left. Overriding prob to %.2f",
                                     city, noaa_temp, threshold, hours_left, NOAA_OVERRIDE_CONTRADICT_PROB)
                         raw_prob = min(raw_prob, NOAA_OVERRIDE_CONTRADICT_PROB)
-                elif direction == "below":
+                elif direction == "below" and _price_safe:
                     if noaa_temp < threshold:
                         logger.info("[NOAA-OVERRIDE] %s: %.1f°C < %.1f°C threshold. Overriding prob to %.2f",
                                     city, noaa_temp, threshold, NOAA_OVERRIDE_CONFIRM_PROB)
@@ -460,6 +490,18 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
                     elif noaa_temp > threshold + 5.0 and hours_left <= 2.0:
                         logger.info("[NOAA-OVERRIDE] %s: %.1f°C >> %.1f°C with %.1fh left. Overriding prob to %.2f",
                                     city, noaa_temp, threshold, hours_left, NOAA_OVERRIDE_CONTRADICT_PROB)
+                        raw_prob = min(raw_prob, NOAA_OVERRIDE_CONTRADICT_PROB)
+                elif direction == "exact" and _price_safe:
+                    # For exact: if NOAA temp is within bracket, confirm; if far away, contradict
+                    _upper = threshold_high if threshold_high is not None else threshold + 0.5
+                    _lower = threshold - 0.5 if threshold_high is None else threshold
+                    if _lower <= noaa_temp <= _upper:
+                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C within [%.1f, %.1f] bracket. Overriding prob to %.2f",
+                                    city, noaa_temp, _lower, _upper, NOAA_OVERRIDE_CONFIRM_PROB)
+                        raw_prob = max(raw_prob, NOAA_OVERRIDE_CONFIRM_PROB)
+                    elif abs(noaa_temp - ((_lower + _upper) / 2)) > 5.0 and hours_left <= 2.0:
+                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C far from bracket [%.1f, %.1f]. Overriding prob to %.2f",
+                                    city, noaa_temp, _lower, _upper, hours_left, NOAA_OVERRIDE_CONTRADICT_PROB)
                         raw_prob = min(raw_prob, NOAA_OVERRIDE_CONTRADICT_PROB)
 
     # [PACK A] Calibration bins
@@ -487,17 +529,12 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     if ensemble_data and isinstance(ensemble_data, dict) and ensemble_data.get("ensemble_prob") is not None:
         try:
             ensemble_prob = float(ensemble_data["ensemble_prob"])
-            # Weighted merge: ensemble + point forecast model + wttr.in (via model_prob)
-            # model_prob already incorporates point forecast + wttr.in consensus
-            merged_prob = (
-                ENSEMBLE_WEIGHT * ensemble_prob +
-                POINT_FORECAST_WEIGHT * model_prob +
-                WTRIN_WEIGHT * model_prob  # wttr.in contribution is embedded in model_prob
-            )
-            # Normalize: weights should sum to 1.0 but guard against config drift
-            weight_sum = ENSEMBLE_WEIGHT + POINT_FORECAST_WEIGHT + WTRIN_WEIGHT
-            if weight_sum > 0 and abs(weight_sum - 1.0) > 0.01:
-                merged_prob = merged_prob / weight_sum
+            # Weighted merge: ensemble probability + calibrated model probability.
+            # model_prob already blends Open-Meteo + wtr.in via consensus in forecasting.
+            # Use ENSEMBLE_WEIGHT for ensemble, remainder for model.
+            _ew = ENSEMBLE_WEIGHT  # default 0.45
+            _mw = 1.0 - _ew       # default 0.55
+            merged_prob = _ew * ensemble_prob + _mw * model_prob
             model_prob = max(0.0, min(1.0, merged_prob))
             ensemble_applied = True
         except (TypeError, ValueError):

@@ -80,7 +80,14 @@ def _run_cycle(state_path, force_aggressive_scan=False, min_price=None, max_pric
     with patch(
         "market_discovery_internal.pricing.calculate_depth_adjusted_stake",
         side_effect=lambda token_id, stake, **kw: stake,
-    ):
+    ), patch(
+        "market_discovery_internal.cycles.KELLY_ENABLED", False,
+    ), patch(
+        "market_discovery_internal.cycles.db"
+    ) as mock_db:
+        # Prevent whiplash shield from reading stale DB entries from other tests
+        mock_db.get_recent_trade_history.return_value = []
+        mock_db.get_calibration.return_value = (0, 0, 0.0)
         return _raw_run_paper_trading_cycle(**kwargs)
 
 
@@ -111,8 +118,8 @@ def make_opportunity(
     yes_price=0.25,
     token_id="0xabc",
     city="new york",
-    model_prob=1.0,
-    edge=0.75,
+    model_prob=0.85,
+    edge=0.55,
     hours_until_resolve=6.0,
 ):
     return {
@@ -184,7 +191,7 @@ def test_cash_state_uses_configured_base_wallet_in_meta(tmp_path):
 
 def test_run_paper_cycle_opens_new_position(tmp_path):
     state_file = tmp_path / "paper_state.json"
-    opp = make_opportunity(yes_price=0.25)
+    opp = make_opportunity(yes_price=0.45)
 
     discovery = {
         "markets_raw": [],
@@ -198,16 +205,16 @@ def test_run_paper_cycle_opens_new_position(tmp_path):
 
     with patch("market_discovery.wired_run_discovery_cycle", return_value=discovery), patch(
         "market_discovery.fetch_orderbook_quote",
-        return_value={"best_bid": 0.24, "best_ask": 0.25},
+        return_value={"best_bid": 0.44, "best_ask": 0.45},
     ):
-        cycle = _run_cycle(state_file, min_price=0.20, max_price=0.35, stake_usd=100)
+        cycle = _run_cycle(state_file, min_price=0.20, max_price=0.65, stake_usd=100)
 
     assert len(cycle["opened"]) == 1
     assert len(cycle["open_positions"]) == 1
     assert cycle["opened"][0]["token_id"] == "0xabc"
     assert cycle["opened"][0]["entry_price_source"] == "buy_ask"
-    assert cycle["opened"][0]["entry_price"] == round(0.25 * 1.01, 4)  # 0.2525 (1% slippage)
-    assert cycle["opened"][0]["entry_yes_reference"] == 0.25
+    assert cycle["opened"][0]["entry_price"] == round(0.45 * 1.01, 4)  # 0.4545 (1% slippage)
+    assert cycle["opened"][0]["entry_yes_reference"] == 0.45
     assert cycle["opened"][0]["entry_bucket"] in {"enter_swing", "enter_hold_candidate"}
     assert cycle["acceptance_metrics"]["opportunities_total"] == 1
     assert cycle["acceptance_metrics"]["opened_total"] == 1
@@ -346,7 +353,7 @@ def test_run_paper_cycle_auto_aggressive_scan_after_empty_cycles(tmp_path):
 
 def test_run_paper_cycle_rolling_metrics_accumulate_across_cycles(tmp_path):
     state_file = tmp_path / "paper_state.json"
-    opp = make_opportunity(yes_price=0.25, token_id="0xroll")
+    opp = make_opportunity(yes_price=0.45, token_id="0xroll")
     discovery = {
         "markets_raw": [],
         "parsed": [opp],
@@ -362,9 +369,9 @@ def test_run_paper_cycle_rolling_metrics_accumulate_across_cycles(tmp_path):
     ), patch(
         "market_discovery.fetch_orderbook_quote",
         side_effect=[
-            {"best_bid": 0.24, "best_ask": 0.25},
-            {"best_bid": 0.24, "best_ask": 0.25},
-            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.44, "best_ask": 0.45},
+            {"best_bid": 0.44, "best_ask": 0.45},
+            {"best_bid": 0.44, "best_ask": 0.45},
         ],
     ):
         first = _run_cycle(state_file)
@@ -440,13 +447,13 @@ def test_run_paper_cycle_selects_best_candidate_per_city_by_confidence(tmp_path)
 def test_run_paper_cycle_skips_new_entry_for_city_with_existing_open_position(tmp_path):
     state_file = tmp_path / "paper_state.json"
     existing_new_york = build_paper_position(
-        make_opportunity(city="new york", token_id="0xny_open"),
+        make_opportunity(city="new york", token_id="0xny_open", yes_price=0.45),
         stake_usd=10,
     )
     save_paper_state({"positions": [existing_new_york], "history": [], "updated_at": None}, path=str(state_file))
 
-    new_york_candidate = make_opportunity(city="new york", token_id="0xny_new")
-    chicago_candidate = make_opportunity(city="chicago", token_id="0xchi")
+    new_york_candidate = make_opportunity(city="new york", token_id="0xny_new", yes_price=0.45)
+    chicago_candidate = make_opportunity(city="chicago", token_id="0xchi", yes_price=0.45)
     discovery = {
         "markets_raw": [],
         "parsed": [new_york_candidate, chicago_candidate],
@@ -460,9 +467,9 @@ def test_run_paper_cycle_skips_new_entry_for_city_with_existing_open_position(tm
     with patch("market_discovery.wired_run_discovery_cycle", return_value=discovery), patch(
         "market_discovery.fetch_orderbook_quote",
         side_effect=[
-            {"best_bid": 0.24, "best_ask": 0.25},
-            {"best_bid": 0.24, "best_ask": 0.25},
-            {"best_bid": 0.24, "best_ask": 0.25},
+            {"best_bid": 0.44, "best_ask": 0.45},
+            {"best_bid": 0.44, "best_ask": 0.45},
+            {"best_bid": 0.44, "best_ask": 0.45},
         ],
     ):
         cycle = _run_cycle(state_file)
@@ -476,13 +483,13 @@ def test_run_paper_cycle_skips_new_entry_for_city_with_existing_open_position(tm
 def test_run_paper_cycle_keeps_token_dedupe_with_city_filter(tmp_path):
     state_file = tmp_path / "paper_state.json"
     existing = build_paper_position(
-        make_opportunity(city="new york", token_id="0xdup"),
+        make_opportunity(city="new york", token_id="0xdup", yes_price=0.45),
         stake_usd=10,
     )
     save_paper_state({"positions": [existing], "history": [], "updated_at": None}, path=str(state_file))
 
-    duplicate_token_other_city = make_opportunity(city="chicago", token_id="0xdup")
-    unique_token = make_opportunity(city="london", token_id="0xlon")
+    duplicate_token_other_city = make_opportunity(city="chicago", token_id="0xdup", yes_price=0.45)
+    unique_token = make_opportunity(city="london", token_id="0xlon", yes_price=0.45)
     # parsed must NOT include the duplicate token: market_by_token is built from parsed and
     # is used for position-management lookups.  If "0xdup" appears in parsed, the existing
     # new-york/0xdup position goes through the forecast-validity check which makes a real
@@ -500,7 +507,7 @@ def test_run_paper_cycle_keeps_token_dedupe_with_city_filter(tmp_path):
     with patch("market_discovery.wired_run_discovery_cycle", return_value=discovery), patch(
         "market_discovery.fetch_orderbook_quote",
         side_effect=[
-            {"best_bid": 0.24, "best_ask": 0.25},  # london/0xlon (only entry opened)
+            {"best_bid": 0.44, "best_ask": 0.45},  # london/0xlon (only entry opened)
         ],
     ):
         cycle = _run_cycle(state_file)

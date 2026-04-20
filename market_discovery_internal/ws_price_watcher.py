@@ -395,16 +395,33 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
 
                     # ---------------------------------------------------
                     # L1: Spike Detector — ignore single-tick flash crashes
+                    # Escape hatch: if L2 tick counter already has 10+ ticks
+                    # spanning 5+ minutes, this is NOT a spike — it's a real
+                    # price movement. Allow it through.
                     # ---------------------------------------------------
                     last_good = _last_good_prices.get(token_id)
                     if last_good is not None and last_good > 0:
                         drop_pct = (last_good - bid_price) / last_good
                         if drop_pct > FLASH_CRASH_MAX_DROP_PCT:
-                            logger.warning(
-                                "[FLASH-SHIELD] L1: Spike detected for %s: %.4f -> %.4f (%.0f%% drop). IGNORING.",
-                                pos.get('city', '?'), last_good, bid_price, drop_pct * 100,
-                            )
-                            continue  # Skip this position entirely for this tick
+                            # Check escape hatch: has L2 accumulated enough evidence?
+                            _existing_l2 = _sl_tick_counters.get(token_id)
+                            _l1_override = False
+                            if _existing_l2:
+                                _l2_count, _l2_first = _existing_l2
+                                _l2_elapsed = time.time() - _l2_first
+                                if _l2_count >= 10 and _l2_elapsed >= 300:
+                                    # 10+ ticks over 5+ minutes — this is real, not a spike
+                                    _l1_override = True
+                                    logger.warning(
+                                        "[FLASH-SHIELD] L1: Override — %d ticks over %.0fs for %s. Allowing through.",
+                                        _l2_count, _l2_elapsed, pos.get('city', '?'),
+                                    )
+                            if not _l1_override:
+                                logger.warning(
+                                    "[FLASH-SHIELD] L1: Spike detected for %s: %.4f -> %.4f (%.0f%% drop). IGNORING.",
+                                    pos.get('city', '?'), last_good, bid_price, drop_pct * 100,
+                                )
+                                continue  # Skip this position entirely for this tick
 
                     # Update last known good price (only for non-penny bids)
                     if bid_price > PENNY_BID_THRESHOLD:
@@ -460,42 +477,46 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                             # ---------------------------------------------------
                             if reason == "stop_loss" and FLASH_CRASH_REST_CONFIRM_ENABLED:
                                 try:
-                                    from market_discovery_internal.utils import fetch_with_retry
+                                    import requests as _req
                                     rest_url = f"https://clob.polymarket.com/book?token_id={token_id}"
-                                    resp = fetch_with_retry(rest_url, max_retries=1, timeout=5)
-                                    if resp and resp.status_code == 200:
+                                    resp = _req.get(rest_url, timeout=5)
+                                    if resp.status_code == 200:
                                         book = resp.json()
-                                        rest_bid = (
-                                            float(book["bids"][0][0])
-                                            if book.get("bids") and len(book["bids"]) > 0 and len(book["bids"][0]) > 0
-                                            else None
-                                        )
-                                        if rest_bid is not None:
-                                            # L3: REST bid above SL → WS price is stale/spike
-                                            if rest_bid > stop:
-                                                logger.warning(
-                                                    "[FLASH-SHIELD] L3: REST bid %.4f > SL %.4f for %s. "
-                                                    "WS bid %.4f is stale/spike. BLOCKING exit.",
-                                                    rest_bid, stop, pos.get('city', '?'), bid_price,
-                                                )
-                                                _sl_tick_counters.pop(token_id, None)  # Reset
-                                                reason = None
+                                        # Extract best bid — handle both list [[price,size],...] and dict [{"price":..,"size":..},...] formats
+                                        rest_bid = None
+                                        total_bid_depth = 0.0
+                                        for b in book.get("bids", []):
+                                            if isinstance(b, dict):
+                                                bp = float(b.get("price", 0))
+                                                bs = float(b.get("size", 0))
+                                            elif isinstance(b, (list, tuple)) and len(b) >= 2:
+                                                bp = float(b[0])
+                                                bs = float(b[1])
+                                            else:
+                                                continue
+                                            if rest_bid is None:
+                                                rest_bid = bp  # First = best bid
+                                            total_bid_depth += bp * bs
 
-                                            # L4: Depth check — thin book means rogue order
-                                            if reason == "stop_loss":
-                                                total_bid_depth = sum(
-                                                    float(b[1]) * float(b[0])
-                                                    for b in book.get("bids", [])
-                                                    if len(b) >= 2
-                                                )
-                                                if total_bid_depth < FLASH_CRASH_MIN_DEPTH_USD:
-                                                    logger.warning(
-                                                        "[FLASH-SHIELD] L4: Bid depth $%.2f < $%.2f minimum for %s. BLOCKING exit.",
-                                                        total_bid_depth, FLASH_CRASH_MIN_DEPTH_USD,
-                                                        pos.get('city', '?'),
-                                                    )
-                                                    _sl_tick_counters.pop(token_id, None)
-                                                    reason = None
+                                        # L3: REST bid above SL → WS price is stale/spike
+                                        if rest_bid is not None and rest_bid > stop:
+                                            logger.warning(
+                                                "[FLASH-SHIELD] L3: REST bid %.4f > SL %.4f for %s. "
+                                                "WS bid %.4f is stale/spike. BLOCKING exit.",
+                                                rest_bid, stop, pos.get('city', '?'), bid_price,
+                                            )
+                                            _sl_tick_counters.pop(token_id, None)
+                                            reason = None
+
+                                        # L4: Depth check — thin book means rogue order
+                                        if reason == "stop_loss" and total_bid_depth < FLASH_CRASH_MIN_DEPTH_USD:
+                                            logger.warning(
+                                                "[FLASH-SHIELD] L4: Bid depth $%.2f < $%.2f minimum for %s. BLOCKING exit.",
+                                                total_bid_depth, FLASH_CRASH_MIN_DEPTH_USD,
+                                                pos.get('city', '?'),
+                                            )
+                                            _sl_tick_counters.pop(token_id, None)
+                                            reason = None
                                 except Exception as e:
                                     logger.warning(
                                         "[FLASH-SHIELD] L3: REST check failed: %s. Proceeding with WS price.", e,
