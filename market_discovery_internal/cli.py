@@ -109,6 +109,19 @@ def run_main_paper_loop_mode(
                     is_stale = True
                     # Fallback to balanced 120s polling
                     current_interval = min(current_interval, 120)
+
+                    # [FIX] Hard-restart WS from loop level if stale >2x threshold
+                    if since_last > (ws_stale_detection_minutes * 60 * 2) and ws_watcher:
+                        timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                        print(f"[{timestamp}] 🔄 WS stale >{ws_stale_detection_minutes*2}m. Hard-restarting WS process...")
+                        try:
+                            ws_watcher.stop()
+                            time.sleep(2)
+                            ws_watcher.start()
+                            last_ws_update_at.value = time.time()
+                            print(f"[{timestamp}] ✅ WS process restarted successfully.")
+                        except Exception as _e:
+                            print(f"[{timestamp}] ❌ WS restart failed: {_e}")
             
             use_aggressive = aggressive_mode or is_stale
             if is_stale:

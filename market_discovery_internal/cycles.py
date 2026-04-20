@@ -487,17 +487,34 @@ def run_paper_trading_cycle(
     
     # --- HYBRID GUARD (FAILOVER) ---
     ws_stale = False
-    if last_ws_update_at is not None and len(state.get("positions", [])) > 0:
+    if last_ws_update_at is not None:
         elapsed_since_ws = (time.time() - last_ws_update_at.value) / 60.0
         if elapsed_since_ws > ws_stale_detection_minutes:
             ws_stale = True
             logger.warning("[GUARD] WebSocket STALE (%.1fm). Switching to Aggressive Scan.", elapsed_since_ws)
+
+            # [FIX] Hard-restart WS process if stale for >2x detection window.
+            # This recovers from zombie subprocess or broken pipe scenarios.
+            if elapsed_since_ws > (ws_stale_detection_minutes * 2) and ws_watcher:
+                logger.warning("[GUARD] WS stale for %.1fm (>2x threshold). HARD RESTARTING WS process.", elapsed_since_ws)
+                try:
+                    ws_watcher.stop()
+                    time.sleep(2)
+                    ws_watcher.start()
+                    # Reset timestamp so next cycle doesn't immediately re-trigger
+                    last_ws_update_at.value = time.time()
+                    logger.info("[GUARD] WS process hard-restarted successfully.")
+                except Exception as _ws_restart_err:
+                    logger.error("[GUARD] WS hard-restart failed: %s", _ws_restart_err)
 
     # --- SUPERVISOR LOGIC ---
     if ws_watcher and hasattr(ws_watcher, "_process") and ws_watcher._process:
         if not ws_watcher._process.is_alive():
             logger.warning("[SUPERVISOR] PriceWatcher process DIED. Restarting...")
             ws_watcher.start()
+            # [FIX] Reset timestamp after restart to prevent false stale detection
+            if last_ws_update_at is not None:
+                last_ws_update_at.value = time.time()
 
     # Sync subscriptions to MPC process
     if ws_watcher and hasattr(ws_watcher, "update_subscriptions"):

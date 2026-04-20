@@ -115,12 +115,19 @@ class PriceWatcher:
         self._last_msg_at = time.time()
         current_subs = set()
         desired_subs = set()
+        # [FIX] Flag to signal watchdog that a fresh connection was established
+        # and current_subs must be cleared so all desired_subs get re-subscribed.
+        _needs_resub = threading.Event()
 
         while not self._stop_event.is_set():
             try:
                 ilogger.info("[WS-MPC] Connecting to %s", self._url)
                 import ssl
                 ilogger.info("[WS-MPC] Handshake started for %s (Origin: https://polymarket.com)", self._url)
+
+                # [FIX] Signal that the next connection needs full re-subscribe
+                _needs_resub.set()
+
                 ws = websocket.WebSocketApp(
                     self._url,
                     on_open=self._on_open,
@@ -135,6 +142,14 @@ class PriceWatcher:
                     ilogger.info("[WS-MPC] Watchdog thread started.")
                     while not self._stop_event.is_set():
                         if ws.sock and ws.sock.connected:
+                            # [FIX] On fresh connection, clear current_subs so all
+                            # desired tokens get re-subscribed on the new socket.
+                            if _needs_resub.is_set():
+                                _needs_resub.clear()
+                                if current_subs:
+                                    ilogger.info("[WS-MPC] Reconnect detected — clearing %d stale subs for full re-subscribe", len(current_subs))
+                                current_subs.clear()
+
                             # 1. Heartbeat timeout check
                             if time.time() - self._last_msg_at > self._watchdog_timeout:
                                 ilogger.warning("[WS-MPC] Watchdog timeout: closing stale connection")
@@ -249,6 +264,14 @@ class PriceWatcher:
 
     def _on_pong(self, ws, message):
         self._last_msg_at = time.time()
+        # [FIX] Send liveness heartbeat to main process queue so
+        # _last_ws_update_at stays fresh even when no price data flows.
+        # Uses special sentinel token "__ws_heartbeat__" that the consumer
+        # recognizes and uses only to update the timestamp.
+        try:
+            self._update_queue.put_nowait(("__ws_heartbeat__", 0.0))
+        except Exception:
+            pass
         if random.random() < 0.1:
             self._ilogger.info("[WS-MPC] Pong received (link healthy)")
 

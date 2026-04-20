@@ -370,6 +370,11 @@ def _start_background_services():
                 # Blocks until update arrives
                 token_id, price = _price_update_queue.get()
                 _last_ws_update_at.value = time.time()
+
+                # [FIX] Skip processing for liveness heartbeat sentinel —
+                # its only purpose is to keep _last_ws_update_at fresh.
+                if token_id == "__ws_heartbeat__":
+                    continue
                 
                 # Update UI
                 if _ws_broadcaster:
