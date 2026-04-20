@@ -12,11 +12,53 @@ import threading
 
 from market_discovery_internal.config import (
     TARGET_CITIES, OPEN_METEO_API, OPEN_METEO_HISTORICAL_API,
-    CONSENSUS_MAX_ERROR_C, HISTORICAL_DEVIATION_C, ANOMALY_LOG_FILE
+    CONSENSUS_MAX_ERROR_C, HISTORICAL_DEVIATION_C, ANOMALY_LOG_FILE,
+    NOAA_METAR_API,
+    OPEN_METEO_ENSEMBLE_API, ENSEMBLE_ENABLED,
 )
 from market_discovery_internal.utils import fetch_with_retry
 
 logger = logging.getLogger(__name__)
+
+
+def fetch_noaa_metar(icao: str) -> Optional[float]:
+    """
+    Fetch current temperature from NOAA METAR for an airport station.
+    Returns temperature in Celsius, or None on failure.
+    """
+    if not icao:
+        return None
+    try:
+        params = {"ids": icao, "format": "json", "hours": 2}
+        # fetch_with_retry returns parsed JSON; use requests directly for
+        # response-object control and a shorter timeout.
+        import requests as _requests
+        resp = _requests.get(NOAA_METAR_API, params=params, timeout=8)
+        if not resp or resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data or not isinstance(data, list) or len(data) == 0:
+            return None
+        # METAR data: temp field (already in Celsius)
+        latest = data[0]
+        temp_c = latest.get("temp")
+        if temp_c is None:
+            # Try parsing from rawOb
+            raw = latest.get("rawOb", "")
+            # METAR temp format: M05/M08 (negative) or 25/18
+            import re
+            temp_match = re.search(r'\b(M?\d{2})/(M?\d{2})\b', raw)
+            if temp_match:
+                t = temp_match.group(1)
+                temp_c = -int(t[1:]) if t.startswith('M') else int(t)
+        if temp_c is not None:
+            logger.info("[NOAA] METAR %s: current temp = %.1f°C", icao, float(temp_c))
+            return float(temp_c)
+        return None
+    except Exception as e:
+        logger.warning("[NOAA] METAR fetch failed for %s: %s", icao, e)
+        return None
+
 
 class ForecastTemp(float):
     """Float wrapper to store the oracle source."""
@@ -26,6 +68,99 @@ class ForecastTemp(float):
         return obj
 
 from market_discovery_internal.database_manager import db
+
+# ---------------------------------------------------------------------------
+# [ENSEMBLE] GFS 31-Member Ensemble Forecast
+# ---------------------------------------------------------------------------
+
+def fetch_ensemble_forecast(city: str, date: str, lat: float, lon: float,
+                            threshold_c: float, direction: str = "above") -> Optional[dict]:
+    """
+    Fetch GFS 31-member ensemble forecast and compute ensemble probability.
+
+    Returns dict with:
+        - ensemble_prob: float (0-1) — fraction of members predicting above/below threshold
+        - ensemble_mean: float — mean of all member predictions
+        - ensemble_spread: float — std dev of member predictions
+        - member_count: int — number of valid members
+        - source: str
+    Or None on failure.
+    """
+    if not ENSEMBLE_ENABLED:
+        return None
+
+    try:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "daily": "temperature_2m_max",
+            "start_date": date,
+            "end_date": date,
+            "models": "gfs_seamless",
+        }
+        data = fetch_with_retry(OPEN_METEO_ENSEMBLE_API, params=params, max_retries=2)
+        if not data:
+            return None
+
+        daily = data.get("daily", {})
+
+        # Ensemble members are in temperature_2m_max_member01, _member02, etc.
+        members = []
+        for key, values in daily.items():
+            if key.startswith("temperature_2m_max") and "member" in key:
+                if values and values[0] is not None:
+                    members.append(float(values[0]))
+
+        # Also check if data comes as a list directly
+        if not members:
+            temp_data = daily.get("temperature_2m_max", [])
+            if isinstance(temp_data, list) and len(temp_data) > 1:
+                members = [float(t) for t in temp_data if t is not None]
+
+        if len(members) < 5:  # Need minimum members for meaningful probability
+            logger.warning("[ENSEMBLE] Only %d members for %s on %s. Skipping.", len(members), city, date)
+            return None
+
+        import statistics
+        mean_temp = statistics.mean(members)
+        spread = statistics.stdev(members) if len(members) > 1 else 0.0
+
+        # Calculate ensemble probability based on direction
+        if direction == "above":
+            count_above = sum(1 for m in members if m > threshold_c)
+            ensemble_prob = count_above / len(members)
+        elif direction == "below":
+            count_below = sum(1 for m in members if m <= threshold_c)
+            ensemble_prob = count_below / len(members)
+        elif direction == "exact":
+            # For exact: count members within ±1°C of threshold
+            count_exact = sum(1 for m in members if abs(m - threshold_c) <= 1.0)
+            ensemble_prob = count_exact / len(members)
+        else:
+            ensemble_prob = 0.5
+
+        logger.info("[ENSEMBLE] %s %s: %d members, mean=%.1f°C, spread=%.1f°C, prob=%.2f (threshold=%.1f°C %s)",
+                    city, date, len(members), mean_temp, spread, ensemble_prob, threshold_c, direction)
+
+        result = {
+            "ensemble_prob": ensemble_prob,
+            "ensemble_mean": mean_temp,
+            "ensemble_spread": spread,
+            "member_count": len(members),
+            "source": "gfs_ensemble",
+        }
+
+        # Cache ensemble result in the database
+        try:
+            db.save_weather(city, f"ensemble_{date}", max_temp=mean_temp, precip=spread)
+        except Exception:
+            logger.debug("[ENSEMBLE] Failed to cache ensemble result for %s/%s", city, date)
+
+        return result
+    except Exception as e:
+        logger.warning("[ENSEMBLE] Failed for %s on %s: %s", city, date, e)
+        return None
+
 
 # [MODUL DB] LEGACY JSON CACHE REMOVED
 # _HIST_CACHE_FILE = "logs/cache/historical_avg.json"

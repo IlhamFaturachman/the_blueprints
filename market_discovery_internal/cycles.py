@@ -20,6 +20,8 @@ from market_discovery_internal.config import (
     TRAILING_STOP_DISTANCE, TRAILING_STOP_TRIGGER, THESIS_DECAY_THRESHOLD,
     CONFIDENCE_WEIGHT_FORECAST, CONFIDENCE_WEIGHT_EDGE, CONFIDENCE_WEIGHT_LIQUIDITY,
     HISTORY_MAX_ENTRIES,
+    KELLY_ENABLED, KELLY_FRACTION, KELLY_MIN_STAKE, KELLY_MAX_STAKE,
+    KELLY_MIN_EDGE_FOR_BET,
 )
 from market_discovery_internal.parsing import _normalize_city_key
 from market_discovery_internal.analysis import decide_entry_bucket
@@ -171,6 +173,29 @@ def enrich_discovery_markets(
                 failed_city_keys.add(city)
                 failed_cities.append(city)
             continue
+
+        # [ENSEMBLE] Fetch GFS 31-member ensemble forecast for probability weighting
+        ensemble_data = None
+        threshold_c = market.get("threshold")
+        direction = market.get("direction", "above")
+        if threshold_c is not None:
+            try:
+                from market_discovery_internal.config import TARGET_CITIES
+                city_info = TARGET_CITIES.get(city)
+                if city_info:
+                    # Ensure threshold is in Celsius for ensemble comparison
+                    _threshold_c_val = float(threshold_c)
+                    if market.get("unit", "").upper() == "F":
+                        _threshold_c_val = (_threshold_c_val - 32) * 5.0 / 9.0
+                    from market_discovery_internal.forecasting import fetch_ensemble_forecast
+                    ensemble_data = fetch_ensemble_forecast(
+                        city=city, date=date,
+                        lat=city_info["lat"], lon=city_info["lon"],
+                        threshold_c=_threshold_c_val, direction=direction
+                    )
+            except Exception as _ens_err:
+                logger.debug("[ENSEMBLE] Enrichment fetch failed for %s/%s: %s", city, date, _ens_err)
+        market["ensemble_data"] = ensemble_data
 
         edge_result = calculate_edge_fn(market, forecast_temp)
         if edge_result:
@@ -1222,7 +1247,62 @@ def _ensure_take_profit_target(position):
     return normalized
 
 
-def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_STAKE_USD) -> dict[str, Any]:
+def compute_kelly_stake(
+    edge: float,
+    model_prob: float,
+    available_cash: float,
+    entry_price: float,
+) -> float:
+    """
+    Compute optimal stake using fractional Kelly Criterion.
+
+    Kelly formula: f = (p * b - q) / b
+    Where:
+        p = probability of winning (model_prob)
+        q = 1 - p (probability of losing)
+        b = odds (payout ratio) = (1 - entry_price) / entry_price for YES tokens
+
+    We use fractional Kelly (KELLY_FRACTION) for safety.
+    """
+    if not KELLY_ENABLED:
+        return min(PAPER_STAKE_USD, available_cash)
+
+    if edge < KELLY_MIN_EDGE_FOR_BET or model_prob <= 0 or model_prob >= 1:
+        return KELLY_MIN_STAKE
+
+    p = model_prob
+    q = 1.0 - p
+
+    # For YES token: you pay entry_price, win (1 - entry_price) if correct
+    if entry_price <= 0 or entry_price >= 1:
+        return KELLY_MIN_STAKE
+
+    b = (1.0 - entry_price) / entry_price  # Payout odds
+
+    # Kelly fraction: f = (p*b - q) / b
+    kelly_f = (p * b - q) / b
+
+    if kelly_f <= 0:
+        return KELLY_MIN_STAKE  # Negative Kelly = don't bet, but we use minimum
+
+    # Apply fractional Kelly
+    stake = available_cash * kelly_f * KELLY_FRACTION
+
+    # Clamp to bounds
+    stake = max(KELLY_MIN_STAKE, min(KELLY_MAX_STAKE, stake))
+
+    # Don't exceed available cash
+    stake = min(stake, available_cash * 0.5)  # Never bet more than 50% of cash
+
+    logger.info(
+        "[KELLY] prob=%.2f, edge=%.2f, odds=%.2f, kelly_f=%.3f, stake=$%.2f (cash=$%.2f)",
+        model_prob, edge, b, kelly_f, stake, available_cash,
+    )
+
+    return round(stake, 2)
+
+
+def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_STAKE_USD, available_cash: float | None = None) -> dict[str, Any]:
     """Create a paper position from an opportunity candidate."""
     from market_discovery_internal.pricing import (
         calculate_depth_adjusted_stake,
@@ -1244,9 +1324,20 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
     # Rule: Must be at least STRATEGY_MIN_SHARES and at least STRATEGY_MIN_STAKE_USD in cost.
     # Total = Q * P * (1 + fee_overhead). Q = Total / (P * (1+overhead))
     _fee_mult = 1.0 + POLYMARKET_TAKER_FEE_RATE * (1.0 - effective_price)
-    
-    # Initial target quantity from stake or $1.00 floor
-    target_usd = max(float(stake_usd), STRATEGY_MIN_STAKE_USD)
+
+    # Compute stake using Kelly Criterion if available_cash is provided
+    if available_cash is not None and KELLY_ENABLED:
+        kelly_stake = compute_kelly_stake(
+            edge=float(opportunity.get("edge", 0) or 0),
+            model_prob=float(opportunity.get("model_prob", 0.5) or 0.5),
+            available_cash=available_cash,
+            entry_price=effective_price,
+        )
+        target_usd = max(kelly_stake, STRATEGY_MIN_STAKE_USD)
+    else:
+        # Fallback: use fixed stake
+        target_usd = max(float(stake_usd), STRATEGY_MIN_STAKE_USD)
+
     _raw_qty = target_usd / (effective_price * _fee_mult)
     
     # Enforce integer rounding (ceil) and share floor
@@ -1850,7 +1941,7 @@ def append_opened_positions_from_candidates(
         if best_bid > 0:
             entry_opportunity["entry_quote_best_bid"] = round(best_bid, 4)
 
-        position = build_paper_position(entry_opportunity, stake_usd=risk_weighted_stake)
+        position = build_paper_position(entry_opportunity, stake_usd=risk_weighted_stake, available_cash=remaining_cash)
 
         # [ACCOUNTING GUARD] Hard block if cost_basis exceeds remaining cash
         position_cost = float(position.get("cost_basis", 0.0))

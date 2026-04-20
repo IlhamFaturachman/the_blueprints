@@ -15,6 +15,11 @@ from urllib.parse import urlparse
 
 from market_discovery_internal.config import (
     SL_COOLDOWN_SECONDS, SL_TICK_COUNT, WS_SL_CLEANUP_INTERVAL,
+    PENNY_BID_THRESHOLD,
+    FLASH_CRASH_MAX_DROP_PCT,
+    FLASH_CRASH_MIN_TICK_WINDOW_SECONDS,
+    FLASH_CRASH_REST_CONFIRM_ENABLED,
+    FLASH_CRASH_MIN_DEPTH_USD,
 )
 
 logger = logging.getLogger(__name__)
@@ -335,15 +340,25 @@ class PriceWatcher:
 
 
 def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
-    """(Main Process) Handles price updates and triggers exits (TP/SL)."""
+    """(Main Process) Handles price updates and triggers exits (TP/SL).
+
+    Flash Crash Shield (4 layers):
+      L1 — Spike Detector: ignore single-tick drops > FLASH_CRASH_MAX_DROP_PCT
+      L2 — Time-Windowed Ticks: SL ticks must span >= FLASH_CRASH_MIN_TICK_WINDOW_SECONDS
+      L3 — REST Confirmation: verify bid via REST orderbook before executing SL
+      L4 — Depth Validation: require minimum bid-side depth (USD) to confirm real selling
+    """
     from market_discovery_internal.state_persistence import load_paper_state, save_paper_state
     from market_discovery_internal.cycles import close_paper_position
     from datetime import datetime, timezone
 
-    # [Hardening] Persistently track consecutive stop-loss hits per token
-    # to avoid exiting on single-tick anomalies (flash crashes / internet noise).
-    _sl_tick_counters = {}
+    # [Hardening] Track SL ticks as (count, first_tick_timestamp) per token
+    # to enforce both tick-count AND time-window requirements.
+    _sl_tick_counters = {}   # {token_id: (count, first_tick_timestamp)}
     _sl_cleanup_counter = 0  # HIGH-5: Track calls for periodic cleanup
+
+    # [Flash-Shield L1] Track last known good (non-spike) price per token
+    _last_good_prices = {}
 
     def callback(token_id: str, bid_price: float) -> None:
         nonlocal _sl_cleanup_counter
@@ -352,8 +367,8 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                 state = load_paper_state(state_path)
                 positions = state.get("positions", [])
 
-                # HIGH-5: Periodically clean up _sl_tick_counters for tokens
-                # no longer in open positions (every N callbacks)
+                # HIGH-5: Periodically clean up _sl_tick_counters and
+                # _last_good_prices for tokens no longer in open positions
                 _sl_cleanup_counter += 1
                 if _sl_cleanup_counter >= WS_SL_CLEANUP_INTERVAL:
                     _sl_cleanup_counter = 0
@@ -364,6 +379,9 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                     stale_keys = [k for k in _sl_tick_counters if k not in open_token_ids]
                     for k in stale_keys:
                         del _sl_tick_counters[k]
+                    stale_good = [k for k in _last_good_prices if k not in open_token_ids]
+                    for k in stale_good:
+                        del _last_good_prices[k]
                 changed = False
 
                 for i, pos in enumerate(positions):
@@ -374,7 +392,24 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                     stop = float(pos.get("stop_loss_price", 0))
                     target = float(pos.get("target_price", 1))
                     strategy = pos.get("target_strategy", "swing")
-                    
+
+                    # ---------------------------------------------------
+                    # L1: Spike Detector — ignore single-tick flash crashes
+                    # ---------------------------------------------------
+                    last_good = _last_good_prices.get(token_id)
+                    if last_good is not None and last_good > 0:
+                        drop_pct = (last_good - bid_price) / last_good
+                        if drop_pct > FLASH_CRASH_MAX_DROP_PCT:
+                            logger.warning(
+                                "[FLASH-SHIELD] L1: Spike detected for %s: %.4f -> %.4f (%.0f%% drop). IGNORING.",
+                                pos.get('city', '?'), last_good, bid_price, drop_pct * 100,
+                            )
+                            continue  # Skip this position entirely for this tick
+
+                    # Update last known good price (only for non-penny bids)
+                    if bid_price > PENNY_BID_THRESHOLD:
+                        _last_good_prices[token_id] = bid_price
+
                     reason = None
                     if bid_price <= stop:
                         # [AUDIT] Fix B: cooldown for price-based Stop Loss
@@ -389,20 +424,89 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                                     can_sl_fire = False
                             except (ValueError, TypeError):
                                 pass
-                        
+
                         if can_sl_fire:
-                            # [HARDENING] N-Tick Validation
-                            _sl_cnt = _sl_tick_counters.get(token_id, 0) + 1
-                            _sl_tick_counters[token_id] = _sl_cnt
-                            if _sl_cnt < SL_TICK_COUNT:
-                                logger.warning("[WS-HARDENING] SL tick %d/%d for %s @ %.4f (Ignoring spike)", _sl_cnt, SL_TICK_COUNT, pos.get('city','?'), bid_price)
-                                continue # Skip exit until 3rd tick
-                            
-                            reason = "stop_loss"
-                            _sl_tick_counters.pop(token_id, None) # Clear on exit
+                            # ---------------------------------------------------
+                            # L2: Time-Windowed Ticks — SL ticks must span a
+                            #     minimum wall-clock window before triggering exit
+                            # ---------------------------------------------------
+                            current_time = time.time()
+                            existing = _sl_tick_counters.get(token_id)
+                            if existing:
+                                count, first_tick_time = existing
+                                count += 1
+                                _sl_tick_counters[token_id] = (count, first_tick_time)
+                                elapsed = current_time - first_tick_time
+                                if count >= SL_TICK_COUNT and elapsed >= FLASH_CRASH_MIN_TICK_WINDOW_SECONDS:
+                                    reason = "stop_loss"  # Confirmed real SL
+                                else:
+                                    logger.warning(
+                                        "[FLASH-SHIELD] L2: SL tick %d/%d for %s, elapsed %.1fs/%.1fs",
+                                        count, SL_TICK_COUNT, pos.get('city', '?'),
+                                        elapsed, FLASH_CRASH_MIN_TICK_WINDOW_SECONDS,
+                                    )
+                                    continue
+                            else:
+                                _sl_tick_counters[token_id] = (1, current_time)
+                                logger.warning(
+                                    "[FLASH-SHIELD] L2: SL tick 1/%d for %s @ %.4f",
+                                    SL_TICK_COUNT, pos.get('city', '?'), bid_price,
+                                )
+                                continue
+
+                            # ---------------------------------------------------
+                            # L3: REST Confirmation — verify price via REST API
+                            # L4: Depth Validation — require minimum bid depth
+                            # ---------------------------------------------------
+                            if reason == "stop_loss" and FLASH_CRASH_REST_CONFIRM_ENABLED:
+                                try:
+                                    from market_discovery_internal.utils import fetch_with_retry
+                                    rest_url = f"https://clob.polymarket.com/book?token_id={token_id}"
+                                    resp = fetch_with_retry(rest_url, max_retries=1, timeout=5)
+                                    if resp and resp.status_code == 200:
+                                        book = resp.json()
+                                        rest_bid = (
+                                            float(book["bids"][0][0])
+                                            if book.get("bids") and len(book["bids"]) > 0 and len(book["bids"][0]) > 0
+                                            else None
+                                        )
+                                        if rest_bid is not None:
+                                            # L3: REST bid above SL → WS price is stale/spike
+                                            if rest_bid > stop:
+                                                logger.warning(
+                                                    "[FLASH-SHIELD] L3: REST bid %.4f > SL %.4f for %s. "
+                                                    "WS bid %.4f is stale/spike. BLOCKING exit.",
+                                                    rest_bid, stop, pos.get('city', '?'), bid_price,
+                                                )
+                                                _sl_tick_counters.pop(token_id, None)  # Reset
+                                                reason = None
+
+                                            # L4: Depth check — thin book means rogue order
+                                            if reason == "stop_loss":
+                                                total_bid_depth = sum(
+                                                    float(b[1]) * float(b[0])
+                                                    for b in book.get("bids", [])
+                                                    if len(b) >= 2
+                                                )
+                                                if total_bid_depth < FLASH_CRASH_MIN_DEPTH_USD:
+                                                    logger.warning(
+                                                        "[FLASH-SHIELD] L4: Bid depth $%.2f < $%.2f minimum for %s. BLOCKING exit.",
+                                                        total_bid_depth, FLASH_CRASH_MIN_DEPTH_USD,
+                                                        pos.get('city', '?'),
+                                                    )
+                                                    _sl_tick_counters.pop(token_id, None)
+                                                    reason = None
+                                except Exception as e:
+                                    logger.warning(
+                                        "[FLASH-SHIELD] L3: REST check failed: %s. Proceeding with WS price.", e,
+                                    )
+
+                            # Clear SL tick counter on confirmed exit
+                            if reason == "stop_loss":
+                                _sl_tick_counters.pop(token_id, None)
                     else:
                         # Reset counter if price is back in safety zone
-                         _sl_tick_counters.pop(token_id, None)
+                        _sl_tick_counters.pop(token_id, None)
 
                     if bid_price >= target and strategy == "swing":
                         reason = "take_profit_100pct"
@@ -412,10 +516,10 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                         positions.pop(i)
                         state["positions"] = positions
                         state.setdefault("history", []).append(closed)
-                        # [ACCOUNTING] Credit cash with exit proceeds
-                        exit_value = float(closed.get("exit_value", 0.0))
+                        # [ACCOUNTING] Credit cash with NET exit proceeds (fees deducted)
+                        net_exit = float(closed.get("net_exit_value", closed.get("exit_value", 0.0)))
                         state.setdefault("meta", {})["cash"] = round(
-                            float(state["meta"].get("cash", 0.0)) + exit_value, 4
+                            float(state["meta"].get("cash", 0.0)) + net_exit, 4
                         )
                         changed = True
                         logger.info("[WS-EXIT] %s | %s @ %.4f | Strategy: %s", pos.get('city','?').upper(), reason, bid_price, strategy)

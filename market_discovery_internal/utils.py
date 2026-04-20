@@ -8,7 +8,7 @@ import string
 from datetime import datetime, timezone
 import requests
 
-from market_discovery_internal.config import LOG_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from market_discovery_internal.config import LOG_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PROXY
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,8 @@ def load_telegram_template(category: str, type_name: str, **kwargs) -> str:
     except Exception as e:
         return f"❌ Error rendering template {category}/{type_name}: {str(e)}"
 
+_telegram_consecutive_failures = 0
+
 def send_telegram_alert(message, is_html=True):
     """[MODUL N] Send push notification via Telegram Bot API."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -57,8 +59,20 @@ def send_telegram_alert(message, is_html=True):
     }
     if is_html:
         payload["parse_mode"] = "HTML"
+
+    # Add proxy support (for VPS that can't reach api.telegram.org directly)
+    proxies = None
+    if TELEGRAM_PROXY:
+        proxies = {
+            "http": TELEGRAM_PROXY,
+            "https": TELEGRAM_PROXY,
+        }
+
+    # Use longer timeout when proxy is configured (proxy adds latency)
+    timeout = 10 if TELEGRAM_PROXY else 5
+
     try:
-        response = requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, timeout=timeout, proxies=proxies)
         response.raise_for_status()
         _telegram_consecutive_failures = 0
         return True

@@ -358,7 +358,7 @@ def _load_state_from_json(state_path):
 
 
 def test_ws_callback_closes_on_stop_loss():
-    """WS callback closes position when price hits stop-loss (after 3 ticks and 2h cooldown)."""
+    """WS callback closes position when price hits stop-loss (after 3 ticks, 2h cooldown, and 90s window)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         state_path = os.path.join(tmpdir, "paper.json")
         pos = _make_open_position(token_id="tok_sl", entry_price=0.25, opened_hours_ago=3)
@@ -368,11 +368,27 @@ def test_ws_callback_closes_on_stop_loss():
         lock = threading.Lock()
         callback = make_ws_exit_callback(state_path=state_path, lock=lock)
 
-        # 3-tick validation: need 3 consecutive calls below stop-loss
+        # Flash Crash Shield L2: ticks must span >= 90 seconds.
+        # Mock time.time() to simulate real time passing between ticks.
         sl_price = stop_loss_price - 0.01
-        callback("tok_sl", sl_price)  # tick 1 — no exit yet
-        callback("tok_sl", sl_price)  # tick 2 — no exit yet
-        callback("tok_sl", sl_price)  # tick 3 — exit fires
+        base_time = 1700000000.0
+        call_count = [0]
+        times = [base_time, base_time + 45, base_time + 100]
+        original_time = time.time
+        def mock_time_fn():
+            if call_count[0] < len(times):
+                t = times[call_count[0]]
+                call_count[0] += 1
+                return t
+            return original_time()
+
+        with patch("market_discovery_internal.ws_price_watcher.time") as mock_time_mod:
+            mock_time_mod.time = mock_time_fn
+            # Also disable REST confirmation for unit test (no network)
+            with patch("market_discovery_internal.ws_price_watcher.FLASH_CRASH_REST_CONFIRM_ENABLED", False):
+                callback("tok_sl", sl_price)  # tick 1 — no exit yet
+                callback("tok_sl", sl_price)  # tick 2 — no exit yet (elapsed < 90s)
+                callback("tok_sl", sl_price)  # tick 3 — exit fires (elapsed 100s > 90s)
 
         state = _load_state_from_json(state_path)
         closed = [p for p in state.get("history", []) if p.get("token_id") == "tok_sl"]

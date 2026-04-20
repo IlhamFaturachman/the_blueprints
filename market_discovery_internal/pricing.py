@@ -9,7 +9,11 @@ from typing import Any, Optional
 
 from market_discovery_internal.config import (
     CLOB_BOOK_API, MODEL_EXACT_SIGMA_C, MARKET_MAX_SPREAD_GATE,
-    MARKET_MIN_VOLUME_24HR
+    MARKET_MIN_VOLUME_24HR,
+    NOAA_OVERRIDE_ENABLED, NOAA_OVERRIDE_WINDOW_HOURS,
+    NOAA_OVERRIDE_CONFIRM_PROB, NOAA_OVERRIDE_CONTRADICT_PROB,
+    SIGMA_TROPICAL, SIGMA_FOUR_SEASON, SIGMA_DEFAULT,
+    TROPICAL_CITIES, FOUR_SEASON_CITIES,
 )
 from market_discovery_internal.utils import (
     fetch_with_retry, _safe_float
@@ -308,6 +312,16 @@ def compute_regime_score(market, weather_evidence=None):
     return regime_class, regime_score, gates
 
 
+def _get_city_sigma(city: str) -> float:
+    """Get the appropriate Gaussian sigma for a city based on its climate region."""
+    city_lower = (city or "").lower()
+    if city_lower in TROPICAL_CITIES:
+        return SIGMA_TROPICAL
+    elif city_lower in FOUR_SEASON_CITIES:
+        return SIGMA_FOUR_SEASON
+    return SIGMA_DEFAULT
+
+
 def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours_until_resolve: Optional[float] = None, k_factor_override: Optional[float] = None) -> Optional[dict[str, Any]]:
     """
     Calculate the statistical edge of a market position compared to forecast.
@@ -378,9 +392,10 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
             # Probability that the daily high lands in the ±0.5°C bracket around threshold.
             # Uses Gaussian CDF integral: P = Φ((threshold+0.5 - forecast)/σ) - Φ((threshold-0.5 - forecast)/σ)
             # This replaces the old PDF-height formula which incorrectly gave 100% when forecast==threshold.
-            # Calibration: σ=1.5 → exact match ≈26%, 1°C off ≈18%, 2°C off ≈11% (matches Polymarket consensus).
+            # Per-region sigma: tropical cities get tighter sigma (less variance),
+            # four-season cities get wider sigma (more variance).
             from math import erf as _erf, sqrt as _sqrt
-            sigma = MODEL_EXACT_SIGMA_C
+            sigma = _get_city_sigma(city)
             _s2 = sigma * _sqrt(2)
             raw_prob = max(0.0, min(1.0, 0.5 * (
                 _erf((threshold + 0.5 - forecast) / _s2) -
@@ -390,15 +405,20 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
         # [FIX] Hard ceiling: cap confidence based on forecast margin.
         # Weather ensemble uncertainty is ±2-3°C, so even large margins
         # should not yield near-100% certainty from the sigmoid alone.
+        # Per-region sigma adjusts the caps: tropical (σ=1.0) allows higher
+        # confidence at smaller margins; four-season (σ=2.0) is more conservative.
         if direction in ("above", "below"):
+            city_sigma = _get_city_sigma(city)
             abs_diff = abs(forecast - threshold)
-            if abs_diff < 1.0:
+            # Scale cap thresholds by sigma ratio vs default (1.5)
+            _sigma_ratio = city_sigma / SIGMA_DEFAULT if SIGMA_DEFAULT > 0 else 1.0
+            if abs_diff < 1.0 * _sigma_ratio:
                 raw_prob = min(raw_prob, 0.75)
-            elif abs_diff < 2.0:
+            elif abs_diff < 2.0 * _sigma_ratio:
                 raw_prob = min(raw_prob, 0.87)
-            elif abs_diff < 3.0:
+            elif abs_diff < 3.0 * _sigma_ratio:
                 raw_prob = min(raw_prob, 0.94)
-            # abs_diff >= 3.0: no cap — margin is large enough to justify high confidence
+            # abs_diff >= 3.0 * _sigma_ratio: no cap — margin is large enough to justify high confidence
 
             # [FIX] Consensus Guard: Detect "Too-Good-To-Be-True" bargains that are likely traps.
             # If we are < 12h from resolve and we are 90%+ sure, but market price is < 30c,
@@ -409,6 +429,38 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
                     raw_prob = (raw_prob + price) / 2.0 # Dampen hubris towards market center
                     prob_source += "+consensus_guard"
     # else: raw_prob already set from market_implied above
+
+    # -------------------------------------------------------------------------
+    # [NOAA METAR] Real-time Override (only in last N hours before resolution)
+    # -------------------------------------------------------------------------
+    hours_left = float(hours_until_resolve) if hours_until_resolve is not None else 24.0
+    if NOAA_OVERRIDE_ENABLED and hours_left <= NOAA_OVERRIDE_WINDOW_HOURS:
+        icao = market.get("icao") or ""
+        if icao:
+            from market_discovery_internal.forecasting import fetch_noaa_metar
+            noaa_temp = fetch_noaa_metar(icao)
+            if noaa_temp is not None:
+                # threshold is already in °C (converted by parse_market)
+                if direction == "above":
+                    if noaa_temp > threshold:
+                        # NOAA confirms: current temp already above threshold
+                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C > %.1f°C threshold. Overriding prob to %.2f",
+                                    city, noaa_temp, threshold, NOAA_OVERRIDE_CONFIRM_PROB)
+                        raw_prob = max(raw_prob, NOAA_OVERRIDE_CONFIRM_PROB)
+                    elif noaa_temp < threshold - 5.0 and hours_left <= 2.0:
+                        # NOAA contradicts: current temp way below threshold with <2h left
+                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C << %.1f°C with %.1fh left. Overriding prob to %.2f",
+                                    city, noaa_temp, threshold, hours_left, NOAA_OVERRIDE_CONTRADICT_PROB)
+                        raw_prob = min(raw_prob, NOAA_OVERRIDE_CONTRADICT_PROB)
+                elif direction == "below":
+                    if noaa_temp < threshold:
+                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C < %.1f°C threshold. Overriding prob to %.2f",
+                                    city, noaa_temp, threshold, NOAA_OVERRIDE_CONFIRM_PROB)
+                        raw_prob = max(raw_prob, NOAA_OVERRIDE_CONFIRM_PROB)
+                    elif noaa_temp > threshold + 5.0 and hours_left <= 2.0:
+                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C >> %.1f°C with %.1fh left. Overriding prob to %.2f",
+                                    city, noaa_temp, threshold, hours_left, NOAA_OVERRIDE_CONTRADICT_PROB)
+                        raw_prob = min(raw_prob, NOAA_OVERRIDE_CONTRADICT_PROB)
 
     # [PACK A] Calibration bins
     _h = hours_until_resolve if hours_until_resolve is not None else market.get("hours_until_resolve")
@@ -429,6 +481,28 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     calibrated, calib_meta = _calibrated_prob(city, str(direction), horizon_bin, price_bin, raw_prob)
     model_prob = calibrated  # Use calibrated for edge calculation
 
+    # [ENSEMBLE] Weighted merge with GFS ensemble probability if available
+    ensemble_data = market.get("ensemble_data")
+    ensemble_applied = False
+    if ensemble_data and isinstance(ensemble_data, dict) and ensemble_data.get("ensemble_prob") is not None:
+        try:
+            ensemble_prob = float(ensemble_data["ensemble_prob"])
+            # Weighted merge: ensemble + point forecast model + wttr.in (via model_prob)
+            # model_prob already incorporates point forecast + wttr.in consensus
+            merged_prob = (
+                ENSEMBLE_WEIGHT * ensemble_prob +
+                POINT_FORECAST_WEIGHT * model_prob +
+                WTRIN_WEIGHT * model_prob  # wttr.in contribution is embedded in model_prob
+            )
+            # Normalize: weights should sum to 1.0 but guard against config drift
+            weight_sum = ENSEMBLE_WEIGHT + POINT_FORECAST_WEIGHT + WTRIN_WEIGHT
+            if weight_sum > 0 and abs(weight_sum - 1.0) > 0.01:
+                merged_prob = merged_prob / weight_sum
+            model_prob = max(0.0, min(1.0, merged_prob))
+            ensemble_applied = True
+        except (TypeError, ValueError):
+            pass  # Fall back to model_prob without ensemble
+
     # [MODUL P] Spread-Aware Slippage Penalty
     # Use gamma_spread from parsed market dict if available; floor at 1.75%.
     gamma_spread = market.get("gamma_spread")
@@ -442,17 +516,24 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
 
     edge = model_prob - (price + slippage_penalty)
 
-    return {
+    result = {
         "model_prob": round(model_prob, 4),
         "raw_prob": round(raw_prob, 4),
         "edge": round(edge, 4),
         "forecast": forecast,
-        "prob_source": prob_source,
+        "prob_source": prob_source + ("+ensemble" if ensemble_applied else ""),
         "slippage_penalty_applied": round(slippage_penalty, 4),
         "horizon_bin": horizon_bin,
         "price_bin": price_bin,
+        "ensemble_applied": ensemble_applied,
         **calib_meta,
     }
+    if ensemble_applied and ensemble_data:
+        result["ensemble_prob"] = round(float(ensemble_data.get("ensemble_prob", 0)), 4)
+        result["ensemble_mean"] = round(float(ensemble_data.get("ensemble_mean", 0)), 1)
+        result["ensemble_spread"] = round(float(ensemble_data.get("ensemble_spread", 0)), 2)
+        result["ensemble_member_count"] = int(ensemble_data.get("member_count", 0))
+    return result
 
 def _enrich_markets_missing_prices(markets, max_workers=6):
     """Concurrently fetch missing prices for markets that might have stagnant Gamma data."""

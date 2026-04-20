@@ -41,6 +41,13 @@ OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 OPEN_METEO_API = OPEN_METEO_FORECAST_URL
 
+# Ensemble forecast API (GFS 31-member)
+OPEN_METEO_ENSEMBLE_API = "https://ensemble-api.open-meteo.com/v1/ensemble"
+ENSEMBLE_ENABLED = _env_bool("ENSEMBLE_ENABLED", True)
+ENSEMBLE_WEIGHT = float(os.getenv("ENSEMBLE_WEIGHT", "0.45"))
+POINT_FORECAST_WEIGHT = float(os.getenv("POINT_FORECAST_WEIGHT", "0.35"))
+WTRIN_WEIGHT = float(os.getenv("WTRIN_WEIGHT", "0.20"))
+
 # Model & Liquidity Hardening
 # MODEL_EXACT_SIGMA_C defined below at runtime (env-overridable, default 1.5)
 LOG_FILE = "logs/unmatched_markets.log"
@@ -277,6 +284,8 @@ PAPER_LOOP_MAX_ERROR_BACKOFF_SECONDS = max(
 # [MODUL N] Mobile Alerts (Telegram)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# Telegram proxy support (for VPS that can't reach api.telegram.org directly)
+TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")  # e.g., "socks5://user:pass@host:port" or "http://host:port"
 PAPER_JOURNAL_MAX_ENTRIES = int(os.getenv("PAPER_JOURNAL_MAX_ENTRIES", "300"))
 PAPER_RUNTIME_ERROR_LOG = os.getenv("PAPER_RUNTIME_ERROR_LOG", "logs/paper_runtime_errors.log")
 PAPER_REPORT_RETENTION_WARN_THRESHOLD = int(os.getenv("PAPER_REPORT_RETENTION_WARN_THRESHOLD", "1000"))
@@ -481,3 +490,52 @@ WARMER_POLITENESS_DELAY_SECONDS = int(os.getenv("WARMER_POLITENESS_DELAY_SECONDS
 
 # Throttle delay between historical bulk fetches (seconds)
 WARMER_HISTORICAL_THROTTLE_SECONDS = int(os.getenv("WARMER_HISTORICAL_THROTTLE_SECONDS", "60"))
+
+# ---------------------------------------------------------------------------
+# Flash Crash Shield Constants
+# ---------------------------------------------------------------------------
+
+# L1: Spike Detector — ignore price drops larger than this % from last known good price
+FLASH_CRASH_MAX_DROP_PCT = float(os.getenv("FLASH_CRASH_MAX_DROP_PCT", "0.40"))
+
+# L2: Time-windowed ticks — SL ticks must span at least this many seconds
+FLASH_CRASH_MIN_TICK_WINDOW_SECONDS = float(os.getenv("FLASH_CRASH_MIN_TICK_WINDOW_SECONDS", "90.0"))
+
+# L3: REST confirmation — verify price via REST API before executing SL exit
+FLASH_CRASH_REST_CONFIRM_ENABLED = _env_bool("FLASH_CRASH_REST_CONFIRM_ENABLED", True)
+
+# L4: Minimum depth (USD) at the SL price level to consider it real
+FLASH_CRASH_MIN_DEPTH_USD = float(os.getenv("FLASH_CRASH_MIN_DEPTH_USD", "5.0"))
+
+# ---------------------------------------------------------------------------
+# Kelly Criterion Stake Sizing
+# ---------------------------------------------------------------------------
+KELLY_ENABLED = _env_bool("KELLY_ENABLED", True)
+KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.20"))  # Fractional Kelly (20% of full Kelly)
+KELLY_MIN_STAKE = float(os.getenv("KELLY_MIN_STAKE", "1.00"))  # Minimum stake in USD
+KELLY_MAX_STAKE = float(os.getenv("KELLY_MAX_STAKE", "10.00"))  # Maximum stake in USD
+KELLY_MIN_EDGE_FOR_BET = float(os.getenv("KELLY_MIN_EDGE_FOR_BET", "0.03"))  # Don't bet if edge < 3%
+
+# ---------------------------------------------------------------------------
+# NOAA METAR Real-time Override
+# ---------------------------------------------------------------------------
+NOAA_METAR_API = "https://aviationweather.gov/api/data/metar"
+NOAA_OVERRIDE_ENABLED = _env_bool("NOAA_OVERRIDE_ENABLED", True)
+NOAA_OVERRIDE_WINDOW_HOURS = float(os.getenv("NOAA_OVERRIDE_WINDOW_HOURS", "6.0"))
+NOAA_OVERRIDE_CONFIRM_PROB = float(os.getenv("NOAA_OVERRIDE_CONFIRM_PROB", "0.95"))
+NOAA_OVERRIDE_CONTRADICT_PROB = float(os.getenv("NOAA_OVERRIDE_CONTRADICT_PROB", "0.15"))
+
+# ---------------------------------------------------------------------------
+# Per-Region Sigma Calibration (Fix #4a)
+# ---------------------------------------------------------------------------
+# Tropical stable cities: low temperature variance → tighter sigma
+SIGMA_TROPICAL = float(os.getenv("SIGMA_TROPICAL", "1.0"))
+# 4-season volatile cities: high temperature variance → wider sigma
+SIGMA_FOUR_SEASON = float(os.getenv("SIGMA_FOUR_SEASON", "2.0"))
+# Default sigma for cities not in either category
+SIGMA_DEFAULT = float(os.getenv("SIGMA_DEFAULT", "1.5"))
+
+# City climate classification
+TROPICAL_CITIES = {"singapore", "hong kong", "lucknow", "shenzhen", "taipei", "miami"}
+FOUR_SEASON_CITIES = {"new york city", "chicago", "london", "toronto", "seoul", "beijing",
+                       "denver", "warsaw", "shanghai", "chengdu", "chongqing", "wuhan"}
