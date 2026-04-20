@@ -445,7 +445,11 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                         if can_sl_fire:
                             # ---------------------------------------------------
                             # L2: Time-Windowed Ticks — SL ticks must span a
-                            #     minimum wall-clock window before triggering exit
+                            #     minimum wall-clock window before triggering exit.
+                            #     first_tick_time is set when price FIRST drops
+                            #     below SL and is NOT reset while price stays
+                            #     below SL. This ensures that sustained drops
+                            #     (not spikes) eventually trigger exit.
                             # ---------------------------------------------------
                             current_time = time.time()
                             existing = _sl_tick_counters.get(token_id)
@@ -457,11 +461,13 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                                 if count >= SL_TICK_COUNT and elapsed >= FLASH_CRASH_MIN_TICK_WINDOW_SECONDS:
                                     reason = "stop_loss"  # Confirmed real SL
                                 else:
-                                    logger.warning(
-                                        "[FLASH-SHIELD] L2: SL tick %d/%d for %s, elapsed %.1fs/%.1fs",
-                                        count, SL_TICK_COUNT, pos.get('city', '?'),
-                                        elapsed, FLASH_CRASH_MIN_TICK_WINDOW_SECONDS,
-                                    )
+                                    # Only log every 10th tick to avoid log spam
+                                    if count <= 3 or count % 10 == 0:
+                                        logger.warning(
+                                            "[FLASH-SHIELD] L2: SL tick %d/%d for %s, elapsed %.1fs/%.1fs",
+                                            count, SL_TICK_COUNT, pos.get('city', '?'),
+                                            elapsed, FLASH_CRASH_MIN_TICK_WINDOW_SECONDS,
+                                        )
                                     continue
                             else:
                                 _sl_tick_counters[token_id] = (1, current_time)
