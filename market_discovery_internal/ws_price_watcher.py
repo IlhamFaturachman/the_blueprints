@@ -288,6 +288,10 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
     from market_discovery_internal.cycles import close_paper_position
     from datetime import datetime, timezone
 
+    # [Hardeninig] Persistently track consecutive stop-loss hits per token
+    # to avoid exiting on single-tick anomalies (flash crashes / internet noise).
+    _sl_tick_counters = {} 
+
     def callback(token_id: str, bid_price: float) -> None:
         with lock:
             try:
@@ -320,8 +324,20 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                                 pass
                         
                         if can_sl_fire:
+                            # [HARDENING] 3-Tick Validation
+                            _sl_cnt = _sl_tick_counters.get(token_id, 0) + 1
+                            _sl_tick_counters[token_id] = _sl_cnt
+                            if _sl_cnt < 3:
+                                logger.warning("[WS-HARDENING] SL tick %d/3 for %s @ %.4f (Ignoring spike)", _sl_cnt, pos.get('city','?'), bid_price)
+                                continue # Skip exit until 3rd tick
+                            
                             reason = "stop_loss"
-                    elif bid_price >= target and strategy == "swing":
+                            _sl_tick_counters.pop(token_id, None) # Clear on exit
+                    else:
+                        # Reset counter if price is back in safety zone
+                         _sl_tick_counters.pop(token_id, None)
+
+                    if bid_price >= target and strategy == "swing":
                         reason = "take_profit_100pct"
 
                     if reason:

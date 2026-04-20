@@ -777,7 +777,17 @@ def run_paper_trading_cycle(
     # [FIX] Whiplash Shield: Build a blacklist of recently force-closed positions to avoid re-entry whiplash.
     recent_exit_blacklist = set()
     _now_ts_whiplash = now_dt.timestamp()
-    for h_pos in next_history:
+    
+    # Combined pool: memory history + database history
+    try:
+        from market_discovery_internal.database_manager import db
+        db_history = db.get_recent_trade_history(limit=50)
+    except Exception:
+        db_history = []
+        
+    combined_history = list(next_history) + list(db_history)
+    
+    for h_pos in combined_history:
         try:
             closed_at_str = h_pos.get("closed_at")
             if not closed_at_str: continue
@@ -787,10 +797,11 @@ def run_paper_trading_cycle(
             
             age_hours = (_now_ts_whiplash - closed_dt.timestamp()) / 3600.0
             if age_hours <= WHIPLASH_COOLDOWN_HOURS:
-                reason = str(h_pos.get("reason", "")).lower()
+                reason = str(h_pos.get("reason", "") or h_pos.get("close_reason", "")).lower()
                 # Blacklist if closed by AI monitor or Stop Loss (to prevent immediate whiplash)
                 if any(r in reason for r in ["haiku_monitor_exit", "stop_loss", "broken_thesis"]):
-                    recent_exit_blacklist.add(str(h_pos.get("token_id")))
+                    token_id = str(h_pos.get("token_id"))
+                    recent_exit_blacklist.add(token_id)
         except Exception:
             continue
     if recent_exit_blacklist:
