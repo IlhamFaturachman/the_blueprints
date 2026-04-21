@@ -1,6 +1,6 @@
 # THE BLUEPRINTS — Panduan Lengkap
 
-**Versi:** 2.0 | **Tanggal:** 21 April 2026 | **Mode:** Paper Trading ($5)
+**Versi:** 2.2 | **Tanggal:** 22 April 2026 | **Mode:** Paper Trading ($5)
 
 ---
 
@@ -96,7 +96,7 @@ Layanan cuaca agregat yang menggunakan sumber data berbeda dari Open-Meteo. Bot 
 
 **Peran:** Partner konsensus. Kedua sumber **harus sepakat dalam rentang 2.5°C**. Kalau Open-Meteo bilang 22°C tapi wttr.in bilang 15°C (selisih 7°C), bot anggap prediksi tidak bisa diandalkan dan **skip pasar itu sepenuhnya**. Ini adalah filter keamanan paling ketat — lebih baik melewatkan peluang daripada trading berdasarkan data yang tidak konsisten.
 
-Kalau kedua sumber sepakat, hasilnya dirata-ratakan: `consensus_temp = (Open-Meteo + wttr.in) / 2`.
+Kalau kedua sumber sepakat, hasilnya di-blend dengan bobot: `consensus_temp = (Open-Meteo × 64% + wttr.in × 36%)`. Open-Meteo mendapat bobot lebih besar karena API-nya lebih reliable dan akurat.
 
 ### 3.4 Validasi Ground Truth — NOAA METAR & NWS (2 endpoint)
 
@@ -113,19 +113,29 @@ Ini bukan prediksi — ini **suhu aktual saat ini** dari stasiun cuaca bandara. 
    - Suhu aktual sudah melewati threshold → probabilitas dinaikkan ke 95% (hampir pasti menang)
    - Suhu aktual masih jauh di bawah threshold dengan <2 jam tersisa → probabilitas diturunkan ke 15% (hampir pasti kalah)
 
-### 3.5 Probabilitas Statistik — GFS Ensemble (31 Model)
+### 3.5 Probabilitas Statistik — Multi-Model Ensemble (82 Model)
 
 **Endpoint:** `ensemble-api.open-meteo.com/v1/ensemble`
 
-Ini bukan satu prediksi — ini **31 prediksi berbeda** dari 31 variasi model GFS (Global Forecast System). Setiap variasi menggunakan kondisi awal yang sedikit berbeda, menghasilkan 31 kemungkinan suhu.
+Ini bukan satu prediksi — ini **82 prediksi berbeda** dari dua sistem model cuaca terbaik di dunia, diambil secara paralel:
 
-**Peran:** Menghitung probabilitas secara statistik. Contoh: kalau 28 dari 31 model bilang suhu akan di atas 64°F, maka ensemble probability = 28/31 = 90.3%.
+- **GFS Ensemble (31 member)** — Global Forecast System dari NOAA (Amerika). 31 variasi model yang masing-masing menggunakan kondisi awal sedikit berbeda.
+- **ECMWF IFS Ensemble (51 member)** — European Centre for Medium-Range Weather Forecasts. Dianggap sebagai model cuaca global terbaik di dunia. 51 variasi model dengan resolusi 25km.
+
+Kedua model diambil dari endpoint yang sama (Open-Meteo) secara paralel — tidak ada tambahan latency. Kalau satu model gagal (API error), yang lain tetap berkontribusi.
+
+**Peran:** Menghitung probabilitas secara statistik dari 82 skenario independen. Contoh: kalau 74 dari 82 model bilang suhu akan di atas 64°F, maka ensemble probability = 74/82 = **90.2%**.
+
+Kenapa 82 lebih baik dari 31?
+- **Presisi lebih tinggi** — resolusi 1/82 ≈ 1.2% vs 1/31 ≈ 3.2%. Bot bisa membedakan antara 85% dan 90% dengan lebih akurat.
+- **Dua model independen** — GFS dan ECMWF menggunakan metode berbeda. Kalau keduanya sepakat, keyakinan jauh lebih kuat. Kalau tidak sepakat, spread membesar dan bot otomatis lebih hati-hati.
+- **Tidak lebih agresif, tapi lebih akurat** — bot tidak jadi lebih sering trading, tapi lebih tepat dalam memilih kapan harus trading dan kapan harus diam.
 
 Probabilitas ensemble ini di-blend dengan probabilitas model utama:
-- **45% bobot ensemble** (data statistik dari 31 model)
-- **55% bobot model utama** (sigmoid/Gaussian dari consensus forecast)
+- **45% bobot ensemble** (data statistik dari 82 model GFS+ECMWF)
+- **55% bobot model utama** (sigmoid/Gaussian dari consensus forecast Open-Meteo + wttr.in)
 
-Ini membuat keputusan bot lebih robust — tidak bergantung pada satu model saja.
+Konfigurasi model bisa diubah via environment variable `ENSEMBLE_MODELS` (default: `gfs_seamless,ecmwf_ifs025`).
 
 ### 3.6 Data Historis — Alarm Anomali
 
@@ -164,7 +174,7 @@ NOAA METAR ───────────→ Override (hanya 6 jam terakhir)
                                 │
                         Bayesian calibration (belajar dari trade sebelumnya)
                                 │
-GFS Ensemble (31 model) → 45% ensemble + 55% model = final probability
+GFS+ECMWF Ensemble (82 model) → 45% ensemble + 55% model = final probability
                                 │
                         Cap absolut 95% (tidak pernah 100% yakin)
                                 │
@@ -208,9 +218,21 @@ Kenapa rentang ini?
 - **Terlalu dekat (<4 jam):** Pasar sudah efisien — harga sudah mencerminkan kenyataan. Edge-nya kecil.
 - **Sweet spot (4-18 jam):** Prediksi cuaca sudah cukup stabil, tapi pasar belum sepenuhnya menyesuaikan. Di sinilah edge terbesar.
 
-Dalam praktiknya, waktu terbaik untuk menemukan peluang adalah **pagi hari WIB (05:00-11:00)** ketika pasar untuk hari itu masuk golden window.
+**Jadwal Golden Window (WIB):**
 
-Di luar golden window, bot tetap berjalan tapi tidak membuka posisi baru — hanya memantau posisi yang sudah terbuka.
+Pasar cuaca Polymarket resolve pada **12:00 UTC (19:00 WIB)**. Berdasarkan `endDate` dari API:
+
+| Event | UTC | WIB |
+|-------|-----|-----|
+| Golden window buka (18 jam sebelum) | 18:00 (hari sebelumnya) | **01:00** |
+| Peluang pagi | 22:00-02:00 | **05:00-09:00** |
+| Zona puncak peluang | 02:00-06:00 | **09:00-13:00** |
+| Golden window tutup (4 jam sebelum) | 08:00 | **15:00** |
+| Pasar resolve | 12:00 | **19:00** |
+
+Dalam praktiknya, waktu terbaik untuk menemukan peluang adalah **dini hari sampai siang WIB (01:00-15:00)**. Bot mulai aktif mencari sejak jam 01:00 WIB ketika pasar besok masuk golden window.
+
+Di luar golden window (setelah 15:00 WIB), bot tetap berjalan tapi tidak membuka posisi baru — hanya memantau posisi yang sudah terbuka dan menunggu resolve pada 19:00 WIB.
 
 ---
 
@@ -222,7 +244,7 @@ Setelah dapat prediksi suhu, bot menghitung seberapa besar kemungkinan suatu buc
 
 - **Pasar "di atas/di bawah"** — pakai kurva sigmoid. Semakin jauh prediksi dari batas threshold, semakin yakin bot. Tapi bot juga menyesuaikan tingkat keyakinan berdasarkan berapa lama lagi pasar resolve (semakin dekat = semakin yakin, tapi tetap ada batas).
 
-- **Pasar "persis X derajat"** — pakai kurva Gaussian (lonceng). Bot paling yakin kalau prediksi tepat di angka itu, dan keyakinan menurun seiring jarak.
+- **Pasar "persis X derajat"** — pakai kurva Gaussian (lonceng). Bot paling yakin kalau prediksi tepat di angka itu, dan keyakinan menurun seiring jarak. Sigma (lebar kurva) disesuaikan per region: kota tropis (σ=1.0°C), kota 4-musim (σ=2.0°C), dan default (σ=1.5°C). Untuk kota 4-musim, sigma juga disesuaikan per bulan — musim semi/gugur lebih lebar (1.35x di Maret-April), musim panas lebih sempit (0.90x di Juli-Agustus).
 
 **Batas Keyakinan Maksimal:**
 
@@ -255,10 +277,12 @@ Bot hanya buka posisi kalau **tiga syarat terpenuhi**:
 
 Setiap peluang yang lolos filter dikategorikan:
 
-- **Swing** — harga di zona $0.40-$0.65, ada ruang untuk profit dari pergerakan harga
+- **Swing** — harga di zona **$0.15-$0.75**, ada ruang untuk profit dari pergerakan harga. Ini adalah bucket utama untuk trading.
 - **Hold Candidate** — edge dan probabilitas sangat tinggi, layak dipegang sampai resolve
-- **Watchlist** — harga terlalu murah (<$0.05), dipantau tapi tidak dibeli
+- **Watchlist** — harga terlalu murah (<$0.15), dipantau tapi tidak dibeli
 - **Reject** — tidak memenuhi syarat, langsung dibuang
+
+> **Catatan (Batch A, 21 April 2026):** Batas watchlist diturunkan dari $0.40 ke $0.15, sehingga pasar murah ($0.15-$0.40) yang sebelumnya hanya dipantau sekarang bisa ditradingkan. Ini membuka peluang dengan ROI lebih tinggi (beli murah, jual mahal).
 
 ### 5.5 Aturan Diversifikasi
 
@@ -350,8 +374,11 @@ Target standar: 2x harga entry (bisa diatur via konfigurasi). Beli $0.30 → tar
 
 **6. Late Window — 2 Jam Sebelum Resolve**
 Saat tinggal 2 jam sebelum pasar tutup:
-- Forecast masih valid dan posisi untung → tahan sampai resolve
-- Forecast tidak valid atau posisi rugi → jual sekarang
+- Forecast masih valid dan confidence ≥ 55% → tahan sampai resolve
+- Forecast tidak valid atau confidence < 55% → jual sekarang
+- Confidence < 35% → thesis decay exit (posisi sudah tidak layak dipegang)
+
+> **Catatan (Batch A):** Di late window, confidence score sekarang menggunakan entry_edge (edge saat masuk) bukan current_edge. Ini mencegah confidence turun hanya karena pasar sudah bergerak ke arah yang benar (market convergence).
 
 **7. Flash Crash Shield — Perlindungan dari Harga Palsu**
 Kadang harga di WebSocket bisa "spike" — turun drastis sesaat lalu kembali normal. Bot punya 4 lapis perlindungan:
@@ -517,23 +544,26 @@ Kode AI masih ada di codebase (dormant) — bisa diaktifkan kembali via konfigur
 
 ## 12. Status Saat Ini
 
-### Per 21 April 2026
+### Per 22 April 2026
 
 | Komponen | Status |
 |---|---|
-| Bot | Aktif berjalan di server |
+| Bot | Aktif berjalan di server (commit `f194918`) |
 | Mode | Paper Trading (simulasi) |
 | Modal awal | $5.00 USD |
 | Stake per posisi | Ditentukan Kelly Criterion (minimum $1.00) |
-| Maks posisi terbuka | 3 (untuk wallet $5) |
-| Golden Window | 4-18 jam sebelum resolve |
+| Maks posisi terbuka | 5 (konfigurasi), 3 (tier 1 untuk wallet $5) |
+| Golden Window | 4-18 jam sebelum resolve (01:00-15:00 WIB) |
 | AI/Haiku | Dinonaktifkan (semua 3 fitur) |
 | Kelly Criterion | Aktif (20% fractional Kelly) |
 | WebSocket | Aktif dengan IPv4 force |
 | Dashboard | Redesign baru — kartu posisi, progress bar, mobile responsive |
 | Nginx | Aktif — proxy API + serve dashboard |
+| Batch A | **7 optimisasi aktif** (lihat bagian 12.2) |
+| Time-Decay Edge | Deployed tapi **dormant** (belum diaktifkan) |
+| Phantom Trades Bug | **Fixed** (commit `f194918`) |
 
-### Pengaturan Kunci
+### 12.1 Pengaturan Kunci
 
 | Setting | Nilai | Keterangan |
 |---|---|---|
@@ -548,25 +578,50 @@ Kode AI masih ada di codebase (dormant) — bisa diaktifkan kembali via konfigur
 | `KELLY_FRACTION` | 0.20 | 20% dari full Kelly |
 | `KELLY_MIN_STAKE` | $1.00 | Taruhan minimum |
 | `KELLY_MAX_STAKE` | $10.00 | Taruhan maksimum |
-| `HYBRID_STOP_LOSS_MULTIPLIER` | 0.48 | Stop loss di 48% dari entry |
-| `TAKE_PROFIT_PRICE_CAP` | $1.00 | Batas atas target profit |
+| `HYBRID_STOP_LOSS_MULTIPLIER` | 0.55 | Stop loss di 55% dari entry |
+| `HYBRID_MIN_CONFIDENCE_TO_HOLD` | 0.55 | Confidence minimum untuk hold di late window |
+| `ENTRY_BUCKET_WATCH_MAX_PRICE` | $0.15 | Batas atas watchlist (di atasnya = swing) |
+| `THESIS_DECAY_THRESHOLD` | 0.35 | Confidence di bawah ini = thesis decay exit |
+
+### 12.2 Batch A — 7 Optimisasi Profit (Aktif sejak 21 April 2026)
+
+| # | Perubahan | Efek |
+|---|-----------|------|
+| 1a | Batas watchlist $0.40 → $0.15 | Pasar murah ($0.15-$0.40) sekarang bisa ditradingkan |
+| 1b | Confidence hold 0.75 → 0.55 | Lebih banyak posisi ditahan sampai resolve |
+| 1c | Thesis decay 0.45 → 0.35 | Lebih sedikit exit prematur pada posisi yang sedang menang |
+| 2a | Seasonal sigma (April=1.35x) | Probabilitas lebih konservatif saat cuaca volatile |
+| 2b | forecast_still_valid → float 0.0-1.0 | Validitas forecast bertahap, bukan binary |
+| 2c | Confidence pakai entry_edge di late window | Confidence tidak turun saat pasar konvergen ke harga benar |
+| 2e | Forecast blend 64/36 (OM/wttr) | Open-Meteo diberi bobot lebih besar (lebih reliable) |
+
+### 12.3 Fitur Dormant (Siap Diaktifkan)
+
+| Fitur | Cara Aktifkan | Kapan |
+|-------|---------------|-------|
+| Time-decay edge scaling | Tambah `TIME_DECAY_EDGE_ENABLED=true` ke .env, restart | Hari ke-3 (kalau volume trade bagus) |
+| Smart-skip 2x TP (Batch B) | Perlu implementasi kode | Setelah review hari ke-7 |
 
 ---
 
 ## 13. Rencana ke Depan
 
-### Phase A — Data Collection (7 hari: 21-27 April)
+### Phase A — Data Collection (7 hari: 22-28 April)
 
-**Tujuan:** Kumpulkan data trading sebanyak mungkin untuk melatih sistem pembelajaran.
+**Tujuan:** Kumpulkan data trading sebanyak mungkin untuk melatih sistem pembelajaran. Batch A optimisasi sudah aktif.
 
-- Bot berjalan dengan $5 paper money
+- Bot berjalan dengan $5 paper money + 7 optimisasi Batch A
 - Target: 20-30 closed trades dalam 7 hari
 - Sistem kalibrasi dan auto-tuner mulai mengumpulkan data
 - Kalau wallet habis sebelum 7 hari, **biarkan saja** — data kerugian sama berharganya dengan data keuntungan untuk pembelajaran
+- **Hari ke-3:** Evaluasi apakah perlu aktifkan time-decay edge scaling
+- **Hari ke-7:** Review lengkap — win rate, PnL, kota terbaik/terburuk
 
-**Indikator sukses:** Bot berjalan stabil tanpa crash, data terkumpul, kalibrasi mulai terbentuk.
+**Indikator sukses:** Bot berjalan stabil tanpa crash, data terkumpul, kalibrasi mulai terbentuk, tidak ada phantom trades.
 
-### Transisi ke Live (Hari ke-8)
+**Dokumen operasional:** Lihat `PHASE_A_5_7_DAY_OPERATIONS_PLAN.md` untuk jadwal monitoring harian, red flags, dan prosedur darurat.
+
+### Transisi ke Live (Setelah Phase A)
 
 Prosesnya sangat sederhana:
 
@@ -577,7 +632,7 @@ python scripts/reset_warehouse.py --wallet 7.0 --keep-learning
 systemctl start blueprints
 ```
 
-Flag `--keep-learning` mempertahankan semua data kalibrasi (Brier scores, auto-tuner city grades) sambil mereset wallet dan posisi. Bot mulai live dengan $7 DAN kecerdasan dari 7 hari paper trading.
+Flag `--keep-learning` mempertahankan semua data kalibrasi (Brier scores, auto-tuner city grades) sambil mereset wallet dan posisi. Bot mulai live dengan $7 DAN kecerdasan dari paper trading.
 
 **Tidak perlu ubah kode apapun.** Kelly Criterion otomatis menyesuaikan ukuran taruhan untuk wallet $7.
 
@@ -588,17 +643,27 @@ Flag `--keep-learning` mempertahankan semua data kalibrasi (Brier scores, auto-t
 - Sistem pembelajaran terus berjalan dan makin akurat
 - Target: win rate > 55%, profit konsisten
 
+### Jangka Pendek (Minggu Depan)
+
+1. **Smart-Skip 2x Take-Profit (Batch B, Change 1d)** — Untuk entry murah (< $0.38), skip 2x TP dan biarkan posisi naik ke sniper $0.90. Desain sudah selesai di `BATCH_B_DESIGN_PROPOSALS.md`, belum diimplementasi. Butuh modifikasi WS watcher + profit protection stop.
+
+2. **Aktifkan Time-Decay Edge** — Sudah deployed tapi dormant. Aktifkan via `.env` setelah 2-3 hari data Batch A terkumpul. Scaling: `min_edge × sqrt(hours/6)` — trade jangka panjang butuh edge lebih besar.
+
 ### Jangka Panjang
 
-1. **Execution bridge** — Saat ini bot hanya simulasi (paper trading). Untuk live, perlu ~70 baris kode tambahan di `execution.py` untuk menghubungkan ke Polymarket CLOB API dan benar-benar menempatkan order. Infrastruktur sudah siap (py-clob-client terinstall, wrapper class sudah ada).
+1. **NO-side trading** — Saat ini bot hanya beli YES. Semua kompetitor bisa trading NO juga. 10 dari 11 bucket kalah setiap hari = 10 peluang NO-side. Ini perubahan struktural terbesar (~300-400 baris, 15 file).
 
-2. **Tambah sumber prediksi ketiga** — Saat ini bot pakai Open-Meteo + wttr.in sebagai dua sumber prediksi (NOAA METAR sudah aktif tapi sebagai validasi ground-truth, bukan prediksi). Menambah sumber prediksi independen ketiga (misalnya Tomorrow.io atau ECMWF langsung) akan membuat consensus lebih robust.
+2. **Execution bridge** — Untuk live trading, perlu ~70 baris kode tambahan di `execution.py` untuk menghubungkan ke Polymarket CLOB API. Infrastruktur sudah siap.
 
-3. **Perluas kota** — Tambah kota yang sering muncul di Polymarket berdasarkan data yang terkumpul.
+3. **Full backtesting suite** — `backtest_runner.py` saat ini basic. Perlu replay engine lengkap dengan equity curves dan scorecards.
 
-4. **Optimasi Golden Window per kota** — Setelah cukup data, analisis jam berapa edge paling besar per kota dan sesuaikan window secara dinamis (bukan satu window global untuk semua kota).
+4. **Maker fee optimization** — Passive limit orders = 0% fee (vs 5% taker fee saat ini). Bisa menghemat ~10% per trade.
 
-5. **Multi-timeframe ensemble** — Saat ini hanya pakai GFS ensemble. Menambah ECMWF ensemble (51 member) akan memberikan probabilitas statistik yang lebih akurat.
+5. **Perluas kota** — Tambah kota yang sering muncul di Polymarket berdasarkan data yang terkumpul.
+
+6. **Optimasi Golden Window per kota** — Setelah cukup data, analisis jam berapa edge paling besar per kota dan sesuaikan window secara dinamis.
+
+> **Catatan:** Item "Tambah model ensemble lain" dari roadmap lama sudah bukan prioritas — arsitektur sudah mendukung penambahan model via `ENSEMBLE_MODELS` env var tanpa perubahan kode.
 
 ---
 
@@ -645,6 +710,43 @@ Flag `--keep-learning` mempertahankan semua data kalibrasi (Brier scores, auto-t
 - Kelly Criterion menentukan ukuran taruhan per posisi
 - Leverage cap disederhanakan: "apakah kas cukup untuk minimal 1 posisi?"
 
+### 14.5 Phantom Test Trades — 21 April 2026 (STUBBORN BUG, FIXED)
+
+**Apa yang terjadi:** Setiap kali `pytest` dijalankan di VPS, data test (token `tok_tp`, `tok_sl`, `0xabc`) muncul di database produksi. Dashboard menampilkan trade palsu "NEW YORK" dengan PnL $91+, portfolio melonjak ke $130-$430, dan circuit breaker trip.
+
+**Penyebab (Root Cause):** Ada **dua jalur tulis** ke database SQLite:
+- **Jalur A:** `save_paper_state()` → `db.update_portfolio()`, `db.replace_all_positions()`, dll.
+- **Jalur B:** `close_paper_position()` → `db.record_trade_history()`, `db.update_calibration()`
+
+Fix pertama (`_is_test_path` guard di `save_paper_state`) hanya melindungi Jalur A. Jalur B — `close_paper_position()` yang dipanggil langsung oleh 3 test tanpa mock `cycles.db` — tetap menulis ke database produksi.
+
+**Kenapa sulit ditemukan:**
+- `close_paper_position()` menulis ke DB secara langsung, bukan melalui `save_paper_state()`
+- Database singleton (`db = BlueprintsDB()`) dibuat saat import time dan hardcoded ke `logs/blueprints_master.db`
+- Tidak ada `conftest.py` global yang mock DB untuk semua test
+- 3 test yang bocor tidak terlihat karena test lain (`test_paper_cycle.py`) sudah mock `cycles.db` dengan benar
+
+**Perbaikan (commit `f194918`):**
+- Tambah `patch("market_discovery_internal.cycles.db")` ke 3 test yang bocor:
+  - `test_hybrid_exit.py::test_update_paper_position_closes_and_calculates_pnl`
+  - `test_ws_price_watcher.py::test_ws_callback_closes_on_stop_loss`
+  - `test_ws_price_watcher.py::test_ws_callback_closes_on_take_profit`
+- Pattern yang sama sudah dipakai di `test_paper_cycle.py` selama ini
+- **Zero perubahan kode produksi** — hanya 3 baris `patch()` di 2 file test
+- Guard `_is_test_path` di `save_paper_state` tetap dipertahankan sebagai defense-in-depth
+
+**Verifikasi:** Setelah fix, `pytest` di VPS menghasilkan 0 test token di database. Portfolio tetap $5.00. Verified clean.
+
+### 14.6 Golden Window Timing Error — 21 April 2026
+
+**Apa yang terjadi:** Dokumentasi awal menyatakan golden window dimulai jam 09:00 WIB, padahal seharusnya 01:00 WIB.
+
+**Penyebab:** Asumsi salah bahwa pasar cuaca Polymarket resolve pada 20:00 UTC. Setelah dicek langsung dari API (`endDate: 2026-04-22T12:00:00Z`), pasar sebenarnya resolve pada **12:00 UTC (19:00 WIB)**.
+
+**Dampak:** Tidak ada dampak pada bot (bot menggunakan `endDate` dari API, bukan asumsi manual). Hanya dokumentasi dan jadwal monitoring yang salah.
+
+**Perbaikan:** Dokumentasi diperbarui dengan jadwal yang benar. Golden window: 01:00-15:00 WIB.
+
 ---
 
-*Dokumen ini adalah referensi lengkap The Blueprints Trading Bot. Terakhir diperbarui 21 April 2026 setelah redesign arsitektur Kelly-first, perbaikan regex, dan redesign dashboard.*
+*Dokumen ini adalah referensi lengkap The Blueprints Trading Bot. Terakhir diperbarui 22 April 2026 (v2.2) setelah Batch A profit optimization, fix phantom trades bug, dan koreksi jadwal golden window.*
