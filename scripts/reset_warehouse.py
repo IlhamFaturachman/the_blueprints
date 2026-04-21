@@ -6,9 +6,10 @@ Clears ALL data tables (positions, history, metrics, calibration, AI usage, cach
 Sets portfolio to the target wallet amount.
 
 Usage:
-    python scripts/reset_warehouse.py                  # Reset to $5.00 (default)
-    python scripts/reset_warehouse.py --wallet 10.0    # Reset to $10.00
-    python scripts/reset_warehouse.py --force          # Skip bot-running safety check
+    python scripts/reset_warehouse.py                          # Reset to $5.00 (default)
+    python scripts/reset_warehouse.py --wallet 10.0            # Reset to $10.00
+    python scripts/reset_warehouse.py --wallet 7.0 --keep-learning  # Phase transition: keep calibration data
+    python scripts/reset_warehouse.py --force                  # Skip bot-running safety check
 """
 
 import argparse
@@ -36,7 +37,7 @@ def _is_bot_running():
         return False
 
 
-def reset_all(wallet: float = 5.0, force: bool = False):
+def reset_all(wallet: float = 5.0, force: bool = False, keep_learning: bool = False):
     print(f"--- [RESET] Starting Clean Slate for THE BLUEPRINTS (target: ${wallet:.2f}) ---")
 
     # Safety check: refuse to reset while bot is running
@@ -53,16 +54,22 @@ def reset_all(wallet: float = 5.0, force: bool = False):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
-        # 1. Clear ALL data tables
+        # 1. Clear data tables (optionally keep learning data)
         tables_to_clear = [
             "active_positions",
             "trade_history",
             "cycle_metrics",
-            "calibration_stats",
             "ai_daily_calls",
             "ai_monthly_cost",
             "discovery_cache",
         ]
+        # calibration_stats holds Brier scores and auto-tuner city grades.
+        # --keep-learning preserves this data for phase transitions (paper → live).
+        if not keep_learning:
+            tables_to_clear.append("calibration_stats")
+        else:
+            print("  [KEEP]  Preserving calibration_stats (learning data)")
+
         for table in tables_to_clear:
             try:
                 conn.execute(f"DELETE FROM {table}")
@@ -140,10 +147,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Reset THE BLUEPRINTS to clean slate")
     parser.add_argument("--wallet", type=float, default=5.0, help="Target wallet amount (default: $5.00)")
     parser.add_argument("--force", action="store_true", help="Skip bot-running safety check")
+    parser.add_argument("--keep-learning", action="store_true",
+                        help="Preserve calibration_stats (Brier scores, auto-tuner city grades) for phase transitions")
     args = parser.parse_args()
 
     if args.wallet <= 0:
         print("[ERROR] Wallet amount must be positive")
         sys.exit(1)
 
-    reset_all(wallet=args.wallet, force=args.force)
+    reset_all(wallet=args.wallet, force=args.force, keep_learning=args.keep_learning)

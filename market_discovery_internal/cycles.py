@@ -971,56 +971,45 @@ def run_paper_trading_cycle(
             send_telegram_alert(msg)
             state_meta["circuit_breaker_alert_sent"] = True
 
-    # [MODUL D] Compounding & Slot Expansion (Updated Tiers)
+    # [MODUL D] Slot Expansion — Tier system is a SLOT LIMITER only.
+    # Stake sizing is handled by Kelly Criterion inside build_paper_position().
+    # current_stake_usd is a fallback for when KELLY_ENABLED=false.
     current_tier_max_slots = paper_max_open_positions
     current_stake_usd = float(stake_usd)
     new_tier = 1
-    
-    if wallet_after_position_management >= 20.0:
-        # TIER 2 ($20-$100): Stake 15% but capped by total exposure safety
+
+    w = wallet_after_position_management
+    if w >= 20.0:
         new_tier = 2
         current_tier_max_slots = 15
-        current_stake_usd = round(wallet_after_position_management * 0.15, 2)
-    elif wallet_after_position_management >= 5.0:
-        # TIER 1 ($5-$20): Stake $1-$2, slots scale with wallet to stay within
-        # the safe leverage cap (wallet / slots / 1.575 overhead >= $1 min stake).
+    elif w >= 12.0:
         new_tier = 1
-        w = wallet_after_position_management
-        if w >= 15.0:
-            current_tier_max_slots = 8
-            current_stake_usd = 2.0
-        elif w >= 12.0:
-            current_tier_max_slots = 6
-            current_stake_usd = 2.0
-        elif w >= 8.0:
-            current_tier_max_slots = 4
-            current_stake_usd = 1.0
-        else:
-            current_tier_max_slots = 3
-            current_stake_usd = 1.0
+        current_tier_max_slots = 8
+    elif w >= 8.0:
+        new_tier = 1
+        current_tier_max_slots = 5
+    elif w >= 5.0:
+        new_tier = 1
+        current_tier_max_slots = 3
 
-    # [SAFE LEVERAGE CAP] Ensure Total Exposure <= Available Cash
-    # Use actual cash balance. Formula: Total Equity - Current Deployment Cost.
+    # [SAFE LEVERAGE CAP] Check if we can afford at least 1 position at MIN_STAKE.
+    # Kelly handles per-position stake sizing inside build_paper_position().
+    # This gate only blocks when cash is truly insufficient for any entry.
     _open_exposure = sum(float(p.get("cost_basis", 0.0) or 0.0) for p in next_open_positions)
     available_cash = round(wallet_after_position_management - _open_exposure, 4)
 
     from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE
-    _MAX_EFFECTIVE_OVERHEAD = 1.5 * (1.0 + POLYMARKET_TAKER_FEE_RATE)  # ~1.575
-    
-    max_total_exposure = max(0.0, available_cash)
-    if max_total_exposure <= 0.0:
-        # No cash left — block all new entries this cycle
+    _MAX_EFFECTIVE_OVERHEAD = 1.0 + POLYMARKET_TAKER_FEE_RATE  # ~1.05 (fee only, no safety buffer — Kelly handles risk)
+
+    if available_cash <= 0.0:
         effective_allow_new_entries = False
         effective_entry_gate_reason = "insufficient_cash"
         logger.warning("[ACCOUNTING] Available cash $%.4f <= 0, blocking new entries.", available_cash)
-    elif (current_stake_usd * _MAX_EFFECTIVE_OVERHEAD * current_tier_max_slots) > max_total_exposure:
-        current_stake_usd = round(max_total_exposure / (current_tier_max_slots * _MAX_EFFECTIVE_OVERHEAD), 2)
-
-    # [FIX] Block entries if the calculated stake falls below the hard floor
-    if effective_allow_new_entries and current_stake_usd < MIN_STAKE_THRESHOLD:
+    elif available_cash / _MAX_EFFECTIVE_OVERHEAD < MIN_STAKE_THRESHOLD:
+        # Can't afford even 1 position at the minimum stake
         effective_allow_new_entries = False
         effective_entry_gate_reason = "insufficient_cash"
-        logger.warning("[ACCOUNTING] Calculated stake $%.2f < floor $%.2f, blocking new entries.", current_stake_usd, MIN_STAKE_THRESHOLD)
+        logger.warning("[ACCOUNTING] Available cash $%.4f can't cover 1 position at $%.2f min stake.", available_cash, MIN_STAKE_THRESHOLD)
 
     # Notify on Tier Change (with hysteresis + cooldown to prevent spam)
     prev_tier = state_meta.get("current_tier", 1)
@@ -1076,10 +1065,8 @@ def run_paper_trading_cycle(
             new_tier = prev_tier
             if prev_tier == 2:
                 current_tier_max_slots = 15
-                current_stake_usd = round(wallet_after_position_management * 0.15, 2)
             elif prev_tier == 1:
                 current_tier_max_slots = 8 if wallet_after_position_management >= 12.0 else 5
-                current_stake_usd = 2.0 if wallet_after_position_management >= 12.0 else 1.0
             logger.debug("[TIER] Hysteresis blocked tier change. Wallet $%.2f near boundary.", wallet_after_position_management)
     state_meta["current_tier"] = new_tier
 
@@ -1320,11 +1307,12 @@ def run_paper_trading_cycle(
 # ---------------------------------------------------------------------------
 
 def _compute_take_profit_price(entry_price):
-    """Compute take-profit target price for +100% policy (2x entry by default)."""
+    """Compute take-profit target price. Capped by TAKE_PROFIT_PRICE_CAP (default 1.0)."""
+    from market_discovery_internal.config import TAKE_PROFIT_PRICE_CAP
     entry = _safe_float(entry_price, 0.0)
     if entry <= 0:
         return HYBRID_TAKE_PROFIT_MIN_PRICE
-    return round(min(entry * HYBRID_TAKE_PROFIT_MULTIPLIER, 1.0), 4)
+    return round(min(entry * HYBRID_TAKE_PROFIT_MULTIPLIER, TAKE_PROFIT_PRICE_CAP), 4)
 
 
 def _ensure_take_profit_target(position):

@@ -228,6 +228,7 @@ PAPER_STAKE_USD = float(os.getenv("PAPER_STAKE_USD", "100"))
 HYBRID_TAKE_PROFIT_MULTIPLIER = float(os.getenv("HYBRID_TAKE_PROFIT_MULTIPLIER", "2.0"))
 HYBRID_TAKE_PROFIT_MIN_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MIN_PRICE", "0.50"))
 HYBRID_TAKE_PROFIT_MAX_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MAX_PRICE", "0.60"))
+TAKE_PROFIT_PRICE_CAP = float(os.getenv("TAKE_PROFIT_PRICE_CAP", "1.0"))  # Max TP target (1.0 = hold to resolve, 0.92 = exit before resolve)
 HYBRID_STOP_LOSS_MULTIPLIER = float(os.getenv("HYBRID_STOP_LOSS_MULTIPLIER", "0.48"))
 HYBRID_LATE_WINDOW_HOURS = float(os.getenv("HYBRID_LATE_WINDOW_HOURS", "2.0"))
 HYBRID_MIN_CONFIDENCE_TO_HOLD = float(os.getenv("HYBRID_MIN_CONFIDENCE_TO_HOLD", "0.75"))
@@ -379,7 +380,7 @@ AI_MONTHLY_BUDGET_USD = max(0.0, float(os.getenv("AI_MONTHLY_BUDGET_USD", "3.0")
 AI_USAGE_LEDGER_FILE = os.getenv("AI_USAGE_LEDGER_FILE", "logs/ai_usage_ledger.json")
 
 # Haiku entry gate
-HAIKU_ENTRY_ENABLED = _env_bool("HAIKU_ENTRY_ENABLED", False)
+HAIKU_ENTRY_ENABLED = _env_bool("HAIKU_ENTRY_ENABLED", False)  # Disabled: deterministic model is sufficient
 HAIKU_FAIL_OPEN = _env_bool("HAIKU_FAIL_OPEN", False)
 HAIKU_ENTRY_MIN_CONFIDENCE = float(os.getenv("HAIKU_ENTRY_MIN_CONFIDENCE", "0.80"))
 HAIKU_ENTRY_MODEL = os.getenv("HAIKU_ENTRY_MODEL", "claude-haiku-4-5-20251001")
@@ -389,7 +390,7 @@ HAIKU_ENTRY_CACHE_FILE = os.getenv("HAIKU_ENTRY_CACHE_FILE", "logs/haiku_entry_c
 HAIKU_ENTRY_CACHE_TTL_HOURS = max(1.0, float(os.getenv("HAIKU_ENTRY_CACHE_TTL_HOURS", "6")))
 
 # Haiku monitor gate for open positions
-HAIKU_MONITOR_ENABLED = _env_bool("HAIKU_MONITOR_ENABLED", False)
+HAIKU_MONITOR_ENABLED = _env_bool("HAIKU_MONITOR_ENABLED", False)  # Disabled: hybrid exit handles all cases
 HAIKU_MONITOR_INTERVAL_HOURS = max(1.0, float(os.getenv("HAIKU_MONITOR_INTERVAL_HOURS", "12.0")))
 HAIKU_MONITOR_MODEL = os.getenv("HAIKU_MONITOR_MODEL", "claude-haiku-4-5-20251001")
 HAIKU_MONITOR_MAX_TOKENS = max(64, int(os.getenv("HAIKU_MONITOR_MAX_TOKENS", "120")))
@@ -401,7 +402,7 @@ HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT = min(
 HAIKU_MONITOR_CACHE_FILE = os.getenv("HAIKU_MONITOR_CACHE_FILE", "logs/haiku_monitor_cache.json")
 
 # [MODUL A] Economy Sensing
-HAIKU_SENSING_ENABLED = _env_bool("HAIKU_SENSING_ENABLED", True)
+HAIKU_SENSING_ENABLED = _env_bool("HAIKU_SENSING_ENABLED", False)  # Disabled: regex + ICAO lookup handles city parsing
 HAIKU_SENSING_MODEL = os.getenv("HAIKU_SENSING_MODEL", "claude-haiku-4-5-20251001")
 HAIKU_SENSING_MAX_TOKENS = max(64, int(os.getenv("HAIKU_SENSING_MAX_TOKENS", "100")))
 HAIKU_SENSING_MAX_CALLS_PER_DAY = max(0, int(os.getenv("HAIKU_SENSING_MAX_CALLS_PER_DAY", "50")))

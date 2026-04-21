@@ -200,12 +200,21 @@ def parse_market(
         return _with_reason(None)
 
     # Step 2: Extract threshold (try range bracket first, then single value)
+    # CRITICAL: Only search `question` for range patterns, NEVER search_text/slug.
+    # Slugs contain dates like "april-21-2026" which match the range regex as
+    # "21-2026" (interpreted as 21°F to 2026°F). Range brackets like "50-51°F"
+    # always appear in the question text itself.
     threshold_high = None  # Upper bound for range brackets like "50-51°F"
-    range_match = RANGE_THRESHOLD_RE.search(question) or RANGE_THRESHOLD_RE.search(search_text)
+    range_match = RANGE_THRESHOLD_RE.search(question)
     if range_match:
         threshold = float(range_match.group(1))
         threshold_high = float(range_match.group(2))
         unit_match = range_match.group(3)
+        # Sanity check: reject if either value is physically impossible for temperature
+        if threshold > 200 or threshold_high > 200:
+            range_match = None  # Fall through to single-value match
+    if range_match and threshold_high is not None:
+        pass  # range_match already set threshold, threshold_high, unit_match
     else:
         match = THRESHOLD_RE.search(question)
         if not match:
