@@ -73,25 +73,108 @@ Satu siklus penuh butuh sekitar 4-5 menit (sebagian besar waktu dihabiskan untuk
 
 ## 3. Dari Mana Bot Dapat Data?
 
-### 3.1 Data Pasar — Polymarket
+Bot menggunakan **6 sumber data** yang bekerja sama dalam satu pipeline keputusan. Setiap sumber punya peran spesifik — ada yang untuk prediksi, ada yang untuk validasi, ada yang untuk probabilitas statistik.
 
-Bot mengambil data dari dua jalur:
+### 3.1 Data Pasar — Polymarket (2 jalur)
 
-- **Gamma API** — daftar semua pasar cuaca yang aktif, termasuk harga, volume, dan tanggal resolve. Bot scan sampai 15 halaman untuk memastikan tidak ada yang terlewat.
+- **Gamma Events API** — daftar semua pasar cuaca aktif, termasuk harga, volume, dan tanggal resolve. Bot scan sampai 15 halaman (200 event per halaman) untuk memastikan tidak ada yang terlewat.
 - **WebSocket Real-Time** — koneksi langsung ke Polymarket yang memberikan update harga setiap detik. Begitu bot buka posisi, harga langsung dipantau live.
 
-### 3.2 Data Cuaca — Dua Sumber Independen
+### 3.2 Prediksi Cuaca — Open-Meteo (Sumber Utama)
 
-Untuk setiap pasar, bot minta prediksi suhu dari dua layanan yang berbeda:
+**Endpoint:** `api.open-meteo.com/v1/forecast`
 
-- **Open-Meteo** — layanan cuaca berbasis model atmosfer Eropa, sangat akurat untuk prediksi 1-3 hari ke depan. Bot juga ambil data ensemble (31 model GFS) untuk menghitung probabilitas secara statistik.
-- **wttr.in** — layanan cuaca agregat yang pakai sumber berbeda dari Open-Meteo.
+Layanan cuaca berbasis model atmosfer Eropa, sangat akurat untuk prediksi 1-3 hari ke depan. Bot mengambil `temperature_2m_max` (suhu tertinggi harian) untuk setiap kota target.
 
-**Aturan penting:** Bot hanya percaya prediksi kalau kedua sumber **sepakat dalam rentang 2.5°C**. Kalau Open-Meteo bilang 20°C tapi wttr.in bilang 24°C, bot anggap prediksi tidak bisa diandalkan dan skip pasar itu.
+**Peran:** Sumber prediksi utama. Nilainya dirata-ratakan dengan wttr.in untuk menghasilkan "consensus forecast".
 
-### 3.3 Data Historis — Alarm Anomali
+### 3.3 Prediksi Cuaca — wttr.in (Sumber Kedua)
 
-Bot simpan rata-rata suhu historis 10 tahun untuk setiap kota. Kalau prediksi cuaca terlalu jauh dari rata-rata (lebih dari 7°C), bot curiga ada kesalahan dan skip. Contoh: kalau rata-rata April di London adalah 15°C tapi prediksi bilang 25°C, itu mencurigakan.
+**Endpoint:** `wttr.in/{kota}?format=j1`
+
+Layanan cuaca agregat yang menggunakan sumber data berbeda dari Open-Meteo. Bot mengambil `maxtempC` untuk tanggal yang sama.
+
+**Peran:** Partner konsensus. Kedua sumber **harus sepakat dalam rentang 2.5°C**. Kalau Open-Meteo bilang 22°C tapi wttr.in bilang 15°C (selisih 7°C), bot anggap prediksi tidak bisa diandalkan dan **skip pasar itu sepenuhnya**. Ini adalah filter keamanan paling ketat — lebih baik melewatkan peluang daripada trading berdasarkan data yang tidak konsisten.
+
+Kalau kedua sumber sepakat, hasilnya dirata-ratakan: `consensus_temp = (Open-Meteo + wttr.in) / 2`.
+
+### 3.4 Validasi Ground Truth — NOAA METAR & NWS (2 endpoint)
+
+**Endpoint 1:** `aviationweather.gov/api/data/metar` (data METAR bandara)
+**Endpoint 2:** `api.weather.gov/stations/{ICAO}/observations` (observasi NWS)
+
+Ini bukan prediksi — ini **suhu aktual saat ini** dari stasiun cuaca bandara. Setiap kota punya kode ICAO (misalnya Dallas = KDFW, London = EGLL).
+
+**Peran — Dua fungsi penting:**
+
+1. **Validasi forecast (sepanjang waktu):** Kalau suhu aktual saat ini SUDAH melebihi prediksi suhu tertinggi, berarti prediksi salah → bot skip pasar itu. Contoh: prediksi bilang max 22°C tapi METAR sudah menunjukkan 23°C sekarang → prediksi jelas salah.
+
+2. **Override probabilitas (6 jam terakhir sebelum resolve):** Dalam 6 jam terakhir, data ground truth bisa langsung mengubah probabilitas:
+   - Suhu aktual sudah melewati threshold → probabilitas dinaikkan ke 95% (hampir pasti menang)
+   - Suhu aktual masih jauh di bawah threshold dengan <2 jam tersisa → probabilitas diturunkan ke 15% (hampir pasti kalah)
+
+### 3.5 Probabilitas Statistik — GFS Ensemble (31 Model)
+
+**Endpoint:** `ensemble-api.open-meteo.com/v1/ensemble`
+
+Ini bukan satu prediksi — ini **31 prediksi berbeda** dari 31 variasi model GFS (Global Forecast System). Setiap variasi menggunakan kondisi awal yang sedikit berbeda, menghasilkan 31 kemungkinan suhu.
+
+**Peran:** Menghitung probabilitas secara statistik. Contoh: kalau 28 dari 31 model bilang suhu akan di atas 64°F, maka ensemble probability = 28/31 = 90.3%.
+
+Probabilitas ensemble ini di-blend dengan probabilitas model utama:
+- **45% bobot ensemble** (data statistik dari 31 model)
+- **55% bobot model utama** (sigmoid/Gaussian dari consensus forecast)
+
+Ini membuat keputusan bot lebih robust — tidak bergantung pada satu model saja.
+
+### 3.6 Data Historis — Alarm Anomali
+
+**Endpoint:** `archive-api.open-meteo.com/v1/archive`
+
+Rata-rata suhu historis 10 tahun untuk setiap kota dan tanggal. Data ini di-cache di database lokal (tidak perlu diambil ulang setiap siklus).
+
+**Peran:** Alarm anomali. Kalau prediksi cuaca terlalu jauh dari rata-rata historis (lebih dari 7°C), bot curiga ada kesalahan dan skip. Contoh: rata-rata April di London = 15°C, tapi prediksi bilang 25°C → itu mencurigakan, skip.
+
+### 3.7 Bagaimana Semua Sumber Bekerja Sama?
+
+Ini adalah pipeline lengkap dari data mentah sampai keputusan buka posisi:
+
+```
+Open-Meteo (22.5°C) ──┐
+                       ├─→ Sepakat? (selisih ≤ 2.5°C)
+wttr.in (24.0°C) ─────┘        │
+                           YA: rata-rata = 23.25°C
+                           TIDAK: SKIP (jangan trading)
+                                │
+Historical (24.4°C) ──→ Anomali? (selisih > 7°C dari 10 tahun)
+                           YA: SKIP
+                           TIDAK: lanjut
+                                │
+NOAA METAR (14°C) ────→ Sudah melebihi prediksi?
+                           YA: SKIP (prediksi salah)
+                           TIDAK: lanjut
+                                │
+                        Sigmoid/Gaussian → raw probability
+                        Hard ceiling cap → max 75%/87%/94%/95%
+                        Consensus guard → redam kalau "too good to be true"
+                                │
+NOAA METAR ───────────→ Override (hanya 6 jam terakhir)
+                        Konfirmasi → boost ke 95%
+                        Kontradiksi → turun ke 15%
+                                │
+                        Bayesian calibration (belajar dari trade sebelumnya)
+                                │
+GFS Ensemble (31 model) → 45% ensemble + 55% model = final probability
+                                │
+                        Cap absolut 95% (tidak pernah 100% yakin)
+                                │
+                        Edge = probability - (harga + slippage)
+                                │
+                        Edge ≥ 10%? → BUKA POSISI
+                        Edge < 10%? → SKIP
+```
+
+**Setiap sumber punya hak veto.** Kalau satu saja menunjukkan masalah (consensus gagal, anomali historis, ground truth kontradiksi), bot tidak akan trading. Ini by design — lebih baik melewatkan 10 peluang bagus daripada masuk 1 peluang buruk.
 
 ---
 
@@ -509,11 +592,13 @@ Flag `--keep-learning` mempertahankan semua data kalibrasi (Brier scores, auto-t
 
 1. **Execution bridge** — Saat ini bot hanya simulasi (paper trading). Untuk live, perlu ~70 baris kode tambahan di `execution.py` untuk menghubungkan ke Polymarket CLOB API dan benar-benar menempatkan order. Infrastruktur sudah siap (py-clob-client terinstall, wrapper class sudah ada).
 
-2. **Tambah sumber prediksi** — NOAA METAR sebagai sumber ketiga untuk validasi ground-truth.
+2. **Tambah sumber prediksi ketiga** — Saat ini bot pakai Open-Meteo + wttr.in sebagai dua sumber prediksi (NOAA METAR sudah aktif tapi sebagai validasi ground-truth, bukan prediksi). Menambah sumber prediksi independen ketiga (misalnya Tomorrow.io atau ECMWF langsung) akan membuat consensus lebih robust.
 
 3. **Perluas kota** — Tambah kota yang sering muncul di Polymarket berdasarkan data yang terkumpul.
 
-4. **Optimasi Golden Window** — Setelah cukup data, analisis jam berapa edge paling besar per kota dan sesuaikan window secara dinamis.
+4. **Optimasi Golden Window per kota** — Setelah cukup data, analisis jam berapa edge paling besar per kota dan sesuaikan window secara dinamis (bukan satu window global untuk semua kota).
+
+5. **Multi-timeframe ensemble** — Saat ini hanya pakai GFS ensemble. Menambah ECMWF ensemble (51 member) akan memberikan probabilitas statistik yang lebih akurat.
 
 ---
 
