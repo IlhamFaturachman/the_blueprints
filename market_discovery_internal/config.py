@@ -45,6 +45,7 @@ OPEN_METEO_API = OPEN_METEO_FORECAST_URL
 OPEN_METEO_ENSEMBLE_API = "https://ensemble-api.open-meteo.com/v1/ensemble"
 ENSEMBLE_ENABLED = _env_bool("ENSEMBLE_ENABLED", True)
 ENSEMBLE_WEIGHT = float(os.getenv("ENSEMBLE_WEIGHT", "0.45"))
+ENSEMBLE_MODELS = os.getenv("ENSEMBLE_MODELS", "gfs_seamless,ecmwf_ifs025")  # Comma-separated: GFS (31) + ECMWF (51) = 82 members
 POINT_FORECAST_WEIGHT = float(os.getenv("POINT_FORECAST_WEIGHT", "0.35"))
 WTRIN_WEIGHT = float(os.getenv("WTRIN_WEIGHT", "0.20"))
 

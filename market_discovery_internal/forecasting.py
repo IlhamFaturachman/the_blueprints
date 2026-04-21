@@ -85,96 +85,123 @@ class ForecastTemp(float):
 from market_discovery_internal.database_manager import db
 
 # ---------------------------------------------------------------------------
-# [ENSEMBLE] GFS 31-Member Ensemble Forecast
+# [ENSEMBLE] Multi-Model Ensemble Forecast (GFS 31 + ECMWF 51 = 82 members)
 # ---------------------------------------------------------------------------
+
+def _parse_ensemble_members(daily: dict) -> list[float]:
+    """Extract ensemble member values from Open-Meteo daily response."""
+    members = []
+    for key, values in daily.items():
+        if key.startswith("temperature_2m_max") and "member" in key:
+            if values and values[0] is not None:
+                members.append(float(values[0]))
+    # Fallback: check if data comes as a list directly
+    if not members:
+        temp_data = daily.get("temperature_2m_max", [])
+        if isinstance(temp_data, list) and len(temp_data) > 1:
+            members = [float(t) for t in temp_data if t is not None]
+    return members
+
 
 def fetch_ensemble_forecast(city: str, date: str, lat: float, lon: float,
                             threshold_c: float, direction: str = "above") -> Optional[dict]:
     """
-    Fetch GFS 31-member ensemble forecast and compute ensemble probability.
+    Fetch multi-model ensemble forecast and compute ensemble probability.
+
+    Fetches from all models in ENSEMBLE_MODELS (default: GFS 31 + ECMWF 51 = 82 members).
+    Each model is fetched independently; if one fails, the other still contributes.
 
     Returns dict with:
         - ensemble_prob: float (0-1) — fraction of members predicting above/below threshold
         - ensemble_mean: float — mean of all member predictions
         - ensemble_spread: float — std dev of member predictions
         - member_count: int — number of valid members
-        - source: str
+        - source: str — which models contributed
     Or None on failure.
     """
     if not ENSEMBLE_ENABLED:
         return None
 
-    try:
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "daily": "temperature_2m_max",
-            "start_date": date,
-            "end_date": date,
-            "models": "gfs_seamless",
-        }
-        data = fetch_with_retry(OPEN_METEO_ENSEMBLE_API, params=params, max_retries=1, timeout=5)
-        if not data:
-            return None
+    from market_discovery_internal.config import ENSEMBLE_MODELS
+    model_list = [m.strip() for m in ENSEMBLE_MODELS.split(",") if m.strip()]
+    if not model_list:
+        model_list = ["gfs_seamless"]
 
-        daily = data.get("daily", {})
+    # Fetch all models in parallel
+    all_members = []
+    sources = []
 
-        # Ensemble members are in temperature_2m_max_member01, _member02, etc.
-        members = []
-        for key, values in daily.items():
-            if key.startswith("temperature_2m_max") and "member" in key:
-                if values and values[0] is not None:
-                    members.append(float(values[0]))
+    from concurrent.futures import ThreadPoolExecutor
 
-        # Also check if data comes as a list directly
-        if not members:
-            temp_data = daily.get("temperature_2m_max", [])
-            if isinstance(temp_data, list) and len(temp_data) > 1:
-                members = [float(t) for t in temp_data if t is not None]
-
-        if len(members) < 5:  # Need minimum members for meaningful probability
-            logger.warning("[ENSEMBLE] Only %d members for %s on %s. Skipping.", len(members), city, date)
-            return None
-
-        import statistics
-        mean_temp = statistics.mean(members)
-        spread = statistics.stdev(members) if len(members) > 1 else 0.0
-
-        # Calculate ensemble probability based on direction
-        if direction == "above":
-            count_above = sum(1 for m in members if m > threshold_c)
-            ensemble_prob = count_above / len(members)
-        elif direction == "below":
-            count_below = sum(1 for m in members if m <= threshold_c)
-            ensemble_prob = count_below / len(members)
-        elif direction == "exact":
-            # For exact: count members within ±1°C of threshold
-            count_exact = sum(1 for m in members if abs(m - threshold_c) <= 1.0)
-            ensemble_prob = count_exact / len(members)
-        else:
-            ensemble_prob = 0.5
-
-        logger.info("[ENSEMBLE] %s %s: %d members, mean=%.1f°C, spread=%.1f°C, prob=%.2f (threshold=%.1f°C %s)",
-                    city, date, len(members), mean_temp, spread, ensemble_prob, threshold_c, direction)
-
-        result = {
-            "ensemble_prob": ensemble_prob,
-            "ensemble_mean": mean_temp,
-            "ensemble_spread": spread,
-            "member_count": len(members),
-            "source": "gfs_ensemble",
-        }
-
-        # Cache ensemble result in the database
+    def _fetch_one_model(model_name):
         try:
-            db.save_weather(city, f"ensemble_{date}", max_temp=mean_temp, precip=spread)
-        except Exception:
-            logger.debug("[ENSEMBLE] Failed to cache ensemble result for %s/%s", city, date)
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "temperature_2m_max",
+                "start_date": date,
+                "end_date": date,
+                "models": model_name,
+            }
+            data = fetch_with_retry(OPEN_METEO_ENSEMBLE_API, params=params, max_retries=1, timeout=8)
+            if not data:
+                return model_name, []
+            daily = data.get("daily", {})
+            members = _parse_ensemble_members(daily)
+            return model_name, members
+        except Exception as e:
+            logger.debug("[ENSEMBLE] %s fetch failed for %s/%s: %s", model_name, city, date, e)
+            return model_name, []
 
-        return result
-    except Exception as e:
-        logger.warning("[ENSEMBLE] Failed for %s on %s: %s", city, date, e)
+    with ThreadPoolExecutor(max_workers=len(model_list)) as executor:
+        futures = [executor.submit(_fetch_one_model, m) for m in model_list]
+        for f in futures:
+            model_name, members = f.result()
+            if members:
+                all_members.extend(members)
+                sources.append(f"{model_name}({len(members)})")
+
+    if len(all_members) < 5:
+        logger.warning("[ENSEMBLE] Only %d total members for %s on %s from %s. Skipping.",
+                       len(all_members), city, date, model_list)
         return None
+
+    import statistics
+    mean_temp = statistics.mean(all_members)
+    spread = statistics.stdev(all_members) if len(all_members) > 1 else 0.0
+
+    # Calculate ensemble probability based on direction
+    if direction == "above":
+        count = sum(1 for m in all_members if m > threshold_c)
+        ensemble_prob = count / len(all_members)
+    elif direction == "below":
+        count = sum(1 for m in all_members if m <= threshold_c)
+        ensemble_prob = count / len(all_members)
+    elif direction == "exact":
+        count = sum(1 for m in all_members if abs(m - threshold_c) <= 1.0)
+        ensemble_prob = count / len(all_members)
+    else:
+        ensemble_prob = 0.5
+
+    source_str = "+".join(sources) if sources else "ensemble"
+    logger.info("[ENSEMBLE] %s %s: %d members (%s), mean=%.1f°C, spread=%.1f°C, prob=%.2f (threshold=%.1f°C %s)",
+                city, date, len(all_members), source_str, mean_temp, spread, ensemble_prob, threshold_c, direction)
+
+    result = {
+        "ensemble_prob": ensemble_prob,
+        "ensemble_mean": mean_temp,
+        "ensemble_spread": spread,
+        "member_count": len(all_members),
+        "source": source_str,
+    }
+
+    # Cache ensemble result in the database
+    try:
+        db.save_weather(city, f"ensemble_{date}", max_temp=mean_temp, precip=spread)
+    except Exception:
+        logger.debug("[ENSEMBLE] Failed to cache ensemble result for %s/%s", city, date)
+
+    return result
 
 
 # [MODUL DB] LEGACY JSON CACHE REMOVED
