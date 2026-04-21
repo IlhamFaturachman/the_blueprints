@@ -3,6 +3,7 @@
 import sys
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -12,7 +13,8 @@ from market_discovery_internal.config import (
     GAMMA_EVENTS_API, DISCOVERY_MAX_FETCH_PAGES, DISCOVERY_AGGRESSIVE_SCAN_PAGES,
     STRATEGY_MAX_YES_PRICE, STRATEGY_MIN_MODEL_PROB, STRATEGY_MIN_EDGE,
     STRATEGY_EXACT_MIN_MODEL_PROB, STRATEGY_EXACT_MIN_EDGE,
-    DAILY_TARGET_MULTIPLIER
+    DAILY_TARGET_MULTIPLIER,
+    TIME_DECAY_EDGE_ENABLED, TIME_DECAY_BASE_HOURS,
 )
 from market_discovery_internal.utils import fetch_with_retry
 from market_discovery_internal.parsing import (
@@ -113,6 +115,10 @@ def filter_enriched_opportunities(
         mp = float(gates.get("max_price", max_yes_price))
         prob = float(gates.get("min_prob", min_model_prob))
         edge = float(gates.get("min_edge", min_edge))
+        # Time-decay: scale min_edge by sqrt(hours / base_hours)
+        if TIME_DECAY_EDGE_ENABLED:
+            _h = float(m.get("hours_until_resolve") or TIME_DECAY_BASE_HOURS)
+            edge = edge * math.sqrt(max(_h, 0.1) / TIME_DECAY_BASE_HOURS)
         if (float(m.get("yes_price", 1.0)) <= mp
                 and float(m.get("model_prob", 0.0)) >= prob
                 and float(m.get("edge", -1.0)) >= edge):
@@ -183,6 +189,10 @@ def filter_opportunities(
             _dir = parsed.get("direction", "")
             _min_prob = STRATEGY_EXACT_MIN_MODEL_PROB if _dir == "exact" else min_model_prob
             _min_edge = STRATEGY_EXACT_MIN_EDGE if _dir == "exact" else min_edge
+            # Time-decay: scale min_edge by sqrt(hours / base_hours), exempt exact brackets
+            if TIME_DECAY_EDGE_ENABLED and _dir != "exact":
+                _h = float(parsed.get("hours_until_resolve") or TIME_DECAY_BASE_HOURS)
+                _min_edge = _min_edge * math.sqrt(max(_h, 0.1) / TIME_DECAY_BASE_HOURS)
             if parsed["model_prob"] >= _min_prob and parsed["edge"] >= _min_edge:
                 opportunities.append(parsed)
         except Exception as e:

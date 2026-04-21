@@ -334,6 +334,12 @@ STRATEGY_MAX_YES_PRICE = float(os.getenv("STRATEGY_MAX_YES_PRICE", "0.75"))
 STRATEGY_MIN_MODEL_PROB = float(os.getenv("STRATEGY_MIN_MODEL_PROB", "0.51"))
 STRATEGY_MIN_EDGE = float(os.getenv("STRATEGY_MIN_EDGE", "0.04"))
 
+# Time-decay edge scaling: demand higher edge for longer-duration trades.
+# Formula: effective_min_edge = base_edge * sqrt(hours / TIME_DECAY_BASE_HOURS)
+# Disabled by default — enable via .env when ready.
+TIME_DECAY_EDGE_ENABLED = _env_bool("TIME_DECAY_EDGE_ENABLED", False)
+TIME_DECAY_BASE_HOURS = float(os.getenv("TIME_DECAY_BASE_HOURS", "6.0"))
+
 # [LIVE REQUISITES] Minimum order gates for Polymarket CLOB compliance
 STRATEGY_MIN_STAKE_USD = float(os.getenv("STRATEGY_MIN_STAKE_USD", "1.00"))
 STRATEGY_MIN_SHARES = int(os.getenv("STRATEGY_MIN_SHARES", "5"))
