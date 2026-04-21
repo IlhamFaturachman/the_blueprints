@@ -1,511 +1,565 @@
-# THE BLUEPRINTS — Panduan Lengkap Bot Trading Cuaca
+# THE BLUEPRINTS — Panduan Lengkap
 
-**Versi:** 1.2 | **Tanggal:** 19 April 2026 | **Mode aktif:** Paper Trading
+**Versi:** 2.0 | **Tanggal:** 21 April 2026 | **Mode:** Paper Trading ($5)
 
 ---
 
 ## Daftar Isi
 
 1. Apa Itu The Blueprints?
-2. Bagaimana Bot Ini Bekerja (Gambaran Besar)
-3. Sumber Data
-4. Cara Bot Menemukan Peluang
-5. Cara Bot Menilai Apakah Layak Masuk
-6. Cara Bot Membuka Posisi
-7. Cara Bot Mengelola & Menutup Posisi
-8. Sistem Pembelajaran Mandiri
-9. Perlindungan & Manajemen Risiko
-10. Infrastruktur & Komponen Teknis
-11. Dasbor & Monitoring
-12. Status Saat Ini & Roadmap
-13. Riwayat Bug & Perbaikan
+2. Cara Kerja Bot (Gambaran Besar)
+3. Dari Mana Bot Dapat Data?
+4. Bagaimana Bot Menemukan Peluang?
+5. Bagaimana Bot Menilai Layak atau Tidak?
+6. Bagaimana Bot Menentukan Berapa Uang yang Ditaruh?
+7. Bagaimana Bot Mengelola Posisi yang Sudah Dibuka?
+8. Bagaimana Bot Belajar dari Kesalahan?
+9. Sistem Keamanan & Perlindungan
+10. Dashboard & Monitoring
+11. Infrastruktur Teknis
+12. Status Saat Ini
+13. Rencana ke Depan
+14. Riwayat Masalah & Perbaikan
 
 ---
 
 ## 1. Apa Itu The Blueprints?
 
-The Blueprints adalah bot trading otomatis yang beroperasi di **Polymarket** — sebuah platform prediksi pasar berbasis blockchain. Bot ini secara khusus menargetkan pasar cuaca, yaitu pertanyaan seperti:
+The Blueprints adalah bot trading otomatis yang bermain di **Polymarket** — platform prediksi berbasis blockchain. Bot ini fokus pada satu jenis pasar saja: **prediksi suhu cuaca**.
 
-> _"Apakah suhu tertinggi di London pada 19 April akan mencapai 16°C?"_
+Contoh pertanyaan di Polymarket:
 
-Di Polymarket, siapapun bisa membeli "tiket" untuk menjawab YA atau TIDAK terhadap pertanyaan semacam itu. Jika prediksi benar, tiket bernilai $1. Jika salah, bernilai $0.
+> "Apakah suhu tertinggi di Dallas pada 21 April akan mencapai 64°F atau lebih?"
 
-Bot ini bekerja dengan cara membandingkan **prediksi cuaca dari layanan meteorologi** dengan **harga tiket di pasar**. Jika pasar menilai kemungkinan suatu kejadian hanya 25%, tapi bot menghitung kemungkinan sebenarnya adalah 65%, maka ada keuntungan potensial sebesar 40 sen per dolar — inilah yang disebut _edge_ atau keunggulan.
+Di Polymarket, kamu bisa beli "tiket" YES atau NO untuk pertanyaan seperti ini. Kalau prediksi benar, tiket bernilai $1. Kalau salah, bernilai $0.
+
+**Ide dasarnya sederhana:** Bot membandingkan prediksi cuaca dari layanan meteorologi dengan harga tiket di pasar. Kalau pasar bilang kemungkinan cuma 58%, tapi bot hitung kemungkinan sebenarnya 95%, berarti ada selisih 37% — ini yang disebut **edge** (keunggulan). Bot beli tiket murah, tunggu sampai pasar sadar, dan jual lebih mahal atau tunggu sampai resolve.
 
 ---
 
-## 2. Bagaimana Bot Ini Bekerja (Gambaran Besar)
+## 2. Cara Kerja Bot (Gambaran Besar)
 
-Bot berjalan dalam siklus terus-menerus, seperti jam tangan yang berdetak. Setiap siklus berlangsung sekitar 2–5 menit dan mengikuti alur berikut:
+Bot berjalan non-stop 24 jam di server, dalam siklus yang berulang setiap ~10 menit. Setiap siklus mengikuti alur ini:
 
 ```
-AMBIL DATA PASAR
-      ↓
-FILTER PASAR YANG RELEVAN
-      ↓
-AMBIL PREDIKSI CUACA
-      ↓
-HITUNG PELUANG & KEUNTUNGAN
-      ↓
-BUKA POSISI (jika layak)
-      ↓
-PANTAU POSISI TERBUKA
-      ↓
-TUTUP POSISI (jika waktunya)
-      ↓
-SIMPAN DATA → BELAJAR
+1. CARI PASAR CUACA
+   Bot ambil semua pasar cuaca aktif dari Polymarket
+
+2. FILTER YANG RELEVAN
+   Buang yang sudah expired, yang bukan suhu, yang di luar golden window
+
+3. AMBIL PREDIKSI CUACA
+   Tanya Open-Meteo dan wttr.in: "Berapa suhu di Dallas besok?"
+
+4. HITUNG PELUANG
+   Bandingkan prediksi cuaca vs harga pasar → ada edge atau tidak?
+
+5. BUKA POSISI (kalau layak)
+   Kelly Criterion tentukan berapa uang yang ditaruh
+
+6. PANTAU POSISI TERBUKA
+   WebSocket real-time pantau harga setiap detik
+
+7. TUTUP POSISI (kalau waktunya)
+   7 kondisi exit yang dicek setiap siklus
+
+8. SIMPAN & BELAJAR
+   Catat hasil, update kalibrasi, bot makin pintar
 ```
 
-Bot hanya benar-benar aktif mencari peluang dalam **golden window** — jendela waktu tertentu setiap hari dimana kondisi pasar paling optimal.
+Satu siklus penuh butuh sekitar 4-5 menit (sebagian besar waktu dihabiskan untuk mengambil data cuaca dari berbagai kota). Setelah siklus selesai, bot istirahat 5 menit, lalu mulai lagi.
 
 ---
 
-## 3. Sumber Data
+## 3. Dari Mana Bot Dapat Data?
 
-Bot menggunakan tiga kategori sumber data:
+### 3.1 Data Pasar — Polymarket
 
-### 3.1 Data Pasar (Polymarket)
+Bot mengambil data dari dua jalur:
 
-Bot mengambil data dari Polymarket melalui dua jalur:
+- **Gamma API** — daftar semua pasar cuaca yang aktif, termasuk harga, volume, dan tanggal resolve. Bot scan sampai 15 halaman untuk memastikan tidak ada yang terlewat.
+- **WebSocket Real-Time** — koneksi langsung ke Polymarket yang memberikan update harga setiap detik. Begitu bot buka posisi, harga langsung dipantau live.
 
-- **Gamma API** — mengambil daftar semua pasar cuaca yang aktif, termasuk harga saat ini, volume perdagangan, dan tanggal berakhir
-- **WebSocket Real-Time** — koneksi langsung ke Polymarket untuk memantau perubahan harga posisi yang sedang terbuka secara instan
+### 3.2 Data Cuaca — Dua Sumber Independen
 
-### 3.2 Data Cuaca (Prediksi)
+Untuk setiap pasar, bot minta prediksi suhu dari dua layanan yang berbeda:
 
-Untuk setiap pasar yang ditemukan, bot meminta prediksi suhu dari dua layanan independen:
+- **Open-Meteo** — layanan cuaca berbasis model atmosfer Eropa, sangat akurat untuk prediksi 1-3 hari ke depan. Bot juga ambil data ensemble (31 model GFS) untuk menghitung probabilitas secara statistik.
+- **wttr.in** — layanan cuaca agregat yang pakai sumber berbeda dari Open-Meteo.
 
-- **Open-Meteo** — layanan cuaca berbasis model atmosfer Eropa (ERA5), sangat akurat untuk prediksi 1–3 hari ke depan
-- **wttr.in** — layanan cuaca agregat yang menggunakan sumber berbeda
+**Aturan penting:** Bot hanya percaya prediksi kalau kedua sumber **sepakat dalam rentang 2.5°C**. Kalau Open-Meteo bilang 20°C tapi wttr.in bilang 24°C, bot anggap prediksi tidak bisa diandalkan dan skip pasar itu.
 
-Bot hanya mempercayai prediksi jika kedua layanan **sepakat dalam rentang 2.5°C**. Jika keduanya berbeda lebih dari itu, prediksi dianggap tidak dapat diandalkan dan pasar tersebut dilewati.
+### 3.3 Data Historis — Alarm Anomali
 
-### 3.3 Data Historis (Referensi)
-
-Bot menyimpan rata-rata suhu historis 10 tahun untuk setiap kota target. Data ini digunakan sebagai "alarm" — jika prediksi cuaca terlalu jauh dari rata-rata historis (lebih dari 7°C), bot mencurigai ada kesalahan dan mengabaikan prediksi tersebut.
-
-Data historis disimpan di database lokal dan tidak perlu diambil ulang setiap siklus — hanya diperbarui sebulan sekali.
+Bot simpan rata-rata suhu historis 10 tahun untuk setiap kota. Kalau prediksi cuaca terlalu jauh dari rata-rata (lebih dari 7°C), bot curiga ada kesalahan dan skip. Contoh: kalau rata-rata April di London adalah 15°C tapi prediksi bilang 25°C, itu mencurigakan.
 
 ---
 
-## 4. Cara Bot Menemukan Peluang
+## 4. Bagaimana Bot Menemukan Peluang?
 
-### 4.1 Pasar yang Dibidik
+### 4.1 Jenis Pasar yang Dibidik
 
-Bot hanya tertarik pada satu jenis pasar: **"Suhu tertinggi di kota X pada tanggal Y"**.
+Bot hanya tertarik pada pasar **"Suhu tertinggi di kota X pada tanggal Y"**. Setiap pertanyaan seperti ini punya banyak sub-pasar (bucket), misalnya untuk Dallas:
 
-Setiap pertanyaan semacam ini terdiri dari ~11 sub-pasar (bucket), misalnya untuk London:
+```
+"64°F atau lebih?"     → Harga YES: $0.58  ← bot tertarik
+"66°F?"                → Harga YES: $0.25  ← bot tertarik
+"68°F atau lebih?"     → Harga YES: $0.08  ← terlalu murah
+"60°F atau di bawah?"  → Harga YES: $0.02  ← terlalu murah
+"72°F atau lebih?"     → Harga YES: $0.85  ← terlalu mahal
+```
 
-- "Apakah akan 13°C atau di bawahnya?" → Harga YES: $0.001
-- "Apakah akan 14°C?" → Harga YES: $0.002
-- "Apakah akan 15°C?" → Harga YES: $0.010
-- "Apakah akan 16°C?" → Harga YES: $0.217 ← menarik
-- "Apakah akan 17°C?" → Harga YES: $0.750
-- "Apakah akan 18°C?" → Harga YES: $0.051 ← menarik
-- dst.
+Bot menganalisis setiap bucket dan hanya tertarik pada yang harganya antara **$0.05 sampai $0.75** — zona dimana masih ada ketidakpastian yang cukup untuk menghasilkan keuntungan.
 
-Bot menganalisis setiap bucket secara terpisah dan hanya tertarik pada yang harganya antara **$0.05 sampai $0.65** — zona dimana masih ada ketidakpastian yang cukup untuk menghasilkan keuntungan.
+### 4.2 Kota yang Dipantau
 
-### 4.2 Kota Target
+Bot memantau **31 kota** di seluruh dunia: London, New York, Seoul, Singapore, Paris, Toronto, Dallas, Austin, Hong Kong, Madrid, Chicago, Houston, Tokyo, Sydney, dan lainnya.
 
-Bot saat ini memantau **31 kota** di seluruh dunia, termasuk London, New York, Seoul, Singapore, Paris, Toronto, Dallas, Austin, Hong Kong, Madrid, dan lainnya.
+### 4.3 Golden Window — Kapan Bot Aktif Mencari?
 
-### 4.3 Golden Window — Jendela Waktu Terbaik
+Bot tidak asal masuk kapan saja. Ada jendela waktu optimal yang disebut **Golden Window**: bot hanya membuka posisi baru kalau pasar akan resolve dalam **4 sampai 18 jam ke depan**.
 
-Semua temperature market Polymarket **resolve setiap hari jam 19:00 WIB (12:00 UTC)**. Bot hanya mencari peluang pada **jam 05:00–11:00 WIB** setiap hari.
+Kenapa rentang ini?
 
-Alasannya:
-- 14 jam sebelum resolve = 05:00 WIB → pasar baru buka, harga belum efficient
-- 8 jam sebelum resolve = 11:00 WIB → forecast sudah cukup stabil
-- Rentang 05:00–11:00 WIB = **sweet spot** antara ketidakpastian pasar dan kepastian forecast
+- **Terlalu jauh (>18 jam):** Prediksi cuaca masih bisa berubah banyak. Risikonya terlalu tinggi.
+- **Terlalu dekat (<4 jam):** Pasar sudah efisien — harga sudah mencerminkan kenyataan. Edge-nya kecil.
+- **Sweet spot (4-18 jam):** Prediksi cuaca sudah cukup stabil, tapi pasar belum sepenuhnya menyesuaikan. Di sinilah edge terbesar.
 
-Di luar jam tersebut, bot tetap berjalan tetapi tidak membuka posisi baru.
+Dalam praktiknya, waktu terbaik untuk menemukan peluang adalah **pagi hari WIB (05:00-11:00)** ketika pasar untuk hari itu masuk golden window.
 
-**Jumlah peluang yang ditemukan:** Dengan filter probabilitas dan edge aktif, biasanya ditemukan **sekitar 11 peluang** per siklus dalam golden window. Angka ini lebih rendah dari sebelumnya (~50-60) karena model probabilitas telah dikalibrasi ulang agar lebih konservatif — lebih sedikit tapi lebih akurat.
+Di luar golden window, bot tetap berjalan tapi tidak membuka posisi baru — hanya memantau posisi yang sudah terbuka.
 
 ---
 
-## 5. Cara Bot Menilai Apakah Layak Masuk
+## 5. Bagaimana Bot Menilai Layak atau Tidak?
 
 ### 5.1 Menghitung Probabilitas
 
-Setelah mendapat prediksi suhu dari Open-Meteo dan wttr.in, bot menggunakan rumus matematika untuk menghitung seberapa besar kemungkinan suatu bucket akan menang:
+Setelah dapat prediksi suhu, bot menghitung seberapa besar kemungkinan suatu bucket akan menang. Caranya:
 
-- **Pasar "di atas/di bawah"** — menggunakan kurva sigmoid. Semakin jauh prediksi dari batas threshold, semakin tinggi keyakinan bot
-- **Pasar "persis X derajat"** — menggunakan kurva Gaussian (lonceng). Bot paling yakin jika prediksi tepat di angka tersebut, dan keyakinan menurun seiring jarak
+- **Pasar "di atas/di bawah"** — pakai kurva sigmoid. Semakin jauh prediksi dari batas threshold, semakin yakin bot. Tapi bot juga menyesuaikan tingkat keyakinan berdasarkan berapa lama lagi pasar resolve (semakin dekat = semakin yakin, tapi tetap ada batas).
 
-**Kalibrasi k-factor sigmoid (diperbarui 19 April 2026):**
+- **Pasar "persis X derajat"** — pakai kurva Gaussian (lonceng). Bot paling yakin kalau prediksi tepat di angka itu, dan keyakinan menurun seiring jarak.
 
-| Jarak ke resolve | k sebelumnya | k sekarang | Efek |
-|---|---|---|---|
-| ≤6 jam | 1.3 | 0.9 | Lebih hati-hati saat mendekati resolve |
-| ≤14 jam (golden window) | 1.6 | 1.1 | Tidak lagi overconfident |
-| ≤36 jam | 1.1 | 0.75 | Lebih konservatif |
-| >36 jam | 0.75 | 0.50 | Jauh dari resolve = sangat rendah |
+**Batas Keyakinan Maksimal:**
 
-**Hard Ceiling Probabilitas (diperbarui 19 April 2026):**
+Bot tidak pernah 100% yakin. Ada batas keras berdasarkan seberapa jauh prediksi dari threshold:
 
-Meskipun formula sigmoid bisa menghasilkan angka mendekati 100%, bot sekarang menerapkan batas keras berdasarkan margin forecast vs threshold:
-
-| Selisih forecast vs threshold | Probabilitas maksimal |
+| Selisih prediksi vs threshold | Keyakinan maksimal |
 |---|---|
-| < 1°C | 75% |
-| 1°C – 2°C | 87% |
-| 2°C – 3°C | 94% |
-| ≥ 3°C | Tidak dibatasi |
+| Kurang dari 1°C | 75% |
+| 1°C sampai 2°C | 87% |
+| 2°C sampai 3°C | 94% |
+| Lebih dari 3°C | 95% (batas absolut) |
 
-Alasan: model cuaca sendiri punya uncertainty ±2–3°C. Tidak realistis jika bot 99% yakin hanya karena selisih 1.5°C.
+Kenapa? Karena model cuaca sendiri punya ketidakpastian ±2-3°C. Tidak realistis kalau bot 99% yakin hanya karena selisih 1.5°C.
 
-### 5.2 Dua Syarat Masuk
+### 5.2 Menghitung Edge
 
-Bot hanya membuka posisi jika **dua syarat terpenuhi bersamaan**:
+Edge = keyakinan bot - harga pasar.
 
-**Syarat 1 — Tingkat Keyakinan Minimum**
-Bot harus yakin minimal **60%** bahwa prediksinya benar.
+Contoh: Bot 95% yakin Dallas akan di atas 64°F. Harga pasar $0.58 (artinya pasar cuma 58% yakin). Edge = 95% - 58% = **37%**. Ini edge yang sangat besar.
 
-**Syarat 2 — Keuntungan Potensial Minimum**
-Selisih antara keyakinan bot dan harga pasar harus minimal **20%** setelah dikurangi biaya transaksi. Artinya jika bot 65% yakin tapi harga pasar sudah $0.50, keuntungan potensial hanya 13% — tidak cukup, dilewati.
+### 5.3 Tiga Syarat Masuk
 
-### 5.3 Regime Pasar
+Bot hanya buka posisi kalau **tiga syarat terpenuhi**:
 
-Bot juga mengevaluasi "kondisi pasar" (regime) berdasarkan tren harga historis dan volatilitas. Ada tiga kondisi:
+1. **Keyakinan minimal 60%** — bot harus cukup yakin
+2. **Edge minimal 10%** — selisih antara keyakinan dan harga pasar harus cukup besar
+3. **Harga maksimal $0.75** — tidak beli tiket yang sudah terlalu mahal
 
-- **Trending** — pasar sedang bergerak kuat ke satu arah, threshold diperketat
-- **Neutral** — kondisi normal, threshold standar
-- **Volatile** — pasar tidak menentu, threshold diperketat lebih jauh
+### 5.4 Klasifikasi Peluang
 
----
+Setiap peluang yang lolos filter dikategorikan:
 
-## 6. Cara Bot Membuka Posisi
+- **Swing** — harga di zona $0.40-$0.65, ada ruang untuk profit dari pergerakan harga
+- **Hold Candidate** — edge dan probabilitas sangat tinggi, layak dipegang sampai resolve
+- **Watchlist** — harga terlalu murah (<$0.05), dipantau tapi tidak dibeli
+- **Reject** — tidak memenuhi syarat, langsung dibuang
 
-### 6.1 Sistem Bucket/Kategori
+### 5.5 Aturan Diversifikasi
 
-Setiap peluang yang lolos filter dikategorikan ke dalam dua bucket:
+Bot tidak boleh taruh semua telur di satu keranjang:
 
-- **Swing** — peluang jangka pendek, harga sedang bergerak cepat, target profit lebih cepat
-- **Hold Candidate** — peluang untuk dipegang lebih lama, harga lebih stabil
-
-### 6.2 Aturan Diversifikasi
-
-Bot menerapkan aturan ketat untuk menghindari terlalu terkonsentrasi di satu tempat:
-
-- **Maksimal 1 posisi per kota per hari** — mencegah kehilangan besar jika prediksi cuaca satu kota salah
-- **Target minimal 5 kota berbeda** per siklus aktif
-- **Maksimal 1 posisi per event** — tidak boleh beli 16°C DAN 17°C London sekaligus karena itu saling mengkanibal
-
-### 6.3 Ukuran Posisi
-
-Setiap posisi menggunakan **$1.00 USD tepat** (cost + fee = $1.00 total). Tidak ada scaling dinamis berdasarkan confidence — semua posisi sama rata. Ini menjamin akuntansi yang bersih dan hasil yang mudah dibandingkan.
-
-### 6.4 Bagaimana Bot Memilih dari Peluang yang Ada?
-
-**Tahap 1 — Klasifikasi Bucket**
-
-- `reject` — harga di luar rentang valid → **langsung dibuang**
-- `watchlist` — harga terlalu murah (<$0.05) → **dibuang, hanya dipantau**
-- `enter_swing` — harga OK, edge OK → **kandidat**
-- `enter_hold_candidate` — edge DAN probabilitas sangat tinggi → **kandidat prioritas utama**
-
-**Tahap 2 — Anti-Korelasi: Satu Kota, Satu Hari, Satu Posisi**
-Dari kandidat yang tersisa, satu kota + satu tanggal hanya boleh menghasilkan 1 posisi. Jika London 19 April punya 3 bucket yang lolos, hanya yang terbaik yang diambil.
-
-**Tahap 3 — Ranking**
-Kandidat diurutkan berdasarkan: Confidence → Edge → Harga YES lebih murah.
-
-**Tahap 4 — Slot Tersedia**
-Bot hanya membuka posisi sebanyak slot yang tersedia (maks 5 posisi terbuka bersamaan).
-
-**Tahap 5 — Review Claude Haiku**
-Setiap kandidat final dikirim ke Claude Haiku untuk "second opinion". Haiku bisa memveto jika ada sesuatu yang mencurigakan.
-
-**Contoh nyata:**
-
-```
-Bucket 17°C ($0.750) → reject (terlalu mahal)
-Bucket 18°C ($0.051) → watchlist (terlalu murah)
-Bucket 16°C ($0.217) → enter_swing ✓ → ranking → Haiku approve → BELI
-```
+- **Maksimal 1 posisi per kota per hari** — kalau prediksi cuaca satu kota salah, kerugian terbatas
+- **Maksimal 1 posisi per event** — tidak boleh beli "64°F atau lebih" DAN "66°F" untuk Dallas sekaligus
+- **Dari semua kandidat, bot pilih yang terbaik** berdasarkan: keyakinan tertinggi → edge terbesar → harga termurah
 
 ---
 
-## 7. Cara Bot Mengelola & Menutup Posisi
+## 6. Bagaimana Bot Menentukan Berapa Uang yang Ditaruh?
+
+### 6.1 Kelly Criterion — Taruhan Proporsional
+
+Bot menggunakan **Kelly Criterion** — rumus matematika yang menentukan ukuran taruhan optimal berdasarkan edge dan probabilitas. Prinsipnya: semakin besar edge, semakin besar taruhan. Tapi tidak pernah terlalu besar.
+
+Rumusnya (disederhanakan):
+
+```
+Taruhan = Uang tersedia x Kelly Factor x 20%
+
+Kelly Factor = (probabilitas x odds - (1 - probabilitas)) / odds
+```
+
+Bot menggunakan **20% dari full Kelly** (disebut "fractional Kelly") — ini jauh lebih konservatif dari yang optimal secara matematis, tapi lebih aman. Lebih baik lambat tapi selamat.
+
+### 6.2 Batas-Batas Keamanan
+
+| Pengaturan | Nilai | Penjelasan |
+|---|---|---|
+| Kelly Fraction | 20% | Hanya pakai 20% dari rekomendasi Kelly |
+| Taruhan minimum | $1.00 | Tidak buka posisi kalau taruhan di bawah $1 |
+| Taruhan maksimum | $10.00 | Tidak pernah taruh lebih dari $10 per posisi |
+| Edge minimum | 3% | Kelly tidak akan taruh kalau edge di bawah 3% |
+| Kas cadangan | 50% | Selalu sisakan minimal 50% kas untuk posisi berikutnya |
+
+### 6.3 Slot Posisi — Berapa Posisi Bisa Dibuka?
+
+Jumlah posisi yang bisa dibuka bersamaan tergantung ukuran wallet:
+
+| Ukuran Wallet | Maksimal Posisi |
+|---|---|
+| $5 - $7 | 3 posisi |
+| $8 - $11 | 5 posisi |
+| $12 - $19 | 8 posisi |
+| $20+ | 15 posisi |
+
+Ini bukan batasan kaku — Kelly Criterion yang menentukan apakah kas cukup untuk posisi baru. Kalau kas tinggal $1.50 dan overhead per posisi ~$1.05, bot masih bisa buka 1 posisi lagi. Tapi kalau kas tinggal $0.80, bot berhenti — tidak cukup untuk taruhan minimum $1.00.
+
+### 6.4 Transisi dari Paper ke Live
+
+Semua pengaturan Kelly sudah dinamis. Saat transisi dari paper ($5) ke live ($7), **tidak perlu ubah kode apapun**. Kelly otomatis menyesuaikan:
+
+- $5 wallet → Kelly taruh ~$1.00 per posisi (minimum)
+- $7 wallet → Kelly taruh ~$1.00-$1.10 per posisi
+- $50 wallet → Kelly taruh ~$2-$5 per posisi (tergantung edge)
+
+Cukup ubah satu angka di file konfigurasi: `PAPER_BASE_WALLET=7.0`.
+
+---
+
+## 7. Bagaimana Bot Mengelola Posisi yang Sudah Dibuka?
 
 ### 7.1 Pemantauan Harga Real-Time
 
-Setelah posisi terbuka, bot memantau harga melalui WebSocket — koneksi langsung yang mendapat update harga dalam hitungan detik. Bot men-subscribe token ID posisi ke Polymarket WebSocket, dan setiap ada perubahan harga (event `price_change`, `last_trade_price`, atau `book`) bot langsung menerima notifikasi.
+Begitu posisi dibuka, bot langsung subscribe ke WebSocket Polymarket untuk token tersebut. Setiap ada perubahan harga (bahkan perubahan $0.01), bot langsung tahu. Dashboard juga menampilkan harga live ini.
 
-### 7.2 Tujuh Kondisi Penutupan Posisi (Hybrid Exit)
+### 7.2 Tujuh Kondisi Penutupan (Hybrid Exit)
 
-Bot mengevaluasi tujuh kondisi setiap siklus, berurutan dari prioritas tertinggi:
+Bot punya 7 alasan untuk menutup posisi, dicek berurutan dari yang paling penting:
 
-**1. Haiku Monitor — Forced Exit (Prioritas Tertinggi)**
-Claude Haiku menganalisis setiap posisi terbuka setiap 1 jam. Jika Haiku memberi sinyal "close" dengan keyakinan ≥75% → posisi langsung ditutup paksa.
+**1. Exit Sniper — Harga Tembus $0.90**
+Kalau harga YES tiba-tiba naik ke $0.90 atau lebih, langsung jual. Harga setinggi itu artinya pasar sudah hampir pasti — ambil untung sekarang daripada tunggu resolve.
 
-> ⚠️ **Newborn Guard (ditambahkan 19 April 2026):** Haiku TIDAK BISA menutup posisi yang berumur kurang dari 2 jam, kecuali kerugian sangat dalam (< -15%). Ini mencegah "false panic" seperti kejadian Seoul dimana Haiku menutup posisi +28% karena harga WS masih stale saat posisi baru dibuka.
+**2. Sniper Stop Loss — Prediksi Cuaca Berubah**
+Kalau prediksi cuaca tidak lagi mendukung posisi (dua sumber tidak sepakat, atau prediksi bergeser drastis), tutup posisi. Alasan masuk sudah tidak berlaku.
 
-> ⚠️ **Profit Guard (diperkuat 19 April 2026):** Haiku juga diblokir jika P&L posisi sedang > +5%. Posisi yang jelas sedang profit tidak boleh ditutup AI karena alasan apapun.
+**3. Trailing Stop — Kunci Keuntungan**
+Aktif kalau posisi pernah naik +20% atau lebih. Setelah itu, kalau harga turun kembali ke harga entry, jual di break-even. Prinsipnya: "sudah pernah untung, jangan sampai jadi rugi."
 
-**2. Exit Sniper — Harga Tembus $0.90**
-Jika harga YES tiba-tiba melonjak ke $0.90 atau lebih → langsung jual. Harga setinggi itu berarti pasar sudah hampir pasti — ambil untung sekarang.
+**4. Hard Stop Loss — Potong Rugi**
+Kalau harga turun ke 48% dari harga entry, potong rugi. Contoh: beli di $0.50 → stop loss di $0.24.
 
-**3. Sniper Stop Loss — Forecast Cuaca Rusak**
-Jika prediksi cuaca tidak lagi valid (dua sumber tidak sepakat, atau prediksi bergeser drastis) → tutup posisi. Alasan: dasar keputusan masuk sudah tidak berlaku.
+Ada **cooldown 2 jam** — stop loss tidak aktif selama 2 jam pertama setelah posisi dibuka. Ini memberi ruang untuk spread awal settle.
 
-**4. Trailing Stop — Proteksi Keuntungan di Break-Even**
-Aktif jika posisi pernah naik +20% atau lebih. Setelah itu, jika harga turun kembali ke harga entry → jual di break-even.
+**5. Take Profit — Target Tercapai**
+Target standar: 2x harga entry (bisa diatur via konfigurasi). Beli $0.30 → target $0.60. Beli $0.58 → target $1.00 (resolve sebagai YES).
 
-**5. Stop Loss Biasa (Hard Stop)**
-Jika harga turun ke **55%** dari harga entry → potong rugi. Contoh: beli di $0.30 → stop loss di $0.165.
+**6. Late Window — 2 Jam Sebelum Resolve**
+Saat tinggal 2 jam sebelum pasar tutup:
+- Forecast masih valid dan posisi untung → tahan sampai resolve
+- Forecast tidak valid atau posisi rugi → jual sekarang
 
-> [!IMPORTANT]
-> **Cooldown 2 Jam**: Stop Loss ini tidak aktif selama 2 jam pertama sejak posisi dibuka. Ini memberi ruang bagi spread awal untuk settle.
+**7. Flash Crash Shield — Perlindungan dari Harga Palsu**
+Kadang harga di WebSocket bisa "spike" — turun drastis sesaat lalu kembali normal. Bot punya 4 lapis perlindungan:
+- Layer 1: Deteksi spike (harga turun >30% dalam 1 detik)
+- Layer 2: Cek apakah spike konsisten dalam beberapa tick
+- Layer 3: Verifikasi via REST API (bukan WebSocket)
+- Layer 4: Cek kedalaman orderbook
 
-**6. Take Profit +100%**
-Target standar: 2x harga entry. Beli $0.30 → target $0.60.
+Kalau spike terdeteksi sebagai palsu, bot abaikan dan tidak trigger stop loss.
 
-**7. Late Window Logic (≤2 Jam Sebelum Resolve)**
-Saat tinggal ≤2 jam sebelum pasar tutup jam 19:00 WIB:
-- Haiku yakin ≥75% DAN forecast valid → **tahan sampai resolve**
-- Yakin <75% atau forecast tidak valid → **jual sekarang**
-- Yakin <45% → **"Thesis Decay Exit"** — jual meskipun belum rugi
+### 7.3 Whiplash Shield — Jangan Masuk Lagi Setelah Keluar Paksa
 
-### 7.3 Whiplash Shield — Cooldown Setelah Exit
+Setelah posisi ditutup oleh stop loss, kota tersebut masuk **blacklist 24 jam**. Bot tidak akan buka posisi baru di kota yang sama hari itu.
 
-Setelah posisi ditutup oleh Haiku atau stop-loss, kota tersebut masuk **blacklist 24 jam**. Bot tidak akan membuka posisi baru di kota yang sama untuk hari itu.
-
-Alasan: setelah exit paksa, kondisi pasar di kota tersebut dianggap tidak kondusif. Membuka posisi lagi langsung ("churning") hanya membuang fee tanpa edge.
-
-### 7.4 Penutupan Berbasis AI (Haiku Monitor)
-
-Claude Haiku memantau posisi terbuka setiap 1 jam dan menerima konteks lengkap:
-
-| Field | Keterangan |
-|---|---|
-| `market_question` | Pertanyaan pasar lengkap |
-| `entry_price` | Harga saat posisi dibuka |
-| `current_yes_price` | Harga pasar sekarang |
-| `pnl_pct` | Untung/rugi saat ini dalam persen |
-| `hours_until_resolve` | Jam tersisa sebelum resolve |
-| `entry_model_prob` | Keyakinan bot saat masuk |
-| `entry_edge` | Edge yang dihitung saat masuk |
-| `forecast_temp_at_entry_c` | Prediksi cuaca waktu posisi dibuka |
-| `forecast_temp_now_c` | Prediksi cuaca **sekarang** (terbaru) |
-| `forecast_drift_c` | Selisih — berapa derajat forecast bergeser |
-
-**Cara Haiku memutuskan:**
-1. Forecast drift melawan thesis → sinyal kuat close
-2. P&L < -30% DAN forecast drift melawan → close
-3. P&L < -30% tapi forecast tidak berubah → market panic sementara, jangan buru-buru close
-4. ≤2 jam sebelum resolve DAN masih rugi dalam → close
-5. ≤2 jam sebelum resolve DAN posisi untung → tahan
-6. Tidak yakin → default hold
-
-### 7.5 Review AI Sebelum Masuk Posisi (Haiku Entry)
-
-Sebelum membuka posisi, Haiku melakukan sanity check terakhir:
-1. Apakah forecast masuk akal untuk kota dan musim tersebut?
-2. Apakah hours_until_resolve cukup? (<6 jam → sangat skeptis)
-3. Apakah arah + threshold konsisten dengan forecast?
-4. Jika edge < 0.15 atau model_prob < 0.55 → skip
-
-Haiku entry dibatasi **2 panggilan per hari**.
+Alasannya: setelah exit paksa, kondisi pasar di kota itu dianggap tidak kondusif. Masuk lagi langsung ("churning") cuma buang fee tanpa edge.
 
 ---
 
-## 8. Sistem Pembelajaran Mandiri
+## 8. Bagaimana Bot Belajar dari Kesalahan?
 
-### 8.1 Kalibrasi Probabilitas (Bayesian Shrinkage)
+### 8.1 Kalibrasi Probabilitas
 
-Setiap trade yang selesai dicatat. Setelah minimal **5 data per kategori** terkumpul (per kota, per arah, per jarak waktu), bot mulai "mengoreksi dirinya sendiri" — menyesuaikan perhitungan probabilitas ke depan berdasarkan akurasi historis.
+Setiap trade yang selesai dicatat hasilnya. Bot menghitung **Brier Score** — ukuran seberapa akurat prediksi probabilitasnya. Semakin banyak data, semakin akurat kalibrasi.
 
-Catatan: fitur ini baru aktif efektif setelah ~30 trade terkumpul.
+Contoh: kalau bot selalu bilang "90% yakin" untuk Dallas tapi ternyata cuma menang 70% dari waktu, bot akan menurunkan keyakinannya untuk Dallas di masa depan.
 
-### 8.2 Auto-Tuner Per Kota (A/C/B)
+Kalibrasi ini mulai efektif setelah ~30 trade terkumpul.
+
+### 8.2 Auto-Tuner — Grading Per Kota
 
 Berdasarkan rekam jejak per kota (minimal 3 trade), bot mengategorikan:
 
-- **A (Aggressive)** — win rate tinggi, bot lebih agresif
-- **C (Cautious)** — win rate rendah, bot lebih selektif
-- **B (Blacklist)** — kerugian berturut-turut, dilewati sementara
+- **A (Aggressive)** — kota ini sering menang, bot lebih berani (threshold edge diturunkan)
+- **C (Cautious)** — kota ini sering kalah, bot lebih hati-hati (threshold edge dinaikkan)
+- **B (Blacklist)** — kerugian berturut-turut, kota ini dilewati sementara
+
+Grading ini otomatis dan terus diperbarui setiap siklus.
+
+### 8.3 Laporan Atribusi
+
+Setiap 7 hari, bot membuat laporan yang menunjukkan:
+- Kota mana yang paling menguntungkan
+- Strategi mana (swing vs hold) yang lebih berhasil
+- Alasan penutupan mana yang paling sering terjadi
+
+Laporan ini dikirim via Telegram.
 
 ---
 
-## 9. Perlindungan & Manajemen Risiko
+## 9. Sistem Keamanan & Perlindungan
 
 ### 9.1 Circuit Breaker
 
-Jika total kerugian hari ini melampaui batas → bot berhenti membuka posisi baru untuk hari itu.
+Kalau total kerugian hari ini melampaui batas (15% dari wallet), bot berhenti membuka posisi baru untuk hari itu. Posisi yang sudah terbuka tetap dipantau dan bisa ditutup, tapi tidak ada posisi baru.
 
-### 9.2 Daily Target Gate
+### 9.2 Leverage Cap — Jangan Habiskan Semua Uang
 
-Jika target harian sudah tercapai → bot bisa berhenti membuka posisi baru untuk mengamankan keuntungan.
+Bot selalu cek: "apakah kas yang tersisa cukup untuk minimal 1 posisi lagi?" Kalau tidak, gate ditutup. Ini mencegah bot menghabiskan semua kas dan tidak punya cadangan.
 
-### 9.3 Anti-Korelasi
-
-Tidak boleh punya dua posisi yang saling bertentangan dalam event yang sama (misal London 16°C DAN London 17°C).
-
-### 9.4 Validasi Prediksi Ganda
+### 9.3 Validasi Prediksi Ganda
 
 - **Konsensus dua sumber** — Open-Meteo dan wttr.in harus sepakat dalam ±2.5°C
 - **Anomaly check** — prediksi tidak boleh >7°C dari rata-rata historis 10 tahun
+- **NOAA METAR** — untuk kota yang punya stasiun cuaca, data ground-truth digunakan sebagai validasi tambahan
 
-### 9.5 Consensus Guard
+### 9.4 Consensus Guard
 
-Jika bot >90% yakin tapi harga pasar <30% (pasar sangat tidak setuju) dalam 12 jam terakhir sebelum resolve → probabilitas bot diredam. Ini mencegah bot ngotot melawan konsensus pasar tanpa alasan yang sangat kuat.
+Kalau bot sangat yakin (>90%) tapi harga pasar sangat rendah (<30%), bot meredam keyakinannya. Ini mencegah bot ngotot melawan konsensus pasar tanpa alasan yang sangat kuat.
 
-### 9.6 Perlindungan Data
+### 9.5 Perlindungan Data
 
-Semua data posisi disimpan di SQLite (`blueprints_master.db`) dengan mirror JSON (`paper_positions_5usd.json`). Jika bot restart, posisi yang sedang terbuka tetap terlacak.
-
----
-
-## 10. Infrastruktur & Komponen Teknis
-
-### 10.1 Database Terpusat
-
-Semua data tersimpan dalam SQLite (`blueprints_master.db`):
-- Posisi aktif dan historis
-- Rekam jejak trade (untuk pembelajaran)
-- Data cuaca historis 31 kota
-- Statistik kalibrasi per kota
-- Biaya AI yang digunakan
-- Heartbeat proses
-
-### 10.2 Data Warmer
-
-Setiap 2 jam, komponen terpisah mengambil data cuaca historis untuk tanggal mendatang dan menyimpan ke database. Memastikan data historis selalu tersedia saat dibutuhkan.
-
-### 10.3 WebSocket Price Watcher (Diperbarui 19 April 2026)
-
-Komponen terpisah yang menjaga koneksi langsung ke Polymarket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`).
-
-**Perbaikan yang diterapkan:**
-- **IPv4 Force** — VPS tidak punya routing IPv6 ke internet, menyebabkan koneksi hang. Kini dipaksa IPv4.
-- **Subscribe by token ID** — Bot subscribe ke `assets_ids` dengan token ID posisi aktif. Polymarket mengirim `book` (snapshot orderbook) + `price_change`/`last_trade_price` secara real-time.
-- **Universal book parser** — Mendukung format orderbook lama (list) dan baru (dict).
-- **Watchdog thread** — Thread terpisah memantau koneksi, reconnect jika tidak ada pesan >120 detik.
-- **Heartbeat logging** — 5% dari event yang diterima di-log untuk membuktikan koneksi aktif.
-
-Saat tidak ada posisi terbuka, WS tetap terkoneksi tapi tidak subscribe ke token apapun — hanya menerima broadcast global `new_market`. Saat posisi dibuka, token ID langsung di-subscribe dan harga mulai mengalir.
-
-### 10.4 AI — Claude Haiku
-
-| Fungsi | Kapan Dipanggil | Interval | Batas Per Hari |
-|---|---|---|---|
-| **Entry Review** | Sanity check sebelum buka posisi | Per kandidat | 2 panggilan |
-| **Position Monitor** | Pantau posisi terbuka — hold atau close? | Setiap 1 jam per posisi | 80 panggilan |
-| **Market Sensing** | Identifikasi kode ICAO dari deskripsi pasar | Per pasar baru | 50 panggilan |
-
-Biaya estimasi: **~$0.03–0.04 per hari**.
-
-### 10.5 Telegram Notifikasi
-
-Bot mengirim notifikasi untuk:
-- Posisi baru dibuka
-- Posisi ditutup (beserta hasil profit/rugi)
-- Peringatan sistem
-- **Laporan atribusi profit mingguan** (hanya setiap 7 hari — bukan setiap siklus)
-
-### 10.6 Server
-
-VPS di Jakarta, IP `103.253.244.158`, aktif 24 jam. Dikelola sebagai systemd service yang otomatis restart jika crash.
+- Semua data disimpan di **SQLite** (`blueprints_master.db`) dengan mode WAL (Write-Ahead Logging) untuk keamanan
+- Mirror JSON (`paper_positions_5usd.json`) sebagai backup
+- Kalau bot restart, semua posisi terbuka tetap terlacak
+- PID lock mencegah dua instance bot berjalan bersamaan
+- `base_wallet` hanya bisa diubah via reset script — tidak bisa terkorupsi oleh bug
 
 ---
 
-## 11. Dasbor & Monitoring
+## 10. Dashboard & Monitoring
 
-Antarmuka web di `http://103.253.244.158:8080/web_ui/`:
+Dashboard web tersedia di `http://103.253.244.158:8080/web_ui/`
 
-| Panel | Informasi |
+### 10.1 Tiga Kartu Utama
+
+| Kartu | Apa yang Ditampilkan |
 |---|---|
-| Portfolio Value | Total nilai portofolio saat ini |
-| Floating PnL | Keuntungan/kerugian posisi terbuka |
-| Realized PnL | Keuntungan/kerugian yang sudah direalisasi |
-| Win Rate | Persentase trade yang menang |
-| Circuit Breaker | Status apakah bot masih aktif |
-| Bot Health | Kapan siklus terakhir berjalan |
-| Self-Learning | Status A/C/B per kota |
-| Last Cycle Stats | Statistik siklus terakhir |
-| Live Open Positions | Semua posisi dengan harga real-time |
+| **Portfolio** | Total nilai portofolio (kas + nilai posisi terbuka) |
+| **Today's PnL** | Keuntungan/kerugian hari ini (floating + realized) |
+| **Win Rate** | Persentase trade yang menang, rata-rata PnL per trade |
+
+### 10.2 Status Bar
+
+Satu baris yang menampilkan:
+- **Gate status** — ACTIVE (bot boleh buka posisi) atau TRIPPED (bot berhenti sementara)
+- **Bot health** — Healthy (hijau), In cycle (kuning), atau STALE (merah, ada masalah)
+- **Jam WIB** — waktu Jakarta saat ini
+- **Next cycle** — estimasi kapan siklus berikutnya dimulai, dengan progress bar
+
+### 10.3 Kartu Posisi
+
+Setiap posisi terbuka ditampilkan sebagai kartu besar dengan:
+- **Nama kota dan pertanyaan pasar**
+- **Countdown resolve** — "Resolves in 8h 30m"
+- **Price progress bar** — visual yang menunjukkan posisi harga saat ini antara Stop Loss dan Take Profit, dengan marker di harga entry
+- **Metrik** — PnL, probabilitas, edge, cost
+- **Tombol** — link ke Polymarket dan tombol "Entry Logic" untuk melihat alasan bot masuk
+
+Posisi diurutkan berdasarkan **urgency** (yang paling dekat resolve di atas), bukan berdasarkan PnL.
+
+### 10.4 Sumber Data Dashboard
+
+Dashboard mengambil data dari dua sumber:
+1. **Primary: `/api/state`** — data live langsung dari database bot (selalu fresh)
+2. **Fallback: JSON file** — kalau bot sedang mati, dashboard tampilkan data terakhir yang tersimpan
+
+Harga posisi diupdate real-time via WebSocket — tidak perlu refresh halaman.
 
 ---
 
-## 12. Status Saat Ini & Roadmap
+## 11. Infrastruktur Teknis
 
-### Status Per 19 April 2026
+### 11.1 Server
+
+- VPS di Jakarta, IP `103.253.244.158`
+- Aktif 24 jam sebagai systemd service
+- Otomatis restart kalau crash
+- Nginx sebagai reverse proxy (port 8080 → dashboard, `/api/` → bot command server)
+
+### 11.2 Komponen yang Berjalan
+
+| Komponen | Port | Fungsi |
+|---|---|---|
+| Bot utama | - | Siklus trading (discovery → entry → exit → learn) |
+| Command Server | 8083 | API untuk dashboard dan kill switch |
+| WS Broadcaster | 8081 | Relay harga live ke dashboard browser |
+| WS Price Watcher | - | Koneksi ke Polymarket WebSocket untuk pantau harga |
+| Data Warmer | - | Background thread yang pre-fetch data cuaca historis |
+| Nginx | 8080 | Serve dashboard HTML + proxy API requests |
+
+### 11.3 Database
+
+SQLite (`logs/blueprints_master.db`) menyimpan:
+- Posisi aktif dan historis
+- Rekam jejak semua trade (untuk pembelajaran)
+- Statistik kalibrasi per kota
+- Cycle metrics (log setiap siklus)
+- Portfolio summary (wallet, kas, PnL)
+
+### 11.4 AI — Dinonaktifkan
+
+Bot sebelumnya menggunakan Claude Haiku untuk tiga fungsi (entry review, position monitor, market sensing). Semua fitur AI telah **dinonaktifkan** per 21 April 2026.
+
+Alasan:
+- Model deterministik (sigmoid + ensemble + Kelly) sudah cukup akurat
+- AI Monitor pernah menyebabkan kerugian dengan menutup posisi yang sedang profit (insiden Seoul)
+- Menghilangkan biaya API ($4.80/bulan) dan failure mode (API error, rate limit)
+- Bot menjadi sepenuhnya deterministik dan reproducible
+
+Kode AI masih ada di codebase (dormant) — bisa diaktifkan kembali via konfigurasi kalau diperlukan di masa depan.
+
+---
+
+## 12. Status Saat Ini
+
+### Per 21 April 2026
 
 | Komponen | Status |
 |---|---|
-| Bot | ✅ Aktif berjalan di server |
-| Mode | 📄 Paper Trading (simulasi) |
-| Modal awal | $5.00 USD (fresh reset 19 April 2026) |
-| Stake per posisi | $1.00 USD tepat (cost + fee) |
-| Maks posisi terbuka | 5 posisi bersamaan |
-| Threshold keyakinan | 60% |
-| Threshold edge minimum | 20% |
-| Stop Loss Multiplier | 0.55 (harga turun 45% dari entry → cut loss) |
-| Cooldown Stop Loss | 120 menit (2 jam) |
-| Golden window | 05:00–11:00 WIB setiap hari |
-| Resolve time | 19:00 WIB setiap hari |
-| Data historis | ✅ Lengkap — 31 kota |
-| Claude Haiku | ✅ Aktif — entry, monitor, sensing |
-| WebSocket | ✅ Aktif dengan IPv4 force |
-| Newborn Guard | ✅ Aktif — 2 jam proteksi setelah entry |
-| Profit Guard | ✅ Aktif — blokir exit jika P&L > +5% |
-| Whiplash Shield | ✅ Aktif — cooldown 24 jam per kota setelah exit paksa |
-| Consensus Guard | ✅ Aktif — redam prob jika bot vs pasar divergen |
-| Prob Ceiling | ✅ Aktif — max 75%/87%/94% per margin |
-| AI budget | ~$0.03–0.04/hari, estimasi cukup 3+ minggu |
+| Bot | Aktif berjalan di server |
+| Mode | Paper Trading (simulasi) |
+| Modal awal | $5.00 USD |
+| Stake per posisi | Ditentukan Kelly Criterion (minimum $1.00) |
+| Maks posisi terbuka | 3 (untuk wallet $5) |
+| Golden Window | 4-18 jam sebelum resolve |
+| AI/Haiku | Dinonaktifkan (semua 3 fitur) |
+| Kelly Criterion | Aktif (20% fractional Kelly) |
+| WebSocket | Aktif dengan IPv4 force |
+| Dashboard | Redesign baru — kartu posisi, progress bar, mobile responsive |
+| Nginx | Aktif — proxy API + serve dashboard |
 
-### Roadmap Bertahap
+### Pengaturan Kunci
 
-**Phase 1 — Stabilitas (3 hari pertama: 19–21 April)**
-- Target: Bot berjalan tanpa crash, WS tidak freeze, tidak ada SyntaxError/ImportError
-- Indikator sukses: Trade masuk normal jam 05:00–11:00 WIB setiap hari
-- Jika kalah semua: investigasi dulu sebelum top-up $5
-
-**Phase 2 — Evaluasi (7 hari: 19–25 April)**
-- Target: Kumpulkan 20–30 closed trades
-- Indikator sukses: Win rate ≥ 50%, tidak ada rugi > $2 total
-- Sistem Bayesian mulai punya data untuk kalibrasi
-
-**Phase 3 — Live Trading (setelah 15 hari: mulai ~4 Mei)**
-- Masuk uang asli $5
-- Prasyarat: Win rate ≥ 55%, avg profit > avg loss, tidak ada bug dalam 7 hari terakhir
-
-### Roadmap Jangka Panjang
-
-1. **Tambah sumber prediksi ketiga** — forecast lebih akurat dengan 3 model independen
-2. **Stake dinamis (Kelly Criterion)** — taruhan lebih besar saat edge tinggi
-3. **Perluas kota** — tambah kota yang sering muncul di Polymarket
-4. **REST API fallback sebelum Haiku exit** — verifikasi harga real via REST jika WS stale sebelum memperbolehkan Haiku menutup posisi (Bug #8 dari RCA Seoul, belum diimplementasikan)
-
----
-
-## 13. Riwayat Bug & Perbaikan
-
-### Insiden Seoul — 19 April 2026
-
-**Kronologi:** Bot masuk posisi Seoul (YES) di $0.53. Harga naik ke $0.68 (+28% profit). WebSocket freeze → harga di DB stuck di $0.52 → Haiku hitung P&L = -1.9% → Haiku panic close → posisi ditutup rugi padahal sedang profit.
-
-**Root cause:**
-1. **WS IPv6 Deadlock** — VPS tidak punya routing IPv6, library hang menunggu timeout
-2. **Haiku Hypersensitivity** — Haiku close posisi baru berdasarkan harga stale tanpa menunggu WS sync
-3. **Sigmoid Overconfidence** — k=1.6 terlalu agresif, model 99% yakin untuk gap 2°C
-
-**Perbaikan yang diterapkan:**
-
-| Bug | Fix | File |
+| Setting | Nilai | Keterangan |
 |---|---|---|
-| WS IPv6 deadlock | Force IPv4 via socket.getaddrinfo | `ws_price_watcher.py` |
-| WS tidak dapat initial snapshot | `initial_dump: True` + subscribe `book` event | `ws_price_watcher.py` |
-| WS format parser gagal | Universal parser (list + dict) | `ws_price_watcher.py` |
-| WS freeze silent | Watchdog thread + heartbeat log 5% | `ws_price_watcher.py` |
-| Haiku false panic exit | Newborn Guard (2 jam) + Profit Guard (>5%) | `analysis.py` |
-| Sigmoid overconfident | k-factors diturunkan + hard ceiling cap | `pricing.py` |
-| Telegram spam tiap siklus | Attribution report hanya setiap 7 hari | `cycles.py` |
-| Stake tidak exact $1 | Hapus risk-multiplier + bypass depth scaling | `cycles.py` + server `.env` |
+| `PAPER_BASE_WALLET` | $5.00 | Modal paper trading |
+| `PAPER_STAKE_USD` | $1.00 | Fallback kalau Kelly disabled |
+| `PAPER_MAX_OPEN_POSITIONS` | 5 | Batas konfigurasi (tier system bisa lebih rendah) |
+| `GOLDEN_WINDOW_HOURS_MIN` | 4 jam | Batas bawah golden window |
+| `GOLDEN_WINDOW_HOURS_MAX` | 18 jam | Batas atas golden window |
+| `STRATEGY_MIN_MODEL_PROB` | 60% | Keyakinan minimum untuk masuk |
+| `STRATEGY_MIN_EDGE` | 10% | Edge minimum untuk masuk |
+| `STRATEGY_MAX_YES_PRICE` | $0.75 | Harga maksimal untuk beli |
+| `KELLY_FRACTION` | 0.20 | 20% dari full Kelly |
+| `KELLY_MIN_STAKE` | $1.00 | Taruhan minimum |
+| `KELLY_MAX_STAKE` | $10.00 | Taruhan maksimum |
+| `HYBRID_STOP_LOSS_MULTIPLIER` | 0.48 | Stop loss di 48% dari entry |
+| `TAKE_PROFIT_PRICE_CAP` | $1.00 | Batas atas target profit |
 
 ---
 
-_Dokumen ini adalah referensi lengkap untuk memahami cara kerja The Blueprints Trading Bot. Diperbarui 19 April 2026 mencakup semua perbaikan pasca-insiden Seoul._
+## 13. Rencana ke Depan
+
+### Phase A — Data Collection (7 hari: 21-27 April)
+
+**Tujuan:** Kumpulkan data trading sebanyak mungkin untuk melatih sistem pembelajaran.
+
+- Bot berjalan dengan $5 paper money
+- Target: 20-30 closed trades dalam 7 hari
+- Sistem kalibrasi dan auto-tuner mulai mengumpulkan data
+- Kalau wallet habis sebelum 7 hari, **biarkan saja** — data kerugian sama berharganya dengan data keuntungan untuk pembelajaran
+
+**Indikator sukses:** Bot berjalan stabil tanpa crash, data terkumpul, kalibrasi mulai terbentuk.
+
+### Transisi ke Live (Hari ke-8)
+
+Prosesnya sangat sederhana:
+
+```bash
+systemctl stop blueprints
+python scripts/reset_warehouse.py --wallet 7.0 --keep-learning
+# Edit .env: PAPER_BASE_WALLET=7.0
+systemctl start blueprints
+```
+
+Flag `--keep-learning` mempertahankan semua data kalibrasi (Brier scores, auto-tuner city grades) sambil mereset wallet dan posisi. Bot mulai live dengan $7 DAN kecerdasan dari 7 hari paper trading.
+
+**Tidak perlu ubah kode apapun.** Kelly Criterion otomatis menyesuaikan ukuran taruhan untuk wallet $7.
+
+### Phase B — Live Trading ($7)
+
+- Modal awal: $7.00 USD (uang asli)
+- Kelly menentukan ukuran taruhan per posisi
+- Sistem pembelajaran terus berjalan dan makin akurat
+- Target: win rate > 55%, profit konsisten
+
+### Jangka Panjang
+
+1. **Execution bridge** — Saat ini bot hanya simulasi (paper trading). Untuk live, perlu ~70 baris kode tambahan di `execution.py` untuk menghubungkan ke Polymarket CLOB API dan benar-benar menempatkan order. Infrastruktur sudah siap (py-clob-client terinstall, wrapper class sudah ada).
+
+2. **Tambah sumber prediksi** — NOAA METAR sebagai sumber ketiga untuk validasi ground-truth.
+
+3. **Perluas kota** — Tambah kota yang sering muncul di Polymarket berdasarkan data yang terkumpul.
+
+4. **Optimasi Golden Window** — Setelah cukup data, analisis jam berapa edge paling besar per kota dan sesuaikan window secara dinamis.
+
+---
+
+## 14. Riwayat Masalah & Perbaikan
+
+### 14.1 Insiden Seoul — 19 April 2026
+
+**Apa yang terjadi:** Bot masuk posisi Seoul di $0.53. Harga naik ke $0.68 (+28% profit). Tapi WebSocket freeze karena masalah IPv6 → harga di database stuck di $0.52 → AI Monitor (Haiku) hitung PnL = -1.9% → Haiku panic close → posisi ditutup rugi padahal sedang profit.
+
+**Perbaikan:**
+- WebSocket dipaksa IPv4 (VPS tidak punya routing IPv6)
+- AI Monitor dinonaktifkan (penyebab utama kerugian)
+- Newborn Guard dan Profit Guard ditambahkan sebagai pengaman tambahan
+
+### 14.2 State Reset Bug — 21 April 2026
+
+**Apa yang terjadi:** Setelah reset wallet ke $5, bot langsung mengembalikan wallet ke $100 pada siklus berikutnya.
+
+**Penyebab:** Fungsi `load_paper_state()` menggabungkan semua data dari cycle_metrics terakhir ke dalam state, termasuk `base_wallet` lama ($100). Ini menimpa nilai $5 yang baru di-reset.
+
+**Perbaikan:**
+- Hanya data operasional (bukan finansial) yang boleh digabungkan dari cycle_metrics
+- `base_wallet` sekarang dibaca dari database sebagai satu-satunya sumber kebenaran
+- Default konfigurasi diubah dari $100 ke $5
+
+### 14.3 Range Regex Bug — 21 April 2026
+
+**Apa yang terjadi:** Bot masuk posisi Dallas dengan threshold 21°F (salah) padahal pertanyaan pasar adalah "64°F atau lebih?"
+
+**Penyebab:** Slug pasar mengandung tanggal "april-21-2026". Regex range matcher mencocokkan "21-2026" sebagai rentang suhu "21°F sampai 2026°F".
+
+**Perbaikan:**
+- Range regex sekarang hanya mencari di teks pertanyaan, bukan di slug
+- Ditambahkan sanity check: tolak kalau threshold > 200 (tidak mungkin suhu segitu)
+
+### 14.4 Insufficient Cash False Positive — 21 April 2026
+
+**Apa yang terjadi:** Dengan wallet $5, bot menolak membuka posisi apapun karena "insufficient_cash" — padahal kas masih cukup.
+
+**Penyebab:** Tier system mengalokasikan 5 slot x $1 x 1.575 overhead = $7.87, yang melebihi $5 wallet. Formula leverage cap membagi kas dengan SEMUA slot, bukan slot yang tersisa.
+
+**Perbaikan:**
+- Tier system sekarang hanya mengatur jumlah slot (bukan ukuran taruhan)
+- Kelly Criterion menentukan ukuran taruhan per posisi
+- Leverage cap disederhanakan: "apakah kas cukup untuk minimal 1 posisi?"
+
+---
+
+*Dokumen ini adalah referensi lengkap The Blueprints Trading Bot. Terakhir diperbarui 21 April 2026 setelah redesign arsitektur Kelly-first, perbaikan regex, dan redesign dashboard.*
