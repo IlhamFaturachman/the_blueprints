@@ -787,7 +787,7 @@ def run_paper_trading_cycle(
             state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + float(forced_closed.get("net_exit_value", forced_closed.get("exit_value", 0.0))), 4)
             continue
 
-        confidence_score = position_confidence_score_fn(position, current_yes_price, forecast_valid)
+        confidence_score = position_confidence_score_fn(position, current_yes_price, forecast_valid, hours_until_resolve)
 
         updated_position, decision = update_paper_position_fn(
             position=position,
@@ -1499,8 +1499,12 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
     return position
 
 
-def _position_confidence_score(position, current_yes_price, forecast_still_valid):
-    """Estimate confidence (0-1) that holding remains favorable."""
+def _position_confidence_score(position, current_yes_price, forecast_still_valid, hours_until_resolve=None):
+    """Estimate confidence (0-1) that holding remains favorable.
+
+    In the late window (H-2), uses entry_edge instead of current_edge to prevent
+    confidence from dropping as the market converges toward the correct price.
+    """
     if not forecast_still_valid:
         return 0.0
 
@@ -1510,7 +1514,17 @@ def _position_confidence_score(position, current_yes_price, forecast_still_valid
     base_prob = max(0.0, min(float(base_prob), 1.0))
 
     current_price = max(0.0, min(float(current_yes_price), 1.0))
-    edge_now = max(base_prob - current_price, 0.0)
+
+    # In late window, use frozen entry_edge so confidence stays stable
+    # as market price converges toward our thesis (which shrinks current edge).
+    _in_late_window = (hours_until_resolve is not None
+                       and hours_until_resolve <= HYBRID_LATE_WINDOW_HOURS)
+    if _in_late_window:
+        entry_edge = float(position.get("entry_edge", 0.0) or 0.0)
+        edge_now = max(entry_edge, 0.0)
+    else:
+        edge_now = max(base_prob - current_price, 0.0)
+
     edge_scale = HYBRID_CONFIDENCE_EDGE_SCALE if HYBRID_CONFIDENCE_EDGE_SCALE > 0 else 1.0
     edge_component = min(edge_now / edge_scale, 1.0)
     price_component = 1.0 - min(abs(current_price - 0.50) / 0.50, 1.0)
@@ -1536,7 +1550,7 @@ def _hours_until_resolve_from_end_date(end_date, now_utc=None):
 def evaluate_hybrid_exit(
     position: dict[str, Any],
     current_yes_price: float,
-    forecast_still_valid: bool,
+    forecast_still_valid: float,
     hours_until_resolve: Optional[float] = None,
     now_utc: Optional[datetime] = None,
     confidence_score: Optional[float] = None,
@@ -1755,7 +1769,7 @@ def close_paper_position(position, exit_price, reason, now_utc=None):
 def update_paper_position(
     position: dict[str, Any],
     current_yes_price: float,
-    forecast_still_valid: bool,
+    forecast_still_valid: float,
     hours_until_resolve: Optional[float] = None,
     now_utc: Optional[datetime] = None,
     confidence_score: Optional[float] = None,

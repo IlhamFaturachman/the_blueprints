@@ -15,6 +15,7 @@ from market_discovery_internal.config import (
     CONSENSUS_MAX_ERROR_C, HISTORICAL_DEVIATION_C, ANOMALY_LOG_FILE,
     NOAA_METAR_API,
     OPEN_METEO_ENSEMBLE_API, ENSEMBLE_ENABLED,
+    POINT_FORECAST_WEIGHT, WTRIN_WEIGHT,
 )
 from market_discovery_internal.utils import fetch_with_retry
 
@@ -449,7 +450,13 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) ->
             _log_anomaly(city, date, t_om, t_wt, "consensus_disagreement")
             return None # Major disagreement between weather sources, reject forecast to be safe.
         
-        base_avg = round((t_om + t_wt) / 2.0, 1)
+        # Weighted blend: Open-Meteo gets more weight (more reliable API).
+        # POINT_FORECAST_WEIGHT=0.35, WTRIN_WEIGHT=0.20 → normalized 64/36.
+        _w_total = POINT_FORECAST_WEIGHT + WTRIN_WEIGHT
+        if _w_total > 0:
+            base_avg = round((POINT_FORECAST_WEIGHT * t_om + WTRIN_WEIGHT * t_wt) / _w_total, 1)
+        else:
+            base_avg = round((t_om + t_wt) / 2.0, 1)  # Fallback to 50/50
         source = "verified-triple-source" if t_noaa is not None else "verified-dual-source"
         if t_noaa is not None and icao_override:
             source += " (METAR)"
@@ -725,8 +732,16 @@ def forecast_still_valid(
     is_weather_evidence_valid_fn: Any,
     position_to_market_fn: Any,
     calculate_edge_fn: Any,
-) -> bool:
-    """Evaluate whether forecast still supports the open position thesis."""
+) -> float:
+    """Evaluate whether forecast still supports the open position thesis.
+
+    Returns a float 0.0-1.0 representing forecast validity strength:
+      - 0.0: forecast invalid or model_prob < 0.50
+      - 0.0-1.0: graduated scale for model_prob 0.50-0.70
+      - 1.0: model_prob >= 0.70 (fully valid)
+    All existing consumers use truthy checks (if not x:), so 0.0 is falsy
+    and any positive float is truthy — backward compatible.
+    """
     forecast_temp = fetch_forecast_with_cache_fn(
         position["city"],
         position["date"],
@@ -737,8 +752,16 @@ def forecast_still_valid(
     evidence = build_weather_evidence_fn(position["city"], position["date"], forecast_temp)
 
     if not is_weather_evidence_valid_fn(evidence):
-        return False
+        return 0.0
 
     market_view = position_to_market_fn(position, current_yes_price, hours_until_resolve)
     edge_result = calculate_edge_fn(market_view, forecast_temp)
-    return bool(edge_result and edge_result["model_prob"] >= 0.70)
+    if not edge_result:
+        return 0.0
+    prob = float(edge_result.get("model_prob", 0.0))
+    if prob >= 0.70:
+        return 1.0
+    if prob < 0.50:
+        return 0.0
+    # Graduated: linear scale 0.50-0.70 → 0.0-1.0
+    return round((prob - 0.50) / 0.20, 4)

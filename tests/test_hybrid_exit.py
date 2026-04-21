@@ -126,10 +126,24 @@ def test_hybrid_exits_when_late_and_confidence_below_minimum():
         current_yes_price=0.48,
         forecast_still_valid=True,
         hours_until_resolve=1,
-        confidence_score=0.60,
+        confidence_score=0.50,  # Below HYBRID_MIN_CONFIDENCE_TO_HOLD (0.55)
     )
     assert decision["action"] == "sell"
     assert decision["reason"] == "late_window_confidence_below_min"
+
+
+def test_hybrid_exits_on_thesis_decay():
+    """In late window with very low confidence → thesis_decay_exit."""
+    position = _build(yes_price=0.25)
+    decision = evaluate_hybrid_exit(
+        position=position,
+        current_yes_price=0.30,
+        forecast_still_valid=True,
+        hours_until_resolve=1,
+        confidence_score=0.30,  # Below THESIS_DECAY_THRESHOLD (0.35)
+    )
+    assert decision["action"] == "sell"
+    assert decision["reason"] == "thesis_decay_exit"
 
 
 def test_holds_while_waiting_target():

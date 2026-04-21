@@ -365,7 +365,7 @@ ENTRY_BUCKET_HOLD_MIN_EDGE = float(os.getenv("ENTRY_BUCKET_HOLD_MIN_EDGE", "0.60
 ENTRY_BUCKET_HOLD_MIN_CONFIDENCE = float(
     os.getenv("ENTRY_BUCKET_HOLD_MIN_CONFIDENCE", str(HYBRID_MIN_CONFIDENCE_TO_HOLD))
 )
-ENTRY_BUCKET_WATCH_MAX_PRICE = float(os.getenv("ENTRY_BUCKET_WATCH_MAX_PRICE", "0.40"))
+ENTRY_BUCKET_WATCH_MAX_PRICE = float(os.getenv("ENTRY_BUCKET_WATCH_MAX_PRICE", "0.15"))
 
 # AI integration placeholders (still optional and fully guardrailed)
 AI_AGENT_ENABLED = _env_bool("AI_AGENT_ENABLED", False)
@@ -545,3 +545,21 @@ SIGMA_DEFAULT = float(os.getenv("SIGMA_DEFAULT", "1.5"))
 TROPICAL_CITIES = {"singapore", "hong kong", "lucknow", "shenzhen", "taipei", "miami"}
 FOUR_SEASON_CITIES = {"new york city", "chicago", "london", "toronto", "seoul", "beijing",
                        "denver", "warsaw", "shanghai", "chengdu", "chongqing", "wuhan"}
+
+# Seasonal sigma multipliers for 4-season cities (month number → multiplier).
+# Spring/fall transitions have higher forecast uncertainty; summer is more stable.
+# Applied only to FOUR_SEASON_CITIES — tropical cities are stable year-round.
+SEASONAL_SIGMA_MULTIPLIERS = {
+    1: 1.20,   # January — winter, moderate volatility
+    2: 1.20,   # February — late winter
+    3: 1.35,   # March — spring transition, highest volatility
+    4: 1.35,   # April — spring transition
+    5: 1.10,   # May — late spring
+    6: 0.95,   # June — early summer
+    7: 0.90,   # July — peak summer, most stable
+    8: 0.90,   # August — peak summer
+    9: 1.00,   # September — early fall (baseline)
+    10: 1.15,  # October — fall transition
+    11: 1.20,  # November — late fall
+    12: 1.20,  # December — winter
+}

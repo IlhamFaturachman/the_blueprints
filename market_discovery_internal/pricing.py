@@ -13,7 +13,7 @@ from market_discovery_internal.config import (
     NOAA_OVERRIDE_ENABLED, NOAA_OVERRIDE_WINDOW_HOURS,
     NOAA_OVERRIDE_CONFIRM_PROB, NOAA_OVERRIDE_CONTRADICT_PROB,
     SIGMA_TROPICAL, SIGMA_FOUR_SEASON, SIGMA_DEFAULT,
-    TROPICAL_CITIES, FOUR_SEASON_CITIES,
+    TROPICAL_CITIES, FOUR_SEASON_CITIES, SEASONAL_SIGMA_MULTIPLIERS,
     ENSEMBLE_WEIGHT, POINT_FORECAST_WEIGHT, WTRIN_WEIGHT,
 )
 from market_discovery_internal.utils import (
@@ -313,13 +313,26 @@ def compute_regime_score(market, weather_evidence=None):
     return regime_class, regime_score, gates
 
 
-def _get_city_sigma(city: str) -> float:
-    """Get the appropriate Gaussian sigma for a city based on its climate region."""
+def _get_city_sigma(city: str, date: str = None) -> float:
+    """Get the appropriate Gaussian sigma for a city based on its climate region and season.
+
+    Seasonal multiplier is applied only to FOUR_SEASON_CITIES — tropical cities
+    have stable weather year-round, and unclassified cities use the default sigma.
+    """
     city_lower = (city or "").lower()
     if city_lower in TROPICAL_CITIES:
         return SIGMA_TROPICAL
     elif city_lower in FOUR_SEASON_CITIES:
-        return SIGMA_FOUR_SEASON
+        base = SIGMA_FOUR_SEASON
+        # Apply seasonal multiplier if date is provided (format: "YYYY-MM-DD")
+        if date and len(date) >= 7:
+            try:
+                month = int(date[5:7])
+                multiplier = SEASONAL_SIGMA_MULTIPLIERS.get(month, 1.0)
+                return round(base * multiplier, 3)
+            except (ValueError, IndexError):
+                pass
+        return base
     return SIGMA_DEFAULT
 
 
@@ -350,6 +363,7 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     threshold_raw = market.get("threshold")
     direction = market.get("direction")
     city = str(market.get("city", "")).lower()
+    market_date = market.get("date")  # "YYYY-MM-DD" for seasonal sigma
     unit = str(market.get("unit", "C")).upper()
 
     # [CRITICAL FIX] Convert threshold to Celsius for all calculations.
@@ -423,7 +437,7 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
             # Per-region sigma: tropical cities get tighter sigma (less variance),
             # four-season cities get wider sigma (more variance).
             from math import erf as _erf, sqrt as _sqrt
-            sigma = _get_city_sigma(city)
+            sigma = _get_city_sigma(city, market_date)
             _s2 = sigma * _sqrt(2)
             if threshold_high is not None:
                 # Range bracket: integrate over [threshold, threshold_high] (already in °C)
@@ -444,7 +458,7 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
         # Per-region sigma adjusts the caps: tropical (σ=1.0) allows higher
         # confidence at smaller margins; four-season (σ=2.0) is more conservative.
         if direction in ("above", "below"):
-            city_sigma = _get_city_sigma(city)
+            city_sigma = _get_city_sigma(city, market_date)
             abs_diff = abs(forecast - threshold)
             # Scale cap thresholds by sigma ratio vs default (1.5)
             _sigma_ratio = city_sigma / SIGMA_DEFAULT if SIGMA_DEFAULT > 0 else 1.0

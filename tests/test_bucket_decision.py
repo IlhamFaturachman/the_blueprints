@@ -30,14 +30,14 @@ def test_bucket_rejects_price_outside_valid_range():
 
 def test_bucket_watchlists_price_in_watchlist_range():
     """Price in [min_entry, WATCH_MAX_PRICE] → watchlist (monitoring)."""
-    opp = make_opportunity(yes_price=0.25, model_prob=0.75, edge=0.40)
-    result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.50)
+    opp = make_opportunity(yes_price=0.10, model_prob=0.75, edge=0.40)
+    result = md.decide_entry_bucket(opp, min_entry_price=0.05, max_entry_price=0.50)
     assert result["bucket"] == "watchlist"
 
 
 def test_bucket_enters_swing_when_price_in_swing_range():
     """Price in (WATCH_MAX_PRICE, max_entry] → enter_swing."""
-    # Price must be > ENTRY_BUCKET_WATCH_MAX_PRICE (0.40) and <= max_entry_price
+    # Price must be > ENTRY_BUCKET_WATCH_MAX_PRICE (0.15) and <= max_entry_price
     opp = make_opportunity(yes_price=0.45, model_prob=0.75, edge=0.40, hours_until_resolve=36)
     result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.50)
     assert result["bucket"] == "enter_swing"
@@ -64,8 +64,11 @@ def test_ai_bucket_override_applies_when_present():
 
 
 def test_hold_requires_both_prob_and_edge_thresholds():
-    """If prob is high but edge is below HOLD_MIN_EDGE, should NOT be hold_candidate."""
+    """If prob is high but edge is below HOLD_MIN_EDGE, should NOT be hold_candidate.
+    With ENTRY_BUCKET_WATCH_MAX_PRICE=0.15, price 0.25 lands in enter_swing (not watchlist).
+    """
     opp = make_opportunity(yes_price=0.25, model_prob=0.95, edge=0.50)
     result = md.decide_entry_bucket(opp, min_entry_price=0.2, max_entry_price=0.50)
-    # Edge 0.50 < ENTRY_BUCKET_HOLD_MIN_EDGE (0.60), so not hold
-    assert result["bucket"] == "watchlist"
+    # Edge 0.50 < ENTRY_BUCKET_HOLD_MIN_EDGE (0.60), so not hold_candidate.
+    # Price 0.25 > ENTRY_BUCKET_WATCH_MAX_PRICE (0.15), so enters swing.
+    assert result["bucket"] == "enter_swing"
