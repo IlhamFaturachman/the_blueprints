@@ -162,7 +162,8 @@ def test_update_paper_position_closes_and_calculates_pnl():
     position = _build(yes_price=0.25)
     target = position["target_price"]   # 0.2525 * 2 = 0.505
 
-    with patch("market_discovery_internal.pricing.check_liquidity_depth", return_value=True):
+    with patch("market_discovery_internal.pricing.check_liquidity_depth", return_value=True), \
+         patch("market_discovery_internal.cycles.db"):
         updated, decision = update_paper_position(
             position=position,
             current_yes_price=target + 0.01,

@@ -382,7 +382,8 @@ def test_ws_callback_closes_on_stop_loss():
                 return t
             return original_time()
 
-        with patch("market_discovery_internal.ws_price_watcher.time") as mock_time_mod:
+        with patch("market_discovery_internal.ws_price_watcher.time") as mock_time_mod, \
+             patch("market_discovery_internal.cycles.db"):
             mock_time_mod.time = mock_time_fn
             # Also disable REST confirmation for unit test (no network)
             with patch("market_discovery_internal.ws_price_watcher.FLASH_CRASH_REST_CONFIRM_ENABLED", False):
@@ -407,7 +408,8 @@ def test_ws_callback_closes_on_take_profit():
 
         lock = threading.Lock()
         callback = make_ws_exit_callback(state_path=state_path, lock=lock)
-        callback("tok_tp", target_price + 0.01)  # price above take-profit
+        with patch("market_discovery_internal.cycles.db"):
+            callback("tok_tp", target_price + 0.01)  # price above take-profit
 
         state = _load_state_from_json(state_path)
         closed = [p for p in state.get("history", []) if p.get("token_id") == "tok_tp"]
