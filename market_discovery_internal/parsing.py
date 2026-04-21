@@ -11,7 +11,8 @@ from market_discovery_internal.config import (
     GOLDEN_WINDOW_HOURS_MAX, GOLDEN_WINDOW_HOURS_MIN,
     THRESHOLD_RE, RANGE_THRESHOLD_RE, EXACT_RE, ABOVE_RE, BELOW_RE,
     WEATHER_CONTEXT_RE, CITY_REGEXES, TARGET_CITIES,
-    AIRPORT_IATA_TO_ICAO, STATION_NAME_TO_ICAO, CITY_STATIONS
+    AIRPORT_IATA_TO_ICAO, STATION_NAME_TO_ICAO, CITY_STATIONS,
+    LOWEST_TEMP_RE, LOWEST_TEMP_MARKETS_ENABLED,
 )
 
 
@@ -247,6 +248,13 @@ def parse_market(
     else:
         direction = "exact"
 
+    # Step 3b: Temperature type — "highest" (max) vs "lowest" (min)
+    search_text_lower = _market_search_text(raw).lower()
+    temp_type = "min" if LOWEST_TEMP_RE.search(search_text_lower) else "max"
+    # Feature gate: skip lowest-temperature markets if disabled
+    if temp_type == "min" and not LOWEST_TEMP_MARKETS_ENABLED:
+        return _with_reason(None, "lowest_temp_disabled")
+
     # Step 4: Price
     # Primary: outcomePrices array (legacy Gamma field)
     # Fallback: bestAsk (newer bracket-style markets may omit outcomePrices)
@@ -343,6 +351,7 @@ def parse_market(
         "threshold_high": threshold_high,
         "unit": unit,
         "direction": direction,
+        "temp_type": temp_type,
         "yes_price": yes_price,
         "best_ask": best_ask,
         "best_bid": best_bid,

@@ -89,23 +89,25 @@ from market_discovery_internal.database_manager import db
 # [ENSEMBLE] Multi-Model Ensemble Forecast (GFS 31 + ECMWF 51 = 82 members)
 # ---------------------------------------------------------------------------
 
-def _parse_ensemble_members(daily: dict) -> list[float]:
+def _parse_ensemble_members(daily: dict, temp_type: str = "max") -> list[float]:
     """Extract ensemble member values from Open-Meteo daily response."""
+    daily_var = "temperature_2m_min" if temp_type == "min" else "temperature_2m_max"
     members = []
     for key, values in daily.items():
-        if key.startswith("temperature_2m_max") and "member" in key:
+        if key.startswith(daily_var) and "member" in key:
             if values and values[0] is not None:
                 members.append(float(values[0]))
     # Fallback: check if data comes as a list directly
     if not members:
-        temp_data = daily.get("temperature_2m_max", [])
+        temp_data = daily.get(daily_var, [])
         if isinstance(temp_data, list) and len(temp_data) > 1:
             members = [float(t) for t in temp_data if t is not None]
     return members
 
 
 def fetch_ensemble_forecast(city: str, date: str, lat: float, lon: float,
-                            threshold_c: float, direction: str = "above") -> Optional[dict]:
+                            threshold_c: float, direction: str = "above",
+                            temp_type: str = "max") -> Optional[dict]:
     """
     Fetch multi-model ensemble forecast and compute ensemble probability.
 
@@ -134,12 +136,14 @@ def fetch_ensemble_forecast(city: str, date: str, lat: float, lon: float,
 
     from concurrent.futures import ThreadPoolExecutor
 
+    _daily_var = "temperature_2m_min" if temp_type == "min" else "temperature_2m_max"
+
     def _fetch_one_model(model_name):
         try:
             params = {
                 "latitude": lat,
                 "longitude": lon,
-                "daily": "temperature_2m_max",
+                "daily": _daily_var,
                 "start_date": date,
                 "end_date": date,
                 "models": model_name,
@@ -148,7 +152,7 @@ def fetch_ensemble_forecast(city: str, date: str, lat: float, lon: float,
             if not data:
                 return model_name, []
             daily = data.get("daily", {})
-            members = _parse_ensemble_members(daily)
+            members = _parse_ensemble_members(daily, temp_type)
             return model_name, members
         except Exception as e:
             logger.debug("[ENSEMBLE] %s fetch failed for %s/%s: %s", model_name, city, date, e)
@@ -209,8 +213,8 @@ def fetch_ensemble_forecast(city: str, date: str, lat: float, lon: float,
 # _HIST_CACHE_FILE = "logs/cache/historical_avg.json"
 _HIST_CACHE_TTL_DAYS = 30
 
-def _fetch_historical_average(city, date, allow_live=True):
-    """Fetch the 10-year historical average max temp for this date/city using a single range lookup.
+def _fetch_historical_average(city, date, allow_live=True, temp_type="max"):
+    """Fetch the 10-year historical average max/min temp for this date/city.
     Results are stored in the SQLite Data Warehouse to avoid Open-Meteo 429 rate limits.
     
     If allow_live=False (Default for trading), it will ONLY return cached data or None.
@@ -219,6 +223,7 @@ def _fetch_historical_average(city, date, allow_live=True):
     if not coords or not date:
         return None
 
+    _db_field = "min_temp" if temp_type == "min" else "max_temp"
     month_day = date[5:]  # e.g. "04-17"
     
     # 1. Check SQLite Warehouse first
@@ -227,10 +232,10 @@ def _fetch_historical_average(city, date, allow_live=True):
     if entry:
         age_days = (time.time() - entry.get("ts", 0)) / 86400
         if age_days < _HIST_CACHE_TTL_DAYS:
-            return entry.get("max_temp")
+            return entry.get(_db_field)
 
     if not allow_live:
-        return entry.get("max_temp") if entry else None
+        return entry.get(_db_field) if entry else None
 
     # Fallback to single fetch if bulk is not used or fails
     try:
@@ -277,7 +282,7 @@ def _fetch_bulk_historical_weather(cities, date):
         "longitude": ",".join(lons),
         "start_date": start_date,
         "end_date": end_date,
-        "daily": ["temperature_2m_max", "precipitation_sum"],
+        "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
         "timezone": "auto"
     }
 
@@ -295,18 +300,21 @@ def _fetch_bulk_historical_weather(cities, date):
             city = valid_cities[i]
             daily = data.get("daily", {})
             times = daily.get("time", [])
-            temps = daily.get("temperature_2m_max", [])
+            temps_max = daily.get("temperature_2m_max", [])
+            temps_min = daily.get("temperature_2m_min", [])
             precips = daily.get("precipitation_sum", [])
 
-            matches_temp = [t for ts, t in zip(times, temps) if ts.endswith(month_day) and t is not None]
+            matches_max = [t for ts, t in zip(times, temps_max) if ts.endswith(month_day) and t is not None]
+            matches_min = [t for ts, t in zip(times, temps_min) if ts.endswith(month_day) and t is not None]
             matches_precip = [p for ts, p in zip(times, precips) if ts.endswith(month_day) and p is not None]
             
-            avg_temp = round(sum(matches_temp) / len(matches_temp), 1) if matches_temp else None
+            avg_max = round(sum(matches_max) / len(matches_max), 1) if matches_max else None
+            avg_min = round(sum(matches_min) / len(matches_min), 1) if matches_min else None
             avg_precip = round(sum(matches_precip) / len(matches_precip), 2) if matches_precip else None
 
-            if avg_temp is not None:
-                db.save_weather(city, month_day, max_temp=avg_temp, precip=avg_precip)
-                results[city] = avg_temp
+            if avg_max is not None:
+                db.save_weather(city, month_day, max_temp=avg_max, min_temp=avg_min, precip=avg_precip)
+                results[city] = avg_max
         
         return results
     except Exception as e:
@@ -320,17 +328,20 @@ def _log_anomaly(city, date, forecast, historical, source="anomaly"):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"[{ts}] REJECTED {city} ({date}): Forecast={forecast}C, Reference={historical}C, Type={source}\n")
 
-def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) -> Optional[ForecastTemp]:
-    """Fetch the daily max temperature forecast from Open-Meteo and wttr.in.
+def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None,
+                   temp_type: str = "max") -> Optional[ForecastTemp]:
+    """Fetch the daily max/min temperature forecast from Open-Meteo and wttr.in.
     
+    Args:
+        temp_type: "max" for highest temperature, "min" for lowest temperature.
     Now uses the SQLite Data Warehouse 'Discovery Cache' for persistent, high-speed lookups.
     """
     coords = TARGET_CITIES.get(city)
     if not coords:
         return None
 
-    # [MODUL DB] Check Discovery Cache first
-    cached = db.get_cached_forecast(city, date)
+    # [MODUL DB] Check Discovery Cache first (keyed by city+date; skip for min to avoid cross-contamination)
+    cached = db.get_cached_forecast(city, date) if temp_type == "max" else None
     if cached:
         # Re-fetch historical avg for the full ForecastTemp object
         hist_avg = _fetch_historical_average(city, date)
@@ -341,6 +352,9 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) ->
         ft.historical_avg = hist_avg
         ft.noaa_current = None # Snapshot METAR not stored in discovery cache
         return ft
+
+    _daily_var = "temperature_2m_min" if temp_type == "min" else "temperature_2m_max"
+    _agg_fn = min if temp_type == "min" else max  # min() for lowest, max() for highest
 
     def _fetch_open_meteo():
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -359,29 +373,38 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) ->
                 hourly = data.get("hourly", {})
                 times = hourly.get("time", [])
                 temps = hourly.get("temperature_2m", [])
-                # Take max over daytime hours (6–22) for the target date
-                day_temps = [
-                    t for ts, t in zip(times, temps)
-                    if ts.startswith(date) and 6 <= int(ts.split("T")[1].split(":")[0]) <= 22
-                ]
-                return max(day_temps) if day_temps else None
+                # For max: take max over daytime hours (6–22)
+                # For min: take min over all hours (lows often occur overnight/early morning)
+                if temp_type == "min":
+                    day_temps = [
+                        t for ts, t in zip(times, temps)
+                        if ts.startswith(date) and t is not None
+                    ]
+                else:
+                    day_temps = [
+                        t for ts, t in zip(times, temps)
+                        if ts.startswith(date) and 6 <= int(ts.split("T")[1].split(":")[0]) <= 22
+                    ]
+                return _agg_fn(day_temps) if day_temps else None
             except Exception:
                 logger.debug("Open-Meteo hourly fetch failed for %s/%s", city, date)
         else:
             params = {
                 "latitude": coords["lat"], "longitude": coords["lon"],
-                "daily": "temperature_2m_max", "timezone": "auto", "forecast_days": 3
+                "daily": _daily_var, "timezone": "auto", "forecast_days": 3
             }
             try:
                 data = fetch_with_retry(OPEN_METEO_API, params=params)
                 daily = data.get("daily", {})
                 times = daily.get("time", [])
-                temps = daily.get("temperature_2m_max", [])
+                temps = daily.get(_daily_var, [])
                 if date in times:
                     return temps[times.index(date)]
             except Exception:
                 logger.debug("Open-Meteo daily fetch failed for %s/%s", city, date)
         return None
+
+    _wttr_field = "mintempC" if temp_type == "min" else "maxtempC"
 
     def _fetch_wttr():
         # Query by ICAO code so wttr.in returns data for the exact airport station,
@@ -393,7 +416,7 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) ->
             data = fetch_with_retry(url)
             for w in data.get("weather", []):
                 if w.get("date") == date:
-                    raw_val = w.get("maxtempC")
+                    raw_val = w.get(_wttr_field)
                     if raw_val is None:
                         return None
                     return float(raw_val)
@@ -470,7 +493,7 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) ->
     if base_avg is not None:
         # [MODUL K] Historical Anomaly Check
         # Resilience: Trading engine uses Cache-Only mode to avoid 429s
-        hist_avg = _fetch_historical_average(city, date, allow_live=False)
+        hist_avg = _fetch_historical_average(city, date, allow_live=False, temp_type=temp_type)
         if hist_avg is not None:
             if abs(base_avg - hist_avg) > HISTORICAL_DEVIATION_C:
                 _log_anomaly(city, date, base_avg, hist_avg, "historical_anomaly")
@@ -508,8 +531,10 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) ->
 
             error_margin = abs(base_avg - t_noaa)
 
-            # Scenario A: Current temp is already higher than our predicted MAX (Definitive error)
-            if t_noaa > (base_avg + 1.0):
+            # Scenario A: Ground truth contradicts forecast
+            # For max markets: current temp already higher than predicted max → forecast wrong
+            # For min markets: skip this check — METAR current temp ≠ daily minimum
+            if temp_type == "max" and t_noaa > (base_avg + 1.0):
                 _log_anomaly(city, date, base_avg, t_noaa, "prediction_exceeded_by_ground_truth")
                 return None
 
@@ -521,8 +546,9 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None) ->
         ft.noaa_current = t_noaa
         ft.historical_avg = hist_avg
 
-        # [MODUL DB] Save verified result to Warehouse Cache
-        db.save_cached_forecast(city, date, base_avg, source)
+        # [MODUL DB] Save verified result to Warehouse Cache (max only — min uses separate key space)
+        if temp_type == "max":
+            db.save_cached_forecast(city, date, base_avg, source)
         
         return ft
     return None
@@ -548,12 +574,12 @@ _NEGATIVE_CACHE = {}
 _NEGATIVE_CACHE_LOCK = threading.Lock()
 _NEGATIVE_CACHE_TTL_SECONDS = 300  # 5 minutes
 
-def fetch_forecast_with_cache(city: str, date: str, cache: dict[str, Any], stats: Optional[dict[str, int]] = None, *, fetch_forecast_fn: Any, icao_override: Optional[str] = None) -> Optional[ForecastTemp]:
+def fetch_forecast_with_cache(city: str, date: str, cache: dict[str, Any], stats: Optional[dict[str, int]] = None, *, fetch_forecast_fn: Any, icao_override: Optional[str] = None, temp_type: str = "max") -> Optional[ForecastTemp]:
     """Fetch forecast with per-cycle cache for successful city/date/icao lookups."""
     if not isinstance(cache, dict):
-        return fetch_forecast_fn(city, date, icao_override=icao_override)
+        return fetch_forecast_fn(city, date, icao_override=icao_override, temp_type=temp_type)
 
-    cache_key = (city, date, icao_override)
+    cache_key = (city, date, icao_override, temp_type)
     cached = cache.get(cache_key)
     if cached is not None:
         if isinstance(stats, dict):
@@ -576,7 +602,7 @@ def fetch_forecast_with_cache(city: str, date: str, cache: dict[str, Any], stats
     if isinstance(stats, dict):
         stats["misses"] = int(stats.get("misses", 0)) + 1
 
-    forecast_temp = fetch_forecast_fn(city, date, icao_override=icao_override)
+    forecast_temp = fetch_forecast_fn(city, date, icao_override=icao_override, temp_type=temp_type)
     if forecast_temp is not None:
         cache[cache_key] = forecast_temp
     else:
@@ -586,7 +612,7 @@ def fetch_forecast_with_cache(city: str, date: str, cache: dict[str, Any], stats
     return forecast_temp
 
 
-def prefetch_forecasts(cache_keys: list[tuple[str, str, Optional[str]]], cache: dict[str, Any], min_keys: int = 0, max_workers: int = 1, *, fetch_forecast_fn: Any) -> dict[str, Any]:
+def prefetch_forecasts(cache_keys: list[tuple], cache: dict[str, Any], min_keys: int = 0, max_workers: int = 1, *, fetch_forecast_fn: Any) -> dict[str, Any]:
     """Warm forecast cache in parallel for large unique city/date batches."""
     if not isinstance(cache, dict):
         return {
@@ -607,10 +633,11 @@ def prefetch_forecasts(cache_keys: list[tuple[str, str, Optional[str]]], cache: 
         city = item[0]
         date = item[1]
         icao = item[2] if len(item) > 2 else None
+        temp_type = item[3] if len(item) > 3 else "max"
         
         if not city or not date:
             continue
-        key = (city, date, icao)
+        key = (city, date, icao, temp_type)
         if key in cache or key in seen:
             continue
         seen.add(key)
@@ -628,12 +655,14 @@ def prefetch_forecasts(cache_keys: list[tuple[str, str, Optional[str]]], cache: 
             "skipped": True,
         }
 
-    # Group keys by date to perform bulk fetches
+    # Group keys by (date, temp_type) to perform bulk fetches
+    # Note: bulk fetch only supports max temp currently; min-temp keys fall back to individual fetch
     by_date = {}
-    for city, date, icao in unique_keys:
-        if date not in by_date:
-            by_date[date] = []
-        by_date[date].append(city)
+    for city, date, icao, temp_type in unique_keys:
+        group_key = date
+        if group_key not in by_date:
+            by_date[group_key] = []
+        by_date[group_key].append((city, temp_type))
 
     stats = {
         "eligible": eligible,
@@ -644,23 +673,39 @@ def prefetch_forecasts(cache_keys: list[tuple[str, str, Optional[str]]], cache: 
         "skipped": False,
     }
 
-    for date, cities in by_date.items():
+    for date, city_type_pairs in by_date.items():
         try:
-            # [MODUL U] Bulk Fetch: 1 hit per date instead of N hits
-            logger.info("[MODUL-K] Prefetching %d cities for %s (Bulk Mode)...", len(cities), date)
-            results = _fetch_bulk_forecasts(cities, date)
-            for city in cities:
-                key = (city, date, None) # Bulk doesn't handle ICAO yet
-                if results.get(city) is not None:
-                    cache[key] = ForecastTemp(results[city], "open-meteo (bulk)")
-                    stats["successful"] += 1
-                else:
-                    # Optional: Fallback to individual fetch if bulk failed for one?
-                    # For now, we trust bulk or fail.
+            # Bulk fetch only supports max temp; separate min-temp cities for individual fetch
+            max_cities = [c for c, tt in city_type_pairs if tt == "max"]
+            min_cities = [c for c, tt in city_type_pairs if tt == "min"]
+
+            # [MODUL U] Bulk Fetch: 1 hit per date instead of N hits (max temp only)
+            if max_cities:
+                logger.info("[MODUL-K] Prefetching %d cities for %s (Bulk Mode)...", len(max_cities), date)
+                results = _fetch_bulk_forecasts(max_cities, date)
+                for city in max_cities:
+                    key = (city, date, None, "max")
+                    if results.get(city) is not None:
+                        cache[key] = ForecastTemp(results[city], "open-meteo (bulk)")
+                        stats["successful"] += 1
+                    else:
+                        stats["failed"] += 1
+
+            # Min-temp cities: individual fetch (no bulk API for min temp yet)
+            for city in min_cities:
+                try:
+                    ft = fetch_forecast_fn(city, date, temp_type="min")
+                    key = (city, date, None, "min")
+                    if ft is not None:
+                        cache[key] = ft
+                        stats["successful"] += 1
+                    else:
+                        stats["failed"] += 1
+                except Exception:
                     stats["failed"] += 1
         except Exception as e:
             logger.error("[MODUL-U] Prefetch bulk error for %s: %s", date, e)
-            stats["failed"] += len(cities)
+            stats["failed"] += len(city_type_pairs)
 
     return stats
 
@@ -747,7 +792,8 @@ def forecast_still_valid(
         position["date"],
         forecast_cache,
         stats=forecast_cache_stats,
-        icao_override=position.get("icao_code")
+        icao_override=position.get("icao_code"),
+        temp_type=position.get("temp_type", "max"),
     )
     evidence = build_weather_evidence_fn(position["city"], position["date"], forecast_temp)
 

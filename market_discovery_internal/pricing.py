@@ -487,8 +487,11 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     # -------------------------------------------------------------------------
     # [NOAA METAR] Real-time Override (only in last N hours before resolution)
     # -------------------------------------------------------------------------
+    # Skip NOAA override for min-temp markets: METAR reports instantaneous temperature,
+    # not the daily minimum. Comparing current temp vs daily-low threshold is unreliable.
+    _temp_type = market.get("temp_type", "max")
     hours_left = float(hours_until_resolve) if hours_until_resolve is not None else 24.0
-    if NOAA_OVERRIDE_ENABLED and hours_left <= NOAA_OVERRIDE_WINDOW_HOURS and threshold is not None:
+    if NOAA_OVERRIDE_ENABLED and hours_left <= NOAA_OVERRIDE_WINDOW_HOURS and threshold is not None and _temp_type == "max":
         icao = market.get("icao_code") or ""
         if icao:
             from market_discovery_internal.forecasting import fetch_noaa_metar

@@ -139,7 +139,7 @@ def enrich_discovery_markets(
     logger.info("[MODUL K] Prefetching forecasts for %d unique slots...", len(parsed))
     prefetch_started = perf_counter_fn()
     forecast_prefetch = prefetch_forecasts_fn(
-        cache_keys=[(market.get("city"), market.get("date"), market.get("icao_code")) for market in parsed],
+        cache_keys=[(market.get("city"), market.get("date"), market.get("icao_code"), market.get("temp_type", "max")) for market in parsed],
         cache=forecast_cache,
         min_keys=discovery_forecast_prefetch_min_keys,
         max_workers=discovery_forecast_prefetch_max_workers,
@@ -158,12 +158,14 @@ def enrich_discovery_markets(
 
         city = market["city"]
         date = market["date"]
+        _temp_type = market.get("temp_type", "max")
         forecast_temp = fetch_forecast_with_cache_fn(
             city,
             date,
             forecast_cache,
             stats=forecast_cache_stats,
             icao_override=market.get("icao_code"),
+            temp_type=_temp_type,
         )
         evidence = build_weather_evidence_fn(city, date, forecast_temp)
         evidence_valid = is_weather_evidence_valid_fn(evidence)
@@ -188,14 +190,15 @@ def enrich_discovery_markets(
                     _threshold_c_val = float(threshold_c)
                     if market.get("unit", "").upper() == "F":
                         _threshold_c_val = (_threshold_c_val - 32) * 5.0 / 9.0
-                    # Dedup key: city+date (ensemble members are same regardless of threshold)
-                    _ens_cache_key = f"{city}_{date}"
+                    # Dedup key: city+date+temp_type (ensemble members differ for max vs min)
+                    _ens_cache_key = f"{city}_{date}_{_temp_type}"
                     if _ens_cache_key not in forecast_cache:
                         from market_discovery_internal.forecasting import fetch_ensemble_forecast
                         _ens_raw = fetch_ensemble_forecast(
                             city=city, date=date,
                             lat=city_info["lat"], lon=city_info["lon"],
-                            threshold_c=_threshold_c_val, direction=direction
+                            threshold_c=_threshold_c_val, direction=direction,
+                            temp_type=_temp_type,
                         )
                         forecast_cache[_ens_cache_key] = _ens_raw
                     else:
@@ -1487,6 +1490,7 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
         "entry_model_prob": opportunity.get("model_prob"),
         "entry_edge": opportunity.get("edge"),
         "forecast_temp_c": opportunity.get("forecast_temp_c"),
+        "temp_type": opportunity.get("temp_type", "max"),
         "opened_at": datetime.now(timezone.utc).isoformat(),
     }
 

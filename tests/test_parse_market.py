@@ -257,3 +257,29 @@ def test_compute_market_implied_prob_from_family_cache():
     assert result.get("family_size") == 2
     assert isinstance(result.get("bracket_distribution"), list)
     assert len(result["bracket_distribution"]) == 2
+
+
+# --- temp_type detection (highest vs lowest) ---
+
+def test_highest_temp_market_returns_max():
+    """Markets with 'Highest temperature' should have temp_type='max'."""
+    with patch("market_discovery_internal.parsing._log_unmatched"):
+        result = parse_market(make_raw("Will the highest temperature in London be 14°C or above on April 22?"))
+    assert result is not None
+    assert result["temp_type"] == "max"
+
+
+def test_lowest_temp_market_returns_min():
+    """Markets with 'Lowest temperature' should have temp_type='min'."""
+    with patch("market_discovery_internal.parsing._log_unmatched"):
+        result = parse_market(make_raw("Will the lowest temperature in London be 5°C or below on April 22?"))
+    assert result is not None
+    assert result["temp_type"] == "min"
+
+
+def test_default_temp_type_is_max():
+    """Markets without explicit highest/lowest default to temp_type='max'."""
+    with patch("market_discovery_internal.parsing._log_unmatched"):
+        result = parse_market(make_raw("Will the temperature in Dallas exceed 75°F on April 22?"))
+    assert result is not None
+    assert result["temp_type"] == "max"
