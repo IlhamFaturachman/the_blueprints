@@ -126,70 +126,77 @@ def save_paper_state(state: dict[str, Any], path: Optional[str] = None) -> None:
     if not state or not isinstance(state, dict):
         return
 
-    from market_discovery_internal.config import PAPER_BASE_WALLET
+    from market_discovery_internal.config import PAPER_STATE_FILE, PAPER_BASE_WALLET
+
+    # [FIX] Skip DB writes when path is a test/isolated path (different from production).
+    # This prevents pytest from polluting the production SQLite database with test data.
+    _is_test_path = (path and os.path.abspath(path) != os.path.abspath(PAPER_STATE_FILE))
+
     meta = state.get("meta", {})
 
-    # [STATE INTEGRITY] base_wallet is read from the DB (single source of truth).
-    # Only fall back to runtime meta / config default if DB has no portfolio row.
-    # This prevents corrupted runtime meta from poisoning the DB.
-    portfolio = db.get_portfolio()
-    if portfolio and portfolio.get("base_wallet") is not None:
-        base_wallet = float(portfolio["base_wallet"])
-    else:
-        base_wallet = float(meta.get("base_wallet", PAPER_BASE_WALLET))
+    if not _is_test_path:
+        # [STATE INTEGRITY] base_wallet is read from the DB (single source of truth).
+        # Only fall back to runtime meta / config default if DB has no portfolio row.
+        # This prevents corrupted runtime meta from poisoning the DB.
+        portfolio = db.get_portfolio()
+        if portfolio and portfolio.get("base_wallet") is not None:
+            base_wallet = float(portfolio["base_wallet"])
+        else:
+            base_wallet = float(meta.get("base_wallet", PAPER_BASE_WALLET))
 
-    cash = float(meta.get("cash", PAPER_BASE_WALLET))
-    total_pnl = meta.get("acceptance_metrics_rolling", {}).get("closed_realized_pnl_total_usd", 0.0)
+        cash = float(meta.get("cash", PAPER_BASE_WALLET))
+        total_pnl = meta.get("acceptance_metrics_rolling", {}).get("closed_realized_pnl_total_usd", 0.0)
 
-    # 1. Update Portfolio Summary
-    db.update_portfolio(base_wallet, cash, total_pnl)
+        # 1. Update Portfolio Summary
+        db.update_portfolio(base_wallet, cash, total_pnl)
 
-    # 2. Update Active Positions (Atomic Replace in single transaction)
-    db.replace_all_positions(state.get("positions", []))
+        # 2. Update Active Positions (Atomic Replace in single transaction)
+        db.replace_all_positions(state.get("positions", []))
 
-    # 3. Add Cycle Metric — idempotent: only persist if the latest entry's timestamp
-    # differs from the most recently stored metric (prevents double-write per cycle).
-    conn = db._get_conn()
-    journal = state.get("cycle_journal", [])
-    if journal:
-        latest_entry = journal[-1]
-        latest_ts = latest_entry.get("timestamp", "")
-        existing = conn.execute(
-            "SELECT 1 FROM cycle_metrics WHERE timestamp = ?", (latest_ts,)
-        ).fetchone()
-        if not existing:
-            db.add_cycle_metric(latest_entry)
+    if not _is_test_path:
+        # 3. Add Cycle Metric — idempotent: only persist if the latest entry's timestamp
+        # differs from the most recently stored metric (prevents double-write per cycle).
+        conn = db._get_conn()
+        journal = state.get("cycle_journal", [])
+        if journal:
+            latest_entry = journal[-1]
+            latest_ts = latest_entry.get("timestamp", "")
+            existing = conn.execute(
+                "SELECT 1 FROM cycle_metrics WHERE timestamp = ?", (latest_ts,)
+            ).fetchone()
+            if not existing:
+                db.add_cycle_metric(latest_entry)
 
-    # 4. Persist closed trade history.
-    # Dedup key: token_id + opened_at (composite) so the same market token
-    # can be traded more than once without losing history entries.
-    for trade in state.get("history", []):
-        token_id = trade.get("token_id")
-        if not token_id:
-            continue
-        opened_at = trade.get("opened_at", "")
-        exists = conn.execute(
-            "SELECT 1 FROM trade_history WHERE token_id = ? AND opened_at = ?",
-            (token_id, opened_at),
-        ).fetchone()
-        if not exists:
-            conn.execute(
-                """INSERT INTO trade_history
-                   (token_id, city, date, pnl_usd, roi_pct, close_reason, closed_at, opened_at, raw_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    token_id,
-                    trade.get("city"),
-                    trade.get("date"),
-                    trade.get("realized_pnl_usd"),
-                    trade.get("realized_roi_pct"),
-                    trade.get("close_reason"),
-                    trade.get("closed_at"),
-                    opened_at,
-                    json.dumps(trade),
-                ),
-            )
-    conn.commit()
+        # 4. Persist closed trade history.
+        # Dedup key: token_id + opened_at (composite) so the same market token
+        # can be traded more than once without losing history entries.
+        for trade in state.get("history", []):
+            token_id = trade.get("token_id")
+            if not token_id:
+                continue
+            opened_at = trade.get("opened_at", "")
+            exists = conn.execute(
+                "SELECT 1 FROM trade_history WHERE token_id = ? AND opened_at = ?",
+                (token_id, opened_at),
+            ).fetchone()
+            if not exists:
+                conn.execute(
+                    """INSERT INTO trade_history
+                       (token_id, city, date, pnl_usd, roi_pct, close_reason, closed_at, opened_at, raw_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        token_id,
+                        trade.get("city"),
+                        trade.get("date"),
+                        trade.get("realized_pnl_usd"),
+                        trade.get("realized_roi_pct"),
+                        trade.get("close_reason"),
+                        trade.get("closed_at"),
+                        opened_at,
+                        json.dumps(trade),
+                    ),
+                )
+        conn.commit()
 
     # 5. Mirror to JSON (Atomic write via temp file + rename for crash safety)
     if path:
