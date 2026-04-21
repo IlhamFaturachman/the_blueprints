@@ -244,7 +244,7 @@ PAPER_BASE_WALLET = max(
     float(
         os.getenv(
             "PAPER_BASE_WALLET",
-            "100.0",
+            "5.0",
         )
     ),
 )

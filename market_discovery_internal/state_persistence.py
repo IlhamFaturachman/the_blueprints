@@ -101,12 +101,22 @@ def load_paper_state(path: Optional[str] = None) -> dict[str, Any]:
         },
     }
 
-    # Sync additional meta keys if they exist in the latest metric
+    # Sync OPERATIONAL meta keys from the latest cycle metric.
+    # CRITICAL: Only whitelist non-financial keys. Financial fields (base_wallet,
+    # cash, current_wallet, acceptance_metrics_rolling) are computed from first
+    # principles above and must NEVER be overwritten by stale metric snapshots.
+    # This prevents the "reset won't stick" bug where old cycle_metrics poison
+    # the freshly computed state.
+    _SAFE_METRIC_MERGE_KEYS = {
+        "daily_session", "auto_tuner", "last_cycle_at",
+        "_mem_alert_count", "warmer_silent_fail_alert_sent",
+        "last_attribution_report_at", "current_tier",
+    }
     if metrics:
-        state["meta"].update(metrics[0].get("meta", {}))
-        # Re-apply computed cash after metric merge to prevent stale override
-        state["meta"]["cash"] = cash
-        state["meta"]["current_wallet"] = round(cash + open_cost_basis, 4)
+        latest_meta = metrics[0].get("meta", {})
+        for key in _SAFE_METRIC_MERGE_KEYS:
+            if key in latest_meta:
+                state["meta"][key] = latest_meta[key]
 
     return state
 
@@ -118,8 +128,17 @@ def save_paper_state(state: dict[str, Any], path: Optional[str] = None) -> None:
 
     from market_discovery_internal.config import PAPER_BASE_WALLET
     meta = state.get("meta", {})
-    base_wallet = meta.get("base_wallet", PAPER_BASE_WALLET)
-    cash = meta.get("cash", PAPER_BASE_WALLET)
+
+    # [STATE INTEGRITY] base_wallet is read from the DB (single source of truth).
+    # Only fall back to runtime meta / config default if DB has no portfolio row.
+    # This prevents corrupted runtime meta from poisoning the DB.
+    portfolio = db.get_portfolio()
+    if portfolio and portfolio.get("base_wallet") is not None:
+        base_wallet = float(portfolio["base_wallet"])
+    else:
+        base_wallet = float(meta.get("base_wallet", PAPER_BASE_WALLET))
+
+    cash = float(meta.get("cash", PAPER_BASE_WALLET))
     total_pnl = meta.get("acceptance_metrics_rolling", {}).get("closed_realized_pnl_total_usd", 0.0)
 
     # 1. Update Portfolio Summary

@@ -77,7 +77,12 @@ def _run_cycle(state_path, force_aggressive_scan=False, min_price=None, max_pric
         haiku_position_monitor_fn=_md._haiku_position_monitor,
         haiku_monitor_min_confidence=_md.HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT,
     )
+    # Patch PAPER_BASE_WALLET to match stake_usd so tests have sufficient cash
+    # regardless of the config default (which may be $5 for production safety).
+    test_wallet = max(stake_usd * 10, 100.0)
     with patch(
+        "market_discovery_internal.config.PAPER_BASE_WALLET", test_wallet,
+    ), patch(
         "market_discovery_internal.pricing.calculate_depth_adjusted_stake",
         side_effect=lambda token_id, stake, **kw: stake,
     ), patch(
@@ -450,7 +455,9 @@ def test_run_paper_cycle_skips_new_entry_for_city_with_existing_open_position(tm
         make_opportunity(city="new york", token_id="0xny_open", yes_price=0.45),
         stake_usd=10,
     )
-    save_paper_state({"positions": [existing_new_york], "history": [], "updated_at": None}, path=str(state_file))
+    # Patch base_wallet so pre-saved state has enough cash for the existing position
+    with patch("market_discovery_internal.config.PAPER_BASE_WALLET", 1000.0):
+        save_paper_state({"positions": [existing_new_york], "history": [], "updated_at": None}, path=str(state_file))
 
     new_york_candidate = make_opportunity(city="new york", token_id="0xny_new", yes_price=0.45)
     chicago_candidate = make_opportunity(city="chicago", token_id="0xchi", yes_price=0.45)
@@ -486,7 +493,9 @@ def test_run_paper_cycle_keeps_token_dedupe_with_city_filter(tmp_path):
         make_opportunity(city="new york", token_id="0xdup", yes_price=0.45),
         stake_usd=10,
     )
-    save_paper_state({"positions": [existing], "history": [], "updated_at": None}, path=str(state_file))
+    # Patch base_wallet so pre-saved state has enough cash for the existing position
+    with patch("market_discovery_internal.config.PAPER_BASE_WALLET", 1000.0):
+        save_paper_state({"positions": [existing], "history": [], "updated_at": None}, path=str(state_file))
 
     duplicate_token_other_city = make_opportunity(city="chicago", token_id="0xdup", yes_price=0.45)
     unique_token = make_opportunity(city="london", token_id="0xlon", yes_price=0.45)

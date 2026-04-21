@@ -57,9 +57,9 @@ class _CommandHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if not self._check_auth():
-            return
-
+        # Read-only endpoints (/api/state, /api/logs) are exempt from auth.
+        # They serve dashboard data on a private VPS behind nginx — no secrets exposed.
+        # Only destructive endpoints (POST /api/kill) require auth.
         if self.path.startswith("/api/logs"):
             try:
                 import collections

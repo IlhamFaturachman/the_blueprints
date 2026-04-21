@@ -1257,9 +1257,21 @@ function connectBrowserWs() {
 // ===== FETCH DATA =====
 async function fetchData() {
     try {
-        const res = await fetch('../logs/paper_positions_5usd.json?t=' + Date.now(), { cache: 'no-store' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        const data = await res.json();
+        // Primary: live state from bot's command server (DB-backed, always fresh).
+        // Proxied through nginx /api/ -> 127.0.0.1:8083.
+        // Fallback: static JSON mirror (last-known-good when bot is stopped).
+        let data;
+        try {
+            const apiRes = await fetch('/api/state?t=' + Date.now(), { cache: 'no-store' });
+            if (apiRes.ok) {
+                data = await apiRes.json();
+            }
+        } catch (_) { /* bot might be stopped — fall through to JSON fallback */ }
+        if (!data) {
+            const jsonRes = await fetch('../logs/paper_positions_5usd.json?t=' + Date.now(), { cache: 'no-store' });
+            if (!jsonRes.ok) throw new Error(`HTTP ${jsonRes.status}: ${jsonRes.statusText}`);
+            data = await jsonRes.json();
+        }
 
         // Cycle journal
         const rawCycles = data.cycle_journal || [];
@@ -1402,10 +1414,9 @@ function updateClocks() {
 
 // ===== KILL SWITCH =====
 function getCommandServerUrl() {
-    // Command server runs on port 8083 on the same host
-    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-    const hostname = window.location.hostname || 'localhost';
-    return `${protocol}//${hostname}:8083`;
+    // Command server is proxied through nginx at /api/ (same origin, no CORS issues).
+    // Nginx routes /api/* -> 127.0.0.1:8083 internally.
+    return '';
 }
 
 function triggerKillSwitch() {
