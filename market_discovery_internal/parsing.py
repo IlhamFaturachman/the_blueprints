@@ -118,8 +118,8 @@ def parse_market(
     now_utc=None,
     daily_resolve_only=DAILY_RESOLVE_ONLY,
     daily_min_hours_to_resolve=DAILY_MIN_HOURS_TO_RESOLVE,
-    daily_min_resolve_days_ahead=DAILY_MIN_RESOLVE_DAYS_AHEAD,
-    daily_max_resolve_days_ahead=DAILY_MAX_RESOLVE_DAYS_AHEAD,
+    daily_min_resolve_days_ahead=DAILY_MIN_RESOLVE_DAYS_AHEAD,   # deprecated: unused, kept for backward compat
+    daily_max_resolve_days_ahead=DAILY_MAX_RESOLVE_DAYS_AHEAD,   # deprecated: unused, kept for backward compat
     return_skip_reason=False,
 ):
     """Parse a raw Gamma API market dict into structured fields."""
@@ -285,7 +285,6 @@ def parse_market(
         else:
             now = now.astimezone(timezone.utc)
         hours_until_resolve = (end_dt - now).total_seconds() / 3600
-        resolve_days_ahead = (end_dt.date() - now.date()).days
     except (ValueError, AttributeError):
         _log_unmatched(question, f"could not parse endDate: {end_date_raw}")
         return _with_reason(None)
@@ -294,8 +293,10 @@ def parse_market(
         return _with_reason(None)
 
     if daily_resolve_only:
-        # [MODUL C] The Golden Window is the SOLE time filter (8-14h before resolve).
-        # We now use system-wide config for easier tuning.
+        # [MODUL C] Golden Window: only enter markets within the configured
+        # hours-until-resolve range (default 4-18h). This balances forecast
+        # accuracy (better closer to resolve) vs market inefficiency (better
+        # further from resolve). Tunable via GOLDEN_WINDOW_HOURS_MIN/MAX.
         if hours_until_resolve > GOLDEN_WINDOW_HOURS_MAX:
             return _with_reason(None, "too_early_to_enter")
         if hours_until_resolve < GOLDEN_WINDOW_HOURS_MIN:
