@@ -982,10 +982,22 @@ def run_paper_trading_cycle(
         current_tier_max_slots = 15
         current_stake_usd = round(wallet_after_position_management * 0.15, 2)
     elif wallet_after_position_management >= 5.0:
-        # TIER 1 ($5-$20): Stake $1-$2, Slots 5-8
+        # TIER 1 ($5-$20): Stake $1-$2, slots scale with wallet to stay within
+        # the safe leverage cap (wallet / slots / 1.575 overhead >= $1 min stake).
         new_tier = 1
-        current_tier_max_slots = 8 if wallet_after_position_management >= 12.0 else 5
-        current_stake_usd = 2.0 if wallet_after_position_management >= 12.0 else 1.0
+        w = wallet_after_position_management
+        if w >= 15.0:
+            current_tier_max_slots = 8
+            current_stake_usd = 2.0
+        elif w >= 12.0:
+            current_tier_max_slots = 6
+            current_stake_usd = 2.0
+        elif w >= 8.0:
+            current_tier_max_slots = 4
+            current_stake_usd = 1.0
+        else:
+            current_tier_max_slots = 3
+            current_stake_usd = 1.0
 
     # [SAFE LEVERAGE CAP] Ensure Total Exposure <= Available Cash
     # Use actual cash balance. Formula: Total Equity - Current Deployment Cost.
