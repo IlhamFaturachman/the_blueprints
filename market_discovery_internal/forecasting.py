@@ -575,11 +575,19 @@ _NEGATIVE_CACHE_LOCK = threading.Lock()
 _NEGATIVE_CACHE_TTL_SECONDS = 300  # 5 minutes
 
 def fetch_forecast_with_cache(city: str, date: str, cache: dict[str, Any], stats: Optional[dict[str, int]] = None, *, fetch_forecast_fn: Any, icao_override: Optional[str] = None, temp_type: str = "max") -> Optional[ForecastTemp]:
-    """Fetch forecast with per-cycle cache for successful city/date/icao lookups."""
+    """Fetch forecast with per-cycle cache for successful city/date lookups.
+    
+    Cache key uses (city, date, temp_type) only — ICAO is excluded because
+    multiple markets for the same city/date share the same forecast regardless
+    of which weather station is used. ICAO is still passed to the actual API call.
+    """
     if not isinstance(cache, dict):
         return fetch_forecast_fn(city, date, icao_override=icao_override, temp_type=temp_type)
 
-    cache_key = (city, date, icao_override, temp_type)
+    # [FIX] Cache key excludes icao_override to match prefetch keys.
+    # Prefetch stores as (city, date, None, temp_type); enrichment looked up with
+    # (city, date, "EGLC", temp_type) — causing 100% cache misses and 600s cycles.
+    cache_key = (city, date, temp_type)
     cached = cache.get(cache_key)
     if cached is not None:
         if isinstance(stats, dict):
@@ -632,12 +640,12 @@ def prefetch_forecasts(cache_keys: list[tuple], cache: dict[str, Any], min_keys:
         
         city = item[0]
         date = item[1]
-        icao = item[2] if len(item) > 2 else None
+        # item[2] is icao (ignored for cache key — matches fetch_forecast_with_cache)
         temp_type = item[3] if len(item) > 3 else "max"
         
         if not city or not date:
             continue
-        key = (city, date, icao, temp_type)
+        key = (city, date, temp_type)
         if key in cache or key in seen:
             continue
         seen.add(key)
@@ -655,14 +663,12 @@ def prefetch_forecasts(cache_keys: list[tuple], cache: dict[str, Any], min_keys:
             "skipped": True,
         }
 
-    # Group keys by (date, temp_type) to perform bulk fetches
-    # Note: bulk fetch only supports max temp currently; min-temp keys fall back to individual fetch
+    # Group keys by date to perform bulk fetches
     by_date = {}
-    for city, date, icao, temp_type in unique_keys:
-        group_key = date
-        if group_key not in by_date:
-            by_date[group_key] = []
-        by_date[group_key].append((city, temp_type))
+    for city, date, temp_type in unique_keys:
+        if date not in by_date:
+            by_date[date] = []
+        by_date[date].append((city, temp_type))
 
     stats = {
         "eligible": eligible,
@@ -686,7 +692,7 @@ def prefetch_forecasts(cache_keys: list[tuple], cache: dict[str, Any], min_keys:
                             len(cities_group), temp_type, date)
                 results = _fetch_bulk_forecasts(cities_group, date, temp_type=temp_type)
                 for city in cities_group:
-                    key = (city, date, None, temp_type)
+                    key = (city, date, temp_type)
                     if results.get(city) is not None:
                         cache[key] = ForecastTemp(results[city], f"open-meteo (bulk-{temp_type})")
                         stats["successful"] += 1

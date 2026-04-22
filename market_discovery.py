@@ -12,11 +12,21 @@ import os
 import sys
 import time
 import signal
+import logging
 import threading
 
 # [FIX] Force unbuffered output for real-time UI logs
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
+
+# [FIX] Configure root logger so logger.info() calls are visible in paper_loop.out.
+# Without this, Python defaults to WARNING level and all info/debug logs are silently dropped.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    stream=sys.stderr,
+)
+
 import multiprocessing
 import fcntl
 from datetime import datetime, timezone
