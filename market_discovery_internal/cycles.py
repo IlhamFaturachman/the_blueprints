@@ -417,6 +417,7 @@ def run_paper_trading_cycle(
     last_ws_update_at: Any = None,
     ws_stale_detection_minutes: float = 15,
     on_position_opened_fn: Any = None,
+    exchange: Any = None,  # [EXECUTION BRIDGE] BlueprintsExchange instance for live trading
 ) -> dict[str, Any]:
     """Run one paper-trading cycle: discover, manage exits, open new positions."""
     global _HEARTBEAT_SENT
@@ -663,6 +664,11 @@ def run_paper_trading_cycle(
     )
     position_forecast_prefetch_ms = elapsed_ms_fn(position_prefetch_started)
 
+    # [EXECUTION BRIDGE] Monitor pending orders before position management
+    from market_discovery_internal.config import LIVE_TRADING_ENABLED as _LIVE_ENABLED
+    if _LIVE_ENABLED and exchange is not None:
+        monitor_pending_orders(state, exchange, close_paper_position_fn=close_paper_position_fn)
+
     position_management_started = perf_counter_fn()
     haiku_monitor_calls = 0
     haiku_monitor_forced_exits = 0
@@ -670,7 +676,11 @@ def run_paper_trading_cycle(
         position = ensure_take_profit_target_fn(position)
 
         if position.get("status") != "open":
-            next_history.append(position)
+            # [EXECUTION BRIDGE] Pending positions stay in positions list (not history)
+            if position.get("status") in ("pending_entry", "pending_exit"):
+                next_open_positions.append(position)
+            else:
+                next_history.append(position)
             continue
 
         token_id = position.get("token_id")
@@ -825,6 +835,69 @@ def run_paper_trading_cycle(
             now_utc=now_dt,
             confidence_score=confidence_score,
         )
+
+        # [EXECUTION BRIDGE] Live exit: place real orders instead of paper close
+        if (_LIVE_ENABLED and exchange is not None and getattr(exchange, 'available', False)
+                and decision["action"] == "sell"
+                and not updated_position.get("_exit_in_progress")):
+            from market_discovery_internal.config import URGENT_EXIT_REASONS
+            exit_reason = decision.get("reason", "unknown")
+            _token = updated_position.get("token_id")
+            _qty = float(updated_position.get("quantity", 0))
+
+            if exit_reason in URGENT_EXIT_REASONS:
+                # URGENT: taker sell (speed > fee savings)
+                book = exchange.get_orderbook_info(_token) if _token else None
+                if book and book.get("best_bid") is not None:
+                    worst_price = round(book["best_bid"] * 0.95, 4)
+                    sell_result = exchange.place_taker_sell(
+                        _token, _qty, worst_price, book["tick_size"], book["neg_risk"],
+                    )
+                    if sell_result.get("success"):
+                        fill_price = book["best_bid"]
+                        updated_position = close_paper_position_fn(
+                            position=position, exit_price=fill_price,
+                            reason=exit_reason, now_utc=now_dt,
+                        )
+                    else:
+                        logger.error("[LIVE-EXIT] Urgent taker sell FAILED for %s: %s",
+                                     updated_position.get("city", "?"), sell_result.get("reason"))
+                        # Fall through to paper close (already done by update_paper_position)
+            else:
+                # NORMAL: maker sell (fee savings > speed)
+                book = exchange.get_orderbook_info(_token) if _token else None
+                if book and book.get("best_ask") is not None:
+                    maker_price = exchange.compute_maker_sell_price(
+                        book["best_ask"], book["tick_size_float"],
+                    )
+                    if maker_price and maker_price > 0:
+                        sell_result = exchange.place_maker_sell(
+                            _token, _qty, maker_price, book["tick_size"], book["neg_risk"],
+                        )
+                        if sell_result.get("success"):
+                            # Convert to pending_exit — don't close yet
+                            updated_position = {**position}  # Reset to pre-close state
+                            updated_position["status"] = "pending_exit"
+                            updated_position["pending_exit_order_id"] = sell_result["order_id"]
+                            updated_position["pending_exit_reason"] = exit_reason
+                            updated_position["pending_exit_retry_count"] = 0
+                            updated_position["pending_exit_placed_at"] = now_dt.isoformat()
+                            updated_position["last_price"] = float(current_yes_price)
+                            logger.info("[LIVE-EXIT] Maker sell placed for %s @ $%.4f",
+                                        updated_position.get("city", "?"), maker_price)
+                        else:
+                            # Maker sell rejected — fall back to taker
+                            worst_price = round(book["best_bid"] * 0.95, 4) if book.get("best_bid") else 0
+                            if worst_price > 0:
+                                taker_result = exchange.place_taker_sell(
+                                    _token, _qty, worst_price, book["tick_size"], book["neg_risk"],
+                                )
+                                if taker_result.get("success"):
+                                    fill_price = book["best_bid"]
+                                    updated_position = close_paper_position_fn(
+                                        position=position, exit_price=fill_price,
+                                        reason=exit_reason, now_utc=now_dt,
+                                    )
 
         if decision["action"] == "hold_to_resolve" and hours_until_resolve is not None and hours_until_resolve <= 0:
             # Use threshold check instead of truthy — forecast_valid is a graduated float 0.0-1.0.
@@ -1128,6 +1201,7 @@ def run_paper_trading_cycle(
             is_paper_trading=True,
             available_cash=available_cash,
             on_position_opened_fn=on_position_opened_fn,
+            exchange=exchange,
         )
         # [ACCOUNTING] Debit cash for each newly opened position
         for pos in opened_this_cycle:
@@ -1424,6 +1498,246 @@ def compute_kelly_stake(
     )
 
     return round(stake, 2)
+
+
+# ---------------------------------------------------------------------------
+# [EXECUTION BRIDGE] Pending Order Monitoring
+# ---------------------------------------------------------------------------
+
+def monitor_pending_orders(state, exchange, close_paper_position_fn=None):
+    """Monitor pending_entry and pending_exit orders. Called at start of each cycle.
+
+    Only runs when LIVE_TRADING_ENABLED=True and exchange is available.
+    Paper mode: this function is never called (exchange=None check in caller).
+
+    Handles:
+    - pending_entry: check fill → convert to open, or cancel on timeout
+    - pending_exit: check fill → close position, or retry/taker fallback
+    """
+    from market_discovery_internal.config import (
+        MAKER_ORDER_TIMEOUT_S,
+        MAKER_SELL_MAX_RETRIES,
+        URGENT_EXIT_REASONS,
+    )
+
+    if exchange is None or not getattr(exchange, 'available', False):
+        return
+
+    positions = state.get("positions", [])
+    state_meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+    now = datetime.now(timezone.utc)
+    to_remove = []
+
+    for i, pos in enumerate(positions):
+        status = pos.get("status")
+
+        # --- PENDING ENTRY ---
+        if status == "pending_entry":
+            order_id = pos.get("pending_order_id")
+            if not order_id:
+                to_remove.append(i)
+                continue
+
+            placed_at_str = pos.get("pending_order_placed_at")
+            try:
+                placed_at = datetime.fromisoformat(placed_at_str) if placed_at_str else now
+            except (ValueError, TypeError):
+                placed_at = now
+            elapsed_s = (now - placed_at).total_seconds()
+
+            result = exchange.get_order_status(order_id)
+            if result is None:
+                # API failure — wait
+                continue
+
+            order_status = str(result.get("status", "")).lower()
+            size_matched = float(result.get("size_matched", 0) or 0)
+            order_size = float(pos.get("pending_order_size", 0))
+
+            if order_status == "matched" or (order_size > 0 and size_matched >= order_size):
+                # FILLED — convert to open position
+                fill_price = float(result.get("price", pos.get("entry_price", 0)) or pos.get("entry_price", 0))
+                fill_size = size_matched if size_matched > 0 else order_size
+                pos["status"] = "open"
+                pos["entry_price"] = fill_price
+                pos["quantity"] = fill_size
+                pos["shares_cost"] = round(fill_size * fill_price, 4)
+                pos["entry_fee_usd"] = 0.0  # Maker fee = 0%
+                pos["cost_basis"] = pos["shares_cost"]
+                pos["target_price"] = _compute_take_profit_price(fill_price, direction=pos.get("direction", ""))
+                pos["stop_loss_price"] = round(fill_price * HYBRID_STOP_LOSS_MULTIPLIER, 4)
+                # Clean up pending fields
+                for key in ["pending_order_id", "pending_order_placed_at", "pending_order_price", "pending_order_size"]:
+                    pos.pop(key, None)
+                logger.info("[ORDER-MONITOR] FILLED: %s %s %s shares @ $%.4f",
+                            pos.get("city", "?"), pos.get("direction", "?"), fill_size, fill_price)
+
+            elif 0 < size_matched < order_size:
+                # PARTIALLY FILLED
+                from market_discovery_internal.config import STRATEGY_MIN_SHARES
+                if size_matched >= STRATEGY_MIN_SHARES:
+                    # Accept partial fill
+                    exchange.cancel_order(order_id)
+                    fill_price = float(result.get("price", pos.get("entry_price", 0)) or pos.get("entry_price", 0))
+                    pos["status"] = "open"
+                    pos["entry_price"] = fill_price
+                    pos["quantity"] = size_matched
+                    pos["shares_cost"] = round(size_matched * fill_price, 4)
+                    pos["entry_fee_usd"] = 0.0
+                    pos["cost_basis"] = pos["shares_cost"]
+                    pos["target_price"] = _compute_take_profit_price(fill_price, direction=pos.get("direction", ""))
+                    pos["stop_loss_price"] = round(fill_price * HYBRID_STOP_LOSS_MULTIPLIER, 4)
+                    for key in ["pending_order_id", "pending_order_placed_at", "pending_order_price", "pending_order_size"]:
+                        pos.pop(key, None)
+                    logger.info("[ORDER-MONITOR] PARTIAL FILL accepted: %s %.0f/%.0f shares",
+                                pos.get("city", "?"), size_matched, order_size)
+                elif elapsed_s > MAKER_ORDER_TIMEOUT_S:
+                    # Partial too small + timeout — cancel and remove
+                    exchange.cancel_order(order_id)
+                    to_remove.append(i)
+                    logger.info("[ORDER-MONITOR] TIMEOUT (partial too small): %s", pos.get("city", "?"))
+
+            elif order_status in ("cancelled", "unmatched"):
+                # Order cancelled externally
+                to_remove.append(i)
+                logger.info("[ORDER-MONITOR] CANCELLED: %s order was cancelled externally", pos.get("city", "?"))
+
+            elif elapsed_s > MAKER_ORDER_TIMEOUT_S:
+                # Timeout — cancel and remove
+                exchange.cancel_order(order_id)
+                to_remove.append(i)
+                logger.info("[ORDER-MONITOR] TIMEOUT: %s order not filled after %.0fs", pos.get("city", "?"), elapsed_s)
+
+        # --- PENDING EXIT ---
+        elif status == "pending_exit":
+            order_id = pos.get("pending_exit_order_id")
+            if not order_id:
+                pos["status"] = "open"
+                for key in ["pending_exit_order_id", "pending_exit_reason", "pending_exit_retry_count", "pending_exit_placed_at"]:
+                    pos.pop(key, None)
+                continue
+
+            result = exchange.get_order_status(order_id)
+            if result is None:
+                continue
+
+            order_status = str(result.get("status", "")).lower()
+            size_matched = float(result.get("size_matched", 0) or 0)
+            order_size = float(pos.get("quantity", 0))
+
+            if order_status == "matched" or (order_size > 0 and size_matched >= order_size):
+                # Exit order filled
+                fill_price = float(result.get("price", 0) or 0)
+                if fill_price <= 0:
+                    fill_price = float(pos.get("last_price", pos.get("entry_price", 0)))
+                exit_reason = pos.get("pending_exit_reason", "maker_sell_filled")
+                if close_paper_position_fn:
+                    closed = close_paper_position_fn(
+                        position=pos, exit_price=fill_price,
+                        reason=exit_reason, now_utc=now,
+                    )
+                    # Override fee to 0 for maker exit
+                    if exit_reason not in URGENT_EXIT_REASONS:
+                        closed["exit_fee_usd"] = 0.0
+                        closed["net_exit_value"] = closed.get("exit_value", 0.0)
+                        closed["realized_pnl_usd"] = round(
+                            float(closed.get("net_exit_value", 0)) - float(closed.get("cost_basis", 0)), 4
+                        )
+                    state.setdefault("history", []).append(closed)
+                    net_exit = float(closed.get("net_exit_value", closed.get("exit_value", 0.0)))
+                    state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + net_exit, 4)
+                    pos["status"] = "closed"
+                    logger.info("[ORDER-MONITOR] EXIT FILLED: %s @ $%.4f (%s)",
+                                pos.get("city", "?"), fill_price, exit_reason)
+
+            elif order_status in ("cancelled", "unmatched"):
+                # Exit order cancelled — reset to open for re-evaluation
+                pos["status"] = "open"
+                for key in ["pending_exit_order_id", "pending_exit_reason", "pending_exit_retry_count", "pending_exit_placed_at"]:
+                    pos.pop(key, None)
+                logger.info("[ORDER-MONITOR] Exit order cancelled for %s — reset to open", pos.get("city", "?"))
+
+            else:
+                # Not filled yet — check retry logic
+                retry_count = int(pos.get("pending_exit_retry_count", 0))
+                placed_at_str = pos.get("pending_exit_placed_at")
+                try:
+                    placed_at = datetime.fromisoformat(placed_at_str) if placed_at_str else now
+                except (ValueError, TypeError):
+                    placed_at = now
+                elapsed_s = (now - placed_at).total_seconds()
+
+                if retry_count < MAKER_SELL_MAX_RETRIES and elapsed_s > 60:
+                    # Retry: cancel current, lower price by 1 tick, re-place
+                    exchange.cancel_order(order_id)
+                    token_id = pos.get("token_id")
+                    book = exchange.get_orderbook_info(token_id) if token_id else None
+                    if book and book.get("best_bid") is not None:
+                        new_price = max(
+                            book["best_bid"],
+                            round(float(pos.get("entry_price", 0)) * 0.5, 4),
+                        )
+                        sell_result = exchange.place_maker_sell(
+                            token_id, float(pos.get("quantity", 0)),
+                            new_price, book["tick_size"], book["neg_risk"],
+                        )
+                        if sell_result.get("success"):
+                            pos["pending_exit_order_id"] = sell_result["order_id"]
+                            pos["pending_exit_retry_count"] = retry_count + 1
+                            pos["pending_exit_placed_at"] = now.isoformat()
+                            logger.info("[ORDER-MONITOR] Retry #%d maker sell for %s @ $%.4f",
+                                        retry_count + 1, pos.get("city", "?"), new_price)
+                        else:
+                            # Maker sell failed — fallback to taker
+                            worst_price = round(book["best_bid"] * 0.95, 4)
+                            taker_result = exchange.place_taker_sell(
+                                token_id, float(pos.get("quantity", 0)),
+                                worst_price, book["tick_size"], book["neg_risk"],
+                            )
+                            if taker_result.get("success") and close_paper_position_fn:
+                                fill_price = float(book["best_bid"])
+                                exit_reason = pos.get("pending_exit_reason", "taker_fallback")
+                                closed = close_paper_position_fn(
+                                    position=pos, exit_price=fill_price,
+                                    reason=exit_reason, now_utc=now,
+                                )
+                                state.setdefault("history", []).append(closed)
+                                net_exit = float(closed.get("net_exit_value", closed.get("exit_value", 0.0)))
+                                state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + net_exit, 4)
+                                pos["status"] = "closed"
+                                logger.warning("[ORDER-MONITOR] Taker fallback for %s after %d retries",
+                                               pos.get("city", "?"), retry_count)
+
+                elif retry_count >= MAKER_SELL_MAX_RETRIES:
+                    # Max retries exceeded — taker fallback
+                    exchange.cancel_order(order_id)
+                    token_id = pos.get("token_id")
+                    book = exchange.get_orderbook_info(token_id) if token_id else None
+                    if book and book.get("best_bid") is not None and close_paper_position_fn:
+                        worst_price = round(book["best_bid"] * 0.95, 4)
+                        taker_result = exchange.place_taker_sell(
+                            token_id, float(pos.get("quantity", 0)),
+                            worst_price, book["tick_size"], book["neg_risk"],
+                        )
+                        fill_price = float(book["best_bid"])
+                        exit_reason = pos.get("pending_exit_reason", "taker_fallback_max_retries")
+                        closed = close_paper_position_fn(
+                            position=pos, exit_price=fill_price,
+                            reason=exit_reason, now_utc=now,
+                        )
+                        state.setdefault("history", []).append(closed)
+                        net_exit = float(closed.get("net_exit_value", closed.get("exit_value", 0.0)))
+                        state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + net_exit, 4)
+                        pos["status"] = "closed"
+                        logger.warning("[ORDER-MONITOR] Max retries for %s — taker fallback", pos.get("city", "?"))
+
+    # Remove cancelled/timed-out pending_entry positions (reverse order to preserve indices)
+    for idx in sorted(to_remove, reverse=True):
+        removed = positions.pop(idx)
+        logger.info("[ORDER-MONITOR] Removed pending position: %s", removed.get("city", "?"))
+
+    # Remove closed positions from the open list (they were already added to history above)
+    state["positions"] = [p for p in positions if p.get("status") != "closed"]
 
 
 def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_STAKE_USD, available_cash: float | None = None) -> dict[str, Any]:
@@ -1995,6 +2309,7 @@ def append_opened_positions_from_candidates(
     is_paper_trading=True,
     available_cash=None,
     on_position_opened_fn=None, # [FIX] Added missing signature
+    exchange=None,  # [EXECUTION BRIDGE] BlueprintsExchange instance for live trading
 ):
     """Open positions from ranked candidates while respecting city and slot limits."""
     opened_this_cycle = []
@@ -2098,19 +2413,106 @@ def append_opened_positions_from_candidates(
         if best_bid > 0:
             entry_opportunity["entry_quote_best_bid"] = round(best_bid, 4)
 
-        position = build_paper_position(entry_opportunity, stake_usd=risk_weighted_stake, available_cash=remaining_cash)
-        if position is None:
-            logger.info("[KELLY] Skipping %s — Kelly says don't bet (edge insufficient)", opportunity.get("city", "?"))
-            continue
+        # [EXECUTION BRIDGE] Live trading: place maker buy order
+        from market_discovery_internal.config import LIVE_TRADING_ENABLED
+        if LIVE_TRADING_ENABLED and exchange is not None and getattr(exchange, 'available', False):
+            import math as _math
+            # Fetch live orderbook for maker price + min_order_size
+            book = exchange.get_orderbook_info(token_id)
+            if book is None:
+                logger.warning("[LIVE-ENTRY] Skipped %s — orderbook unavailable", city_key)
+                continue
 
-        # [ACCOUNTING GUARD] Hard block if cost_basis exceeds remaining cash
-        position_cost = float(position.get("cost_basis", 0.0))
-        if remaining_cash is not None and position_cost > remaining_cash:
-            logger.warning(
-                "[ACCOUNTING] Skipping %s — cost_basis $%.4f > remaining cash $%.4f",
-                token_id, position_cost, remaining_cash,
+            # Compute shares from Kelly stake
+            kelly_shares = int(risk_weighted_stake / best_ask) if best_ask > 0 else 0
+            if kelly_shares < book["min_order_size"]:
+                logger.info(
+                    "[LIVE-ENTRY] Skipped %s: kelly=%d shares < min=%d (price=$%.2f)",
+                    city_key, kelly_shares, book["min_order_size"], best_ask,
+                )
+                continue
+
+            # Compute maker price (best_bid + 1 tick)
+            maker_price = exchange.compute_maker_buy_price(
+                book["best_bid"], book["tick_size_float"]
             )
-            continue
+            if maker_price is None or (book["best_ask"] is not None and maker_price >= book["best_ask"]):
+                logger.info("[LIVE-ENTRY] Skipped %s — spread too tight for maker", city_key)
+                continue
+
+            # Check cost against remaining cash
+            estimated_cost = round(kelly_shares * maker_price, 4)
+            if remaining_cash is not None and estimated_cost > remaining_cash:
+                logger.warning(
+                    "[LIVE-ENTRY] Skipped %s — est cost $%.4f > cash $%.4f",
+                    city_key, estimated_cost, remaining_cash,
+                )
+                continue
+
+            # Place maker buy order
+            result = exchange.place_maker_buy(
+                token_id, maker_price, kelly_shares,
+                book["tick_size"], book["neg_risk"],
+            )
+            if not result.get("success"):
+                reason = result.get("reason", "unknown")
+                logger.warning("[LIVE-ENTRY] Order rejected for %s: %s", city_key, reason)
+                continue
+
+            # Create pending_entry position
+            position = {
+                "status": "pending_entry",
+                "city": opportunity["city"],
+                "token_id": token_id,
+                "market_question": opportunity.get("market_question", ""),
+                "direction": opportunity["direction"],
+                "threshold": opportunity["threshold"],
+                "unit": opportunity["unit"],
+                "date": opportunity["date"],
+                "end_date": opportunity.get("end_date"),
+                "market_slug": opportunity.get("market_slug", ""),
+                "entry_price": maker_price,
+                "entry_price_source": "maker_bid",
+                "entry_yes_reference": _safe_float(opportunity.get("yes_price"), best_ask),
+                "entry_quote_best_bid": round(best_bid, 4) if best_bid > 0 else 0.0,
+                "entry_quote_best_ask": round(best_ask, 4),
+                "quantity": float(kelly_shares),
+                "shares_cost": estimated_cost,
+                "entry_fee_usd": 0.0,  # Maker fee = 0%
+                "cost_basis": estimated_cost,  # No taker fee
+                "target_price": _compute_take_profit_price(maker_price, direction=opportunity.get("direction", "")),
+                "target_price_low": _compute_take_profit_price(maker_price, direction=opportunity.get("direction", "")),
+                "target_price_high": _compute_take_profit_price(maker_price, direction=opportunity.get("direction", "")),
+                "target_policy": "take_profit_100pct",
+                "target_strategy": opportunity.get("strategy", "swing"),
+                "stop_loss_price": round(maker_price * HYBRID_STOP_LOSS_MULTIPLIER, 4),
+                "entry_model_prob": opportunity.get("model_prob"),
+                "entry_edge": opportunity.get("edge"),
+                "forecast_temp_c": opportunity.get("forecast_temp_c"),
+                "temp_type": opportunity.get("temp_type", "max"),
+                "icao_code": opportunity.get("icao_code"),
+                "opened_at": datetime.now(timezone.utc).isoformat(),
+                "pending_order_id": result["order_id"],
+                "pending_order_placed_at": datetime.now(timezone.utc).isoformat(),
+                "pending_order_price": maker_price,
+                "pending_order_size": kelly_shares,
+            }
+            position_cost = estimated_cost
+        else:
+            # [PAPER MODE] Unchanged paper trading path
+            position = build_paper_position(entry_opportunity, stake_usd=risk_weighted_stake, available_cash=remaining_cash)
+            if position is None:
+                logger.info("[KELLY] Skipping %s — Kelly says don't bet (edge insufficient)", opportunity.get("city", "?"))
+                continue
+
+            # [ACCOUNTING GUARD] Hard block if cost_basis exceeds remaining cash
+            position_cost = float(position.get("cost_basis", 0.0))
+            if remaining_cash is not None and position_cost > remaining_cash:
+                logger.warning(
+                    "[ACCOUNTING] Skipping %s — cost_basis $%.4f > remaining cash $%.4f",
+                    token_id, position_cost, remaining_cash,
+                )
+                continue
 
         position["entry_bucket"] = bucket_name
         position["entry_bucket_reason"] = bucket.get("reason")

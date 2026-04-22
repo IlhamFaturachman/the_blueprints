@@ -288,6 +288,7 @@ def wired_run_paper_trading_cycle(force_aggressive_scan=False):
         last_ws_update_at=_last_ws_update_at,
         ws_stale_detection_minutes=WS_STALE_DETECTION_MINUTES,
         on_position_opened_fn=_on_instant_ws_refresh, # [NEW]
+        exchange=_exchange,  # [EXECUTION BRIDGE] Pass exchange for live trading
     )
 
     # Post-cycle broadcast removed — _on_instant_ws_refresh already handles
@@ -307,9 +308,10 @@ _state_lock = threading.Lock()
 _current_monitored_tokens = set()
 
 _command_server = None
+_exchange = None  # [EXECUTION BRIDGE] BlueprintsExchange instance (None in paper mode)
 
 def _start_background_services():
-    global _ws_watcher, _ws_broadcaster, _command_server
+    global _ws_watcher, _ws_broadcaster, _command_server, _exchange
     from market_discovery_internal.ws_price_watcher import PriceWatcher, make_ws_exit_callback
     from market_discovery_internal.ws_broadcaster import WsBroadcaster
     from market_discovery_internal.command_server import start_command_server
@@ -318,7 +320,53 @@ def _start_background_services():
         WS_PRICE_WATCHER_URL, WS_WATCHDOG_TIMEOUT_SECONDS, 
         WS_BROADCAST_HOST, WS_BROADCAST_PORT, WS_PING_INTERVAL_SECONDS,
         WS_RECONNECT_DELAY_SECONDS,
+        LIVE_TRADING_ENABLED,
     )
+
+    # [EXECUTION BRIDGE] Initialize exchange if live trading enabled
+    if LIVE_TRADING_ENABLED:
+        try:
+            from market_discovery_internal.execution import BlueprintsExchange
+            _exchange = BlueprintsExchange()
+            if _exchange.available:
+                # Cancel orphan orders from previous session
+                cancelled = _exchange.cancel_all_orders()
+                print(f"[EXCHANGE] Initialized. Cancelled {cancelled} orphan orders.")
+
+                # Clean up pending positions from previous crash
+                try:
+                    from market_discovery_internal.state_persistence import load_paper_state, save_paper_state
+                    _startup_state = load_paper_state(PAPER_STATE_FILE)
+                    _startup_changed = False
+                    _startup_positions = _startup_state.get("positions", [])
+                    for _sp in list(_startup_positions):
+                        if _sp.get("status") == "pending_entry":
+                            _startup_positions.remove(_sp)
+                            _startup_changed = True
+                            print(f"[EXCHANGE] Removed orphan pending_entry: {_sp.get('city', '?')}")
+                        elif _sp.get("status") == "pending_exit":
+                            _sp["status"] = "open"
+                            for _k in ["pending_exit_order_id", "pending_exit_reason",
+                                        "pending_exit_retry_count", "pending_exit_placed_at"]:
+                                _sp.pop(_k, None)
+                            _startup_changed = True
+                            print(f"[EXCHANGE] Reset pending_exit to open: {_sp.get('city', '?')}")
+                    if _startup_changed:
+                        save_paper_state(_startup_state, PAPER_STATE_FILE)
+                except Exception as _cleanup_err:
+                    print(f"[EXCHANGE] Orphan cleanup warning: {_cleanup_err}")
+
+                # Start heartbeat
+                _exchange.start_heartbeat()
+                print("[EXCHANGE] Heartbeat started. Live trading ACTIVE.")
+            else:
+                print("[EXCHANGE] CRITICAL: Exchange init failed — running in paper mode")
+                _exchange = None
+        except Exception as _exc:
+            print(f"[EXCHANGE] CRITICAL: Failed to initialize: {_exc}")
+            _exchange = None
+    else:
+        print("[EXCHANGE] Paper mode — no exchange initialization")
 
     # 1. Broadcaster (Web UI Relay)
     _ws_broadcaster = WsBroadcaster(
@@ -359,7 +407,8 @@ def _start_background_services():
     exit_callback = make_ws_exit_callback(
         state_path=PAPER_STATE_FILE,
         lock=_state_lock, # Use the shared state lock
-        broadcaster=_ws_broadcaster
+        broadcaster=_ws_broadcaster,
+        exchange=_exchange,  # [EXECUTION BRIDGE] Pass exchange for live exits
     )
 
     def _consumer_loop():
@@ -465,6 +514,13 @@ def main():
     # 0. Global Signal Handlers for Graceful Shutdown
     def handle_exit_signal(signum, frame):
         print(f"\n[SIGN] Received signal {signum}. Shutting down THE BLUEPRINTS...")
+        # [EXECUTION BRIDGE] Stop exchange (cancel orders, stop heartbeat)
+        if _exchange is not None:
+            try:
+                _exchange.stop()
+                print("[EXCHANGE] Stopped gracefully")
+            except Exception as _exc:
+                print(f"[EXCHANGE] Stop error: {_exc}")
         _stop_background_services()
         sys.exit(0)
 

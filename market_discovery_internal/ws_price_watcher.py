@@ -360,8 +360,11 @@ class PriceWatcher:
             ilogger.warning("[WS-MPC] Send error: %s", e)
 
 
-def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
+def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None):
     """(Main Process) Handles price updates and triggers exits (TP/SL).
+
+    Args:
+        exchange: BlueprintsExchange instance for live trading (None for paper mode).
 
     Flash Crash Shield (4 layers):
       L1 — Spike Detector: ignore single-tick drops > FLASH_CRASH_MAX_DROP_PCT
@@ -560,7 +563,68 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None):
                         reason = "take_profit_100pct"
 
                     if reason:
-                        closed = close_paper_position(pos, bid_price, reason, datetime.now(timezone.utc))
+                        # [EXECUTION BRIDGE] Check _exit_in_progress to prevent double-sell
+                        if pos.get("_exit_in_progress"):
+                            continue
+
+                        # [EXECUTION BRIDGE] Live trading exit
+                        from market_discovery_internal.config import LIVE_TRADING_ENABLED as _WS_LIVE
+                        if _WS_LIVE and exchange is not None and getattr(exchange, 'available', False):
+                            pos["_exit_in_progress"] = True
+                            from market_discovery_internal.config import URGENT_EXIT_REASONS
+                            _ws_token = pos.get("token_id")
+                            _ws_qty = float(pos.get("quantity", 0))
+
+                            if reason in URGENT_EXIT_REASONS:
+                                # Taker sell (urgent — stop loss, flash crash)
+                                book = exchange.get_orderbook_info(_ws_token) if _ws_token else None
+                                if book and book.get("best_bid") is not None:
+                                    worst_price = round(book["best_bid"] * 0.95, 4)
+                                    sell_result = exchange.place_taker_sell(
+                                        _ws_token, _ws_qty, worst_price,
+                                        book["tick_size"], book["neg_risk"],
+                                    )
+                                    if sell_result.get("success"):
+                                        fill_price = book["best_bid"]
+                                        closed = close_paper_position(pos, fill_price, reason, datetime.now(timezone.utc))
+                                    else:
+                                        logger.error("[WS-LIVE-EXIT] Taker sell FAILED for %s: %s",
+                                                     pos.get("city", "?"), sell_result.get("reason"))
+                                        pos.pop("_exit_in_progress", None)
+                                        continue
+                                else:
+                                    pos.pop("_exit_in_progress", None)
+                                    continue
+                            else:
+                                # Maker sell (normal — take profit)
+                                book = exchange.get_orderbook_info(_ws_token) if _ws_token else None
+                                if book and book.get("best_ask") is not None:
+                                    maker_price = exchange.compute_maker_sell_price(
+                                        book["best_ask"], book["tick_size_float"],
+                                    )
+                                    if maker_price and maker_price > 0:
+                                        sell_result = exchange.place_maker_sell(
+                                            _ws_token, _ws_qty, maker_price,
+                                            book["tick_size"], book["neg_risk"],
+                                        )
+                                        if sell_result.get("success"):
+                                            # Set pending_exit — main cycle monitors fill
+                                            pos["status"] = "pending_exit"
+                                            pos["pending_exit_order_id"] = sell_result["order_id"]
+                                            pos["pending_exit_reason"] = reason
+                                            pos["pending_exit_retry_count"] = 0
+                                            pos["pending_exit_placed_at"] = datetime.now(timezone.utc).isoformat()
+                                            pos.pop("_exit_in_progress", None)
+                                            changed = True
+                                            logger.info("[WS-LIVE-EXIT] Maker sell placed for %s @ $%.4f",
+                                                        pos.get("city", "?"), maker_price)
+                                            break
+                                # Fallback: paper close if maker sell fails
+                                closed = close_paper_position(pos, bid_price, reason, datetime.now(timezone.utc))
+                        else:
+                            # [PAPER MODE] Unchanged paper trading exit
+                            closed = close_paper_position(pos, bid_price, reason, datetime.now(timezone.utc))
+
                         positions.pop(i)
                         state["positions"] = positions
                         state.setdefault("history", []).append(closed)

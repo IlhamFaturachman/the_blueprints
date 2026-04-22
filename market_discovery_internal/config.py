@@ -534,6 +534,24 @@ KELLY_MAX_STAKE = float(os.getenv("KELLY_MAX_STAKE", "10.00"))  # Maximum stake 
 KELLY_MIN_EDGE_FOR_BET = float(os.getenv("KELLY_MIN_EDGE_FOR_BET", "0.03"))  # Don't bet if edge < 3%
 
 # ---------------------------------------------------------------------------
+# Execution Bridge (Live Trading)
+# ---------------------------------------------------------------------------
+LIVE_TRADING_ENABLED = _env_bool("LIVE_TRADING_ENABLED", False)
+PREFER_MAKER_ORDERS = _env_bool("PREFER_MAKER_ORDERS", True)
+MAKER_ORDER_TIMEOUT_S = int(os.getenv("MAKER_ORDER_TIMEOUT_S", "300"))
+MAKER_SELL_MAX_RETRIES = int(os.getenv("MAKER_SELL_MAX_RETRIES", "3"))
+MAKER_SELL_RETRY_INTERVAL_S = int(os.getenv("MAKER_SELL_RETRY_INTERVAL_S", "60"))
+POLYMARKET_SIGNATURE_TYPE = int(os.getenv("SIGNATURE_TYPE", "1"))  # 1 = POLY_PROXY (Magic Link)
+POLYMARKET_FUNDER_ADDRESS = os.getenv("FUNDER_ADDRESS", "")
+POLYMARKET_PRIVATE_KEY = os.getenv("PRIVATE_KEY", "")
+
+# Urgent exit reasons — always use taker (speed > fee savings)
+URGENT_EXIT_REASONS = frozenset({
+    "stop_loss", "hard_stop_loss", "sniper_stop_loss_thesis_broken",
+    "trailing_stop_breakeven", "trailing_stop", "flash_crash_exit",
+})
+
+# ---------------------------------------------------------------------------
 # NOAA METAR Real-time Override
 # ---------------------------------------------------------------------------
 NOAA_METAR_API = "https://aviationweather.gov/api/data/metar"
