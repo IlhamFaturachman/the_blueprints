@@ -2032,19 +2032,24 @@ def append_opened_positions_from_candidates(
             logger.info(f"[LIQUIDITY] Scaling down stake for {token_id}: ${stake_usd} -> ${dynamic_stake}")
 
         # [PACK B] Regime gate: apply per-market regime thresholds
-        regime_class = opportunity.get("regime_class", "neutral")
-        regime_gates = opportunity.get("regime_gates") or {"min_prob": 0.72, "min_edge": 0.22, "max_price": 0.60}
-        _r_min_prob = float(regime_gates.get("min_prob", 0.72))
-        _r_min_edge = float(regime_gates.get("min_edge", 0.22))
-        _r_max_price = float(regime_gates.get("max_price", 0.60))
-        _r_model_prob = float(opportunity.get("model_prob", 0.0))
-        _r_edge = float(opportunity.get("edge", 0.0))
-        if _r_model_prob < _r_min_prob or _r_edge < _r_min_edge or best_ask > _r_max_price:
-            logger.debug(f"[REGIME-{regime_class.upper()}] Skipping {token_id}: "
-                         f"prob={_r_model_prob:.3f}<{_r_min_prob:.3f} or "
-                         f"edge={_r_edge:.3f}<{_r_min_edge:.3f} or "
-                         f"price={best_ask:.3f}>{_r_max_price:.3f}")
-            continue
+        # Exact-bracket markets bypass regime gates (same as filter_enriched_opportunities).
+        # Regime gates are designed for above/below markets (60-80% prob); exact markets
+        # naturally have 10-54% prob and would always be rejected.
+        _entry_dir = opportunity.get("direction", "")
+        if _entry_dir != "exact":
+            regime_class = opportunity.get("regime_class", "neutral")
+            regime_gates = opportunity.get("regime_gates") or {"min_prob": 0.72, "min_edge": 0.22, "max_price": 0.60}
+            _r_min_prob = float(regime_gates.get("min_prob", 0.72))
+            _r_min_edge = float(regime_gates.get("min_edge", 0.22))
+            _r_max_price = float(regime_gates.get("max_price", 0.60))
+            _r_model_prob = float(opportunity.get("model_prob", 0.0))
+            _r_edge = float(opportunity.get("edge", 0.0))
+            if _r_model_prob < _r_min_prob or _r_edge < _r_min_edge or best_ask > _r_max_price:
+                logger.debug(f"[REGIME-{regime_class.upper()}] Skipping {token_id}: "
+                             f"prob={_r_model_prob:.3f}<{_r_min_prob:.3f} or "
+                             f"edge={_r_edge:.3f}<{_r_min_edge:.3f} or "
+                             f"price={best_ask:.3f}>{_r_max_price:.3f}")
+                continue
 
         # [FIX] Fixed stake: always use exact configured stake_usd.
         # Dynamic risk-weighting and depth scaling caused inconsistent spend per trade.
