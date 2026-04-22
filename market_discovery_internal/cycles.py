@@ -2044,8 +2044,8 @@ def append_opened_positions_from_candidates(
         # Regime gates are designed for above/below markets (60-80% prob); exact markets
         # naturally have 10-54% prob and would always be rejected.
         _entry_dir = opportunity.get("direction", "")
+        regime_class = opportunity.get("regime_class", "neutral")  # Always define (used at position build)
         if _entry_dir != "exact":
-            regime_class = opportunity.get("regime_class", "neutral")
             regime_gates = opportunity.get("regime_gates") or {"min_prob": 0.72, "min_edge": 0.22, "max_price": 0.60}
             _r_min_prob = float(regime_gates.get("min_prob", 0.72))
             _r_min_edge = float(regime_gates.get("min_edge", 0.22))
