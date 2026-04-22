@@ -206,7 +206,7 @@ BELOW_RE = re.compile(BELOW_KEYWORDS, re.IGNORECASE)
 WEATHER_CONTEXT_RE = re.compile(WEATHER_CONTEXT_PATTERN, re.IGNORECASE)
 DIRECTION_CANDIDATE_RE = re.compile(DIRECTION_CANDIDATE_PATTERN, re.IGNORECASE)
 # Lowest-temperature market detection (vs default "highest")
-LOWEST_TEMP_RE = re.compile(r"\b(lowest|low temp|minimum temp|min temp)\b", re.IGNORECASE)
+LOWEST_TEMP_RE = re.compile(r"\b(lowest|low\s+temp(?:erature)?|minimum\s+temp(?:erature)?|min\s+temp(?:erature)?)\b", re.IGNORECASE)
 # Feature gate: enable/disable trading on lowest-temperature markets
 LOWEST_TEMP_MARKETS_ENABLED = _env_bool("LOWEST_TEMP_MARKETS_ENABLED", True)
 # Case-sensitive patterns for short abbreviations that clash with common words.

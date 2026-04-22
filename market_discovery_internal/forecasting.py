@@ -269,17 +269,18 @@ def _fetch_historical_average(city, date, allow_live=True, temp_type="max"):
 
     # Fallback to single fetch if bulk is not used or fails
     try:
-        results = _fetch_bulk_historical_weather([city], date)
+        results = _fetch_bulk_historical_weather([city], date, temp_type=temp_type)
         return results.get(city)
     except Exception as e:
         logger.warning("[MODUL-K] Historical fetch fallback error for %s: %s", city, e)
         if entry:
-            return entry.get("max_temp")
+            return entry.get(_db_field)
         return None
 
-def _fetch_bulk_historical_weather(cities, date):
+def _fetch_bulk_historical_weather(cities, date, temp_type="max"):
     """[MODUL U] Aggregated fetch for multiple cities in one API call.
     Reduces 429 risk by collapsing 31 requests into 1.
+    Returns the correct average (max or min) based on temp_type.
     """
     if not cities or not date:
         return {}
@@ -342,9 +343,10 @@ def _fetch_bulk_historical_weather(cities, date):
             avg_min = round(sum(matches_min) / len(matches_min), 1) if matches_min else None
             avg_precip = round(sum(matches_precip) / len(matches_precip), 2) if matches_precip else None
 
-            if avg_max is not None:
+            if avg_max is not None or avg_min is not None:
                 db.save_weather(city, month_day, max_temp=avg_max, min_temp=avg_min, precip=avg_precip)
-                results[city] = avg_max
+                # Return the correct average based on temp_type
+                results[city] = avg_min if temp_type == "min" else avg_max
         
         return results
     except Exception as e:

@@ -653,7 +653,7 @@ def run_paper_trading_cycle(
     position_prefetch_started = perf_counter_fn()
     position_forecast_prefetch = prefetch_forecasts_fn(
         cache_keys=[
-            (position.get("city"), position.get("date"), position.get("icao_code"))
+            (position.get("city"), position.get("date"), position.get("icao_code"), position.get("temp_type", "max"))
             for position in state.get("positions", [])
             if position.get("status") == "open"
         ],
@@ -827,7 +827,10 @@ def run_paper_trading_cycle(
         )
 
         if decision["action"] == "hold_to_resolve" and hours_until_resolve is not None and hours_until_resolve <= 0:
-            settle_price = 1.0 if forecast_valid else 0.0
+            # Use threshold check instead of truthy — forecast_valid is a graduated float 0.0-1.0.
+            # A weak forecast (e.g., 0.067 for exact markets) should NOT settle at $1.00.
+            # Threshold 0.5 means: above/below needs prob >= 0.60, exact needs prob >= 0.125.
+            settle_price = 1.0 if (isinstance(forecast_valid, (int, float)) and forecast_valid >= 0.5) else 0.0
             updated_position = close_paper_position_fn(
                 position=updated_position,
                 exit_price=settle_price,
@@ -1520,6 +1523,7 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
         "entry_edge": opportunity.get("edge"),
         "forecast_temp_c": opportunity.get("forecast_temp_c"),
         "temp_type": opportunity.get("temp_type", "max"),
+        "icao_code": opportunity.get("icao_code"),
         "opened_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1932,8 +1936,8 @@ def build_entry_candidates(
             continue
         
         # [MODUL L] Anti-Correlation Guard: One market per specific Weather Event
-        # Composite Key: City + Date + Unit (e.g., "London-2026-04-18-degC")
-        event_key = f"{opportunity.get('city')}-{opportunity.get('date')}-{opportunity.get('unit')}"
+        # Composite Key: City + Date + Unit + TempType (allows both max and min markets per city)
+        event_key = f"{opportunity.get('city')}-{opportunity.get('date')}-{opportunity.get('unit')}-{opportunity.get('temp_type', 'max')}"
         if event_key in seen_event_slugs:
             continue
         seen_event_slugs.add(event_key)
