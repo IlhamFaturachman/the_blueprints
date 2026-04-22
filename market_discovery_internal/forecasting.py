@@ -593,6 +593,7 @@ def position_to_market(position, current_yes_price, hours_until_resolve):
         "threshold": position["threshold"],
         "unit": position["unit"],
         "direction": position["direction"],
+        "temp_type": position.get("temp_type", "max"),
         "yes_price": float(current_yes_price),
         "token_id": position["token_id"],
         "hours_until_resolve": hours_until_resolve if hours_until_resolve is not None else position.get("hours_until_resolve"),
@@ -832,9 +833,21 @@ def forecast_still_valid(
     if not edge_result:
         return 0.0
     prob = float(edge_result.get("model_prob", 0.0))
-    if prob >= 0.70:
-        return 1.0
-    if prob < 0.50:
-        return 0.0
-    # Graduated: linear scale 0.50-0.70 → 0.0-1.0
-    return round((prob - 0.50) / 0.20, 4)
+    _direction = position.get("direction", "")
+
+    if _direction == "exact":
+        # Exact-bracket markets have inherently low model_prob (0.10-0.38).
+        # Use lower thresholds: valid if prob >= 0.05, graduated 0.05-0.20.
+        if prob >= 0.20:
+            return 1.0
+        if prob < 0.05:
+            return 0.0
+        return round((prob - 0.05) / 0.15, 4)
+    else:
+        # Above/below markets: original thresholds (unchanged)
+        if prob >= 0.70:
+            return 1.0
+        if prob < 0.50:
+            return 0.0
+        # Graduated: linear scale 0.50-0.70 → 0.0-1.0
+        return round((prob - 0.50) / 0.20, 4)

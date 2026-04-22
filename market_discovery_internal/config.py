@@ -231,6 +231,7 @@ CITY_REGEXES = [
 # Paper-trading strategy defaults (can be overridden via environment variables)
 PAPER_STAKE_USD = float(os.getenv("PAPER_STAKE_USD", "100"))
 HYBRID_TAKE_PROFIT_MULTIPLIER = float(os.getenv("HYBRID_TAKE_PROFIT_MULTIPLIER", "2.0"))
+EXACT_BRACKET_TP_MULTIPLIER = float(os.getenv("EXACT_BRACKET_TP_MULTIPLIER", "8.0"))  # Higher TP for exact markets ($0.05 entry → $0.40 target)
 HYBRID_TAKE_PROFIT_MIN_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MIN_PRICE", "0.50"))
 HYBRID_TAKE_PROFIT_MAX_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MAX_PRICE", "0.60"))
 TAKE_PROFIT_PRICE_CAP = float(os.getenv("TAKE_PROFIT_PRICE_CAP", "1.0"))  # Max TP target (1.0 = hold to resolve, 0.92 = exit before resolve)

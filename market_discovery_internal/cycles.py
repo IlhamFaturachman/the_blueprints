@@ -1334,13 +1334,17 @@ def run_paper_trading_cycle(
 # Trading Logic & Position Management (Restored from Backup)
 # ---------------------------------------------------------------------------
 
-def _compute_take_profit_price(entry_price):
-    """Compute take-profit target price. Capped by TAKE_PROFIT_PRICE_CAP (default 1.0)."""
-    from market_discovery_internal.config import TAKE_PROFIT_PRICE_CAP
+def _compute_take_profit_price(entry_price, direction=""):
+    """Compute take-profit target price. Capped by TAKE_PROFIT_PRICE_CAP (default 1.0).
+    Exact-bracket markets use a higher multiplier (8x default) since they have
+    cheap entries ($0.03-$0.10) but pay $1.00 on resolution.
+    """
+    from market_discovery_internal.config import TAKE_PROFIT_PRICE_CAP, EXACT_BRACKET_TP_MULTIPLIER
     entry = _safe_float(entry_price, 0.0)
     if entry <= 0:
         return HYBRID_TAKE_PROFIT_MIN_PRICE
-    return round(min(entry * HYBRID_TAKE_PROFIT_MULTIPLIER, TAKE_PROFIT_PRICE_CAP), 4)
+    multiplier = EXACT_BRACKET_TP_MULTIPLIER if direction == "exact" else HYBRID_TAKE_PROFIT_MULTIPLIER
+    return round(min(entry * multiplier, TAKE_PROFIT_PRICE_CAP), 4)
 
 
 def _ensure_take_profit_target(position):
@@ -1356,7 +1360,7 @@ def _ensure_take_profit_target(position):
     if entry_price <= 0:
         return normalized
 
-    target_price = _compute_take_profit_price(entry_price)
+    target_price = _compute_take_profit_price(entry_price, direction=normalized.get("direction", ""))
     normalized["target_price"] = target_price
     normalized["target_price_low"] = target_price
     normalized["target_price_high"] = target_price
@@ -1482,7 +1486,7 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
     # If the cost_basis exceeds the target stake due to share floors (5 shares), 
     # we accept the higher cost here; the calling function handles total budget limits.
 
-    target_price = _compute_take_profit_price(effective_price)
+    target_price = _compute_take_profit_price(effective_price, direction=opportunity.get("direction", ""))
     entry_yes_reference = _safe_float(opportunity.get("yes_price"), effective_price)
     entry_price_source = str(opportunity.get("entry_price_source") or "yes_price")
     entry_quote_best_bid = _safe_float(opportunity.get("entry_quote_best_bid"), 0.0)
@@ -1543,6 +1547,16 @@ def _position_confidence_score(position, current_yes_price, forecast_still_valid
     base_prob = max(0.0, min(float(base_prob), 1.0))
 
     current_price = max(0.0, min(float(current_yes_price), 1.0))
+    _direction = position.get("direction", "")
+
+    # Normalize base_prob for exact-bracket markets.
+    # Exact markets have inherently low prob (0.10-0.38) — using raw prob
+    # would always produce confidence < 0.26, guaranteeing late-window exit.
+    # Normalize: 0.05-0.40 maps to 0.0-1.0 for exact markets.
+    if _direction == "exact":
+        _norm_prob = min(max((base_prob - 0.05) / 0.35, 0.0), 1.0)
+    else:
+        _norm_prob = base_prob
 
     # In late window, use frozen entry_edge so confidence stays stable
     # as market price converges toward our thesis (which shrinks current edge).
@@ -1558,7 +1572,7 @@ def _position_confidence_score(position, current_yes_price, forecast_still_valid
     edge_component = min(edge_now / edge_scale, 1.0)
     price_component = 1.0 - min(abs(current_price - 0.50) / 0.50, 1.0)
 
-    score = (CONFIDENCE_WEIGHT_FORECAST * base_prob) + (CONFIDENCE_WEIGHT_EDGE * edge_component) + (CONFIDENCE_WEIGHT_LIQUIDITY * price_component)
+    score = (CONFIDENCE_WEIGHT_FORECAST * _norm_prob) + (CONFIDENCE_WEIGHT_EDGE * edge_component) + (CONFIDENCE_WEIGHT_LIQUIDITY * price_component)
     return round(max(0.0, min(score, 1.0)), 4)
 
 
@@ -1597,7 +1611,7 @@ def evaluate_hybrid_exit(
      7) Otherwise hold and wait.
     """
     price = float(current_yes_price)
-    target_price = float(position.get("target_price", _compute_take_profit_price(position.get("entry_price"))))
+    target_price = float(position.get("target_price", _compute_take_profit_price(position.get("entry_price"), direction=position.get("direction", ""))))
     stop_loss_price = float(position.get("stop_loss_price", 0.0))
     entry_price = float(position.get("entry_price", price))
 
