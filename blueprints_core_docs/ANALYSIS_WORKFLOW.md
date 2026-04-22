@@ -74,28 +74,51 @@ Every change must be evaluated against the question: **"Would this work correctl
 
 **Output:** A live-trading compatibility statement for each change.
 
-### Step 5: Implement, Test, Deploy
+### Step 5: Implement, Test, Deploy — with Triple Verification
 
 Only after Steps 1-4 are complete:
 
 1. **Implement** the changes locally
 2. **Run full test suite** — ALL tests must pass (currently 162)
-3. **Commit with descriptive message** — include what changed, why, and what was verified
-4. **Push to GitHub**
-5. **Deploy to VPS** — stop bot → git pull → run tests → restart
-6. **Monitor first cycle** — verify the fix works in production
-7. **Check dashboard** — verify no regressions
+3. **Triple Verification** (MANDATORY before commit):
+
+   **Verification 1: API/Library Correctness**
+   - Verify every external method call matches the actual library signature
+   - Run programmatic checks: `inspect.signature()` for every method used
+   - Confirm parameter names, types, and return values match the plan
+   - Example: `post_order(order, orderType, post_only)` — verify `post_only` param exists
+   
+   **Verification 2: Code Location & Integration**
+   - Verify every file path, function name, and line number is correct
+   - Confirm no naming conflicts with existing code
+   - Confirm all imports resolve correctly
+   - Confirm new code doesn't shadow existing variables
+   
+   **Verification 3: Lifecycle Simulation**
+   - Simulate the complete flow with real data types (not just mental model)
+   - Test edge cases with actual values: min values, max values, zero, None
+   - Verify type conversions (string→float, string→int) don't fail
+   - Test the "spread = 1 tick" and "spread = 0" edge cases
+   - Confirm the flow works for ALL market types (above/below, exact, lowest)
+
+4. **Commit with descriptive message** — include what changed, why, and what was verified
+5. **Push to GitHub**
+6. **Deploy to VPS** — stop bot → git pull → run tests → restart
+7. **Monitor first cycle** — verify the fix works in production
+8. **Check dashboard** — verify no regressions
 
 ---
 
 ## Red Lines (Never Do These)
 
+- **NEVER read, view, open, cat, or access .env files** — whether on local machine or on the VPS server. The .env contains private keys, API secrets, and wallet credentials. DO NOT TOUCH OR SEE .env under any circumstances. If you need to know what variables exist, ask the user or check .env.example.
 - **Never skip Step 3** (side effect check) — this is where most bugs are caught
 - **Never deploy without running tests** — even for "trivial" changes
 - **Never modify production code directly on VPS** — always edit locally, test, commit, push, pull
 - **Never bypass the liquidity check for live trading** — paper trading only
 - **Never remove safety guards** (circuit breaker, whiplash shield, consensus gate) without explicit approval
 - **Never commit .env files** — they contain secrets and are gitignored for a reason
+- **Never implement code calling external libraries without running `inspect.signature()` on every method used** — documentation and memory can be wrong, only the actual installed code is truth
 
 ---
 
@@ -169,3 +192,49 @@ If we had asked these questions BEFORE deploying the exact-bracket entry support
 ### Lesson
 
 **When adding support for a new market type, trace the ENTIRE lifecycle: discovery → parsing → forecasting → edge calculation → filtering → entry selection → position build → monitoring → exit → settlement.** Fixing only the entry path without adapting the exit path creates a trap: positions open successfully but then get immediately destroyed by incompatible exit logic.
+
+---
+
+## Example 3: Execution Bridge Plan Review (22 April 2026) — Lesson in Triple Verification
+
+### What Happened
+
+We wrote a 1,022-line implementation plan for the execution bridge (live trading with maker orders). The plan looked complete — 8 phases, 18 critical questions, full side effect analysis. But a deep re-check against the ACTUAL library code found **4 critical bugs** that would have caused runtime crashes:
+
+| Bug | What the Plan Said | What the Library Actually Does | Would Have Caused |
+|---|---|---|---|
+| B1 | Use `create_and_post_order()` for maker orders | `create_and_post_order` hardcodes `post_only=False` — cannot do maker | Bot pays 5% taker fee on EVERY entry (defeats entire purpose) |
+| B2 | Use `MarketOrderArgs(size=shares)` for taker sell | Field is `amount`, not `size`. BUY=dollars, SELL=shares | `TypeError` crash on every urgent exit |
+| B3 | `create_market_order()` creates and posts | It only signs — does NOT post. Must call `post_order()` separately | Urgent exits silently fail — positions stuck forever |
+| B4 | ClobClient constructor handles auth | Without `creds=` parameter, client is L1-only. All trading ops throw `AssertionError` | Every single API call crashes |
+
+### What Triple Verification Caught
+
+**Verification 1 (API Correctness):** Running `inspect.signature()` on every method revealed that `create_and_post_order` has no `post_only` parameter, `MarketOrderArgs` uses `amount` not `size`, and `create_market_order` returns a signed order (not a posted one).
+
+**Verification 2 (Code Location):** Confirmed all file paths and function names were correct. No issues here.
+
+**Verification 3 (Lifecycle Simulation):** Creating actual `OrderArgs` and `MarketOrderArgs` objects with real values confirmed the correct field names and types. Also caught that `tick_size` must be a string literal, not a float.
+
+### The Fix
+
+Updated the plan (v1.1) with:
+- Two-step flow for ALL orders: `create_order/create_market_order` → `post_order`
+- Correct field names: `amount` for `MarketOrderArgs`, `size` for `OrderArgs`
+- L2 auth: `create_or_derive_api_creds()` + `creds=` in constructor
+- Type corrections: `tick_size` as string, orderbook fields cast from string
+
+### Lesson
+
+**Never trust a plan based on documentation or memory alone. Always verify against the ACTUAL installed library code.** Run `inspect.signature()` on every method you plan to call. Create actual objects with real values to catch type mismatches. A plan that "looks right" can have critical bugs that only surface when you check the real API signatures.
+
+**The Triple Verification step exists because:**
+- Step 3 (side effects) checks "will it break existing code?" — but doesn't verify the NEW code is correct
+- Step 3b (critical thinking) checks "is the logic complete?" — but doesn't verify API signatures
+- Triple Verification checks "does the code I'm about to write actually match the library I'm calling?" — this is where B1-B4 were caught
+
+---
+
+## Red Line Addition
+
+**Never implement code that calls external libraries without first running `inspect.signature()` on every method used.** Documentation can be wrong. Memory can be wrong. Only the actual installed code is the truth.
