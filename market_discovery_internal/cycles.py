@@ -259,6 +259,22 @@ def enrich_discovery_markets(
             enriched.append(maybe_apply_ai_decision_fn(enriched_item))
     enrich_ms = elapsed_ms_fn(enrich_started)
 
+    # [DEBUG] Log enrichment results for diagnostics
+    logger.info("[ENRICH] Total enriched: %d / %d parsed", len(enriched), total_parsed)
+    if enriched:
+        _top = sorted(enriched, key=lambda x: -x.get("edge", 0))[:5]
+        for _t in _top:
+            _d = _t.get("direction", "?")
+            _is_ex = _d == "exact"
+            _mp = 0.10 if _is_ex else 0.60
+            _me = 0.02 if _is_ex else 0.10
+            logger.info("[ENRICH-TOP] %s %s prob=%.4f(min=%.2f) edge=%.4f(min=%.2f) price=%.4f | %s",
+                        _t.get("city", "?"), _d, _t.get("model_prob", 0), _mp,
+                        _t.get("edge", 0), _me, _t.get("yes_price", 0),
+                        _t.get("market_question", "")[:60])
+    else:
+        logger.info("[ENRICH] No enriched markets — all forecasts returned None or all edges were None")
+
     return {
         "enriched": enriched,
         "failed_cities": failed_cities,
@@ -308,6 +324,7 @@ def run_discovery_cycle(
     filter_started = perf_counter_fn()
     opportunities = filter_opportunities_fn(enriched)
     filter_ms = elapsed_ms_fn(filter_started)
+    logger.info("[FILTER] %d enriched → %d opportunities", len(enriched), len(opportunities))
 
     performance = {
         "total_ms": elapsed_ms_fn(cycle_started),
