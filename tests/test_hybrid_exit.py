@@ -1,7 +1,8 @@
 """Tests for build_paper_position, evaluate_hybrid_exit, update_paper_position.
 
 Key contracts:
-- build_paper_position applies 1% slippage: effective_price = yes_price * 1.01
+- build_paper_position: when PREFER_MAKER_ORDERS=True, no slippage (effective_price = entry_price)
+  when PREFER_MAKER_ORDERS=False, 1% slippage (effective_price = entry_price * 1.01)
 - target_price = effective_price * 2.0 (100% TP)
 - check_liquidity_depth is always mocked True (test isolation — no live API)
 - stop_loss = effective_price * HYBRID_STOP_LOSS_MULTIPLIER (0.48 default)
@@ -14,8 +15,9 @@ from market_discovery_internal.cycles import (
     update_paper_position,
 )
 
-# ---- constant: 1% slippage applied in build_paper_position ----
-_SLIP = 1.01
+# ---- constant: PREFER_MAKER_ORDERS=True → no slippage (1.0) ----
+# When PREFER_MAKER_ORDERS=False, this would be 1.01
+_SLIP = 1.0
 
 
 def make_opportunity(yes_price=0.25, hours_until_resolve=8.0):
@@ -174,7 +176,7 @@ def test_update_paper_position_closes_and_calculates_pnl():
     assert decision["action"] == "sell"
     assert updated["status"] == "closed"
     assert updated["close_reason"] == "take_profit_100pct"
-    assert updated["realized_roi_pct"] > 80.0  # sold at/above 2x target (minus taker fees)
+    assert updated["realized_roi_pct"] > 80.0  # sold at/above 2x target (maker fee=0% for TP exit)
 
 
 import pytest  # noqa: E402 (intentional late import to keep module readable)

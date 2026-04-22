@@ -1102,8 +1102,8 @@ def run_paper_trading_cycle(
     _open_exposure = sum(float(p.get("cost_basis", 0.0) or 0.0) for p in next_open_positions)
     available_cash = round(wallet_after_position_management - _open_exposure, 4)
 
-    from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE
-    _MAX_EFFECTIVE_OVERHEAD = 1.0 + POLYMARKET_TAKER_FEE_RATE  # ~1.05 (fee only, no safety buffer — Kelly handles risk)
+    from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE, PREFER_MAKER_ORDERS as _PREFER_MAKER
+    _MAX_EFFECTIVE_OVERHEAD = 1.0 if _PREFER_MAKER else (1.0 + POLYMARKET_TAKER_FEE_RATE)  # Maker=1.0, Taker=~1.05
 
     if available_cash <= 0.0:
         effective_allow_new_entries = False
@@ -1754,14 +1754,20 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
     if entry_price <= 0:
         raise ValueError("entry_price must be > 0")
 
-    # [PAPER REALISM] Implement 1% Slippage Buffer
-    # For paper trading, we simulate paying slightly more than best_ask (slippage).
-    effective_price = round(entry_price * 1.01, 4)
+    # [MAKER MIRROR] When PREFER_MAKER_ORDERS=True, paper trading mirrors live maker behavior:
+    # - No slippage (maker sets own price)
+    # - No entry fee (maker fee = 0%)
+    # When PREFER_MAKER_ORDERS=False, paper simulates taker behavior (1% slippage + 5% fee).
+    from market_discovery_internal.config import PREFER_MAKER_ORDERS
+    if PREFER_MAKER_ORDERS:
+        effective_price = entry_price  # Maker = no slippage
+    else:
+        effective_price = round(entry_price * 1.01, 4)  # Taker = 1% slippage buffer
 
     # [LIVE-READY] Quantity Calculation with Integers and Floors
     # Rule: Must be at least STRATEGY_MIN_SHARES and at least STRATEGY_MIN_STAKE_USD in cost.
     # Total = Q * P * (1 + fee_overhead). Q = Total / (P * (1+overhead))
-    _fee_mult = 1.0 + POLYMARKET_TAKER_FEE_RATE * (1.0 - effective_price)
+    _fee_mult = 1.0 if PREFER_MAKER_ORDERS else (1.0 + POLYMARKET_TAKER_FEE_RATE * (1.0 - effective_price))
 
     # Compute stake using Kelly Criterion if available_cash is provided
     if available_cash is not None and KELLY_ENABLED:
@@ -1785,7 +1791,7 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
     quantity = float(max(STRATEGY_MIN_SHARES, math.ceil(_raw_qty)))
 
     shares_cost = round(quantity * effective_price, 4)
-    entry_fee_usd = calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
+    entry_fee_usd = 0.0 if PREFER_MAKER_ORDERS else calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
     cost_basis = round(shares_cost + entry_fee_usd, 4)
     
     # [LIVE-READY] Final Floor Check: If cost_basis < $1.00 (e.g. very cheap shares), 
@@ -1795,7 +1801,7 @@ def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_S
         _needed_qty = math.ceil(STRATEGY_MIN_STAKE_USD / (effective_price * _fee_mult))
         quantity = float(max(quantity, _needed_qty))
         shares_cost = round(quantity * effective_price, 4)
-        entry_fee_usd = calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
+        entry_fee_usd = 0.0 if PREFER_MAKER_ORDERS else calculate_taker_fee(quantity, effective_price, POLYMARKET_TAKER_FEE_RATE)
         cost_basis = round(shares_cost + entry_fee_usd, 4)
     
     # [HONEST ACCOUNTING] Cost integrity floor
@@ -2072,14 +2078,18 @@ def evaluate_hybrid_exit(
 def close_paper_position(position, exit_price, reason, now_utc=None):
     """Close an open paper position, compute realized PnL, and record calibration + history."""
     from market_discovery_internal.pricing import calculate_taker_fee
-    from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE
+    from market_discovery_internal.config import POLYMARKET_TAKER_FEE_RATE, PREFER_MAKER_ORDERS, URGENT_EXIT_REASONS
 
     closed = {**position}
     resolved_at = now_utc or datetime.now(timezone.utc)
     price = float(exit_price)
     quantity = float(closed["quantity"])
     exit_value = round(price * quantity, 4)
-    exit_fee_usd = calculate_taker_fee(quantity, price, POLYMARKET_TAKER_FEE_RATE)
+    # [MAKER MIRROR] Maker exit = 0% fee for non-urgent exits. Urgent exits (stop loss etc.) use taker.
+    if PREFER_MAKER_ORDERS and reason not in URGENT_EXIT_REASONS:
+        exit_fee_usd = 0.0
+    else:
+        exit_fee_usd = calculate_taker_fee(quantity, price, POLYMARKET_TAKER_FEE_RATE)
     net_exit_value = round(exit_value - exit_fee_usd, 4)
     pnl_usd = round(net_exit_value - float(closed["cost_basis"]), 4)
     roi_pct = round((pnl_usd / float(closed["cost_basis"])) * 100, 4) if closed["cost_basis"] else 0.0

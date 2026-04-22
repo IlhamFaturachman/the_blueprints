@@ -218,7 +218,7 @@ def test_run_paper_cycle_opens_new_position(tmp_path):
     assert len(cycle["open_positions"]) == 1
     assert cycle["opened"][0]["token_id"] == "0xabc"
     assert cycle["opened"][0]["entry_price_source"] == "buy_ask"
-    assert cycle["opened"][0]["entry_price"] == round(0.45 * 1.01, 4)  # 0.4545 (1% slippage)
+    assert cycle["opened"][0]["entry_price"] == 0.45  # PREFER_MAKER_ORDERS=True → no slippage
     assert cycle["opened"][0]["entry_yes_reference"] == 0.45
     assert cycle["opened"][0]["entry_bucket"] in {"enter_swing", "enter_hold_candidate"}
     assert cycle["acceptance_metrics"]["opportunities_total"] == 1
