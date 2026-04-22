@@ -115,13 +115,19 @@ def filter_enriched_opportunities(
         _dir = m.get("direction", "")
         _is_exact = (_dir == "exact")
         mp = float(gates.get("max_price", max_yes_price))
-        # Use lower thresholds for exact-bracket markets (same logic as filter_opportunities)
-        prob = float(gates.get("min_prob", STRATEGY_EXACT_MIN_MODEL_PROB if _is_exact else min_model_prob))
-        edge = float(gates.get("min_edge", STRATEGY_EXACT_MIN_EDGE if _is_exact else min_edge))
-        # Time-decay: scale min_edge by sqrt(hours / base_hours), exempt exact brackets
-        if TIME_DECAY_EDGE_ENABLED and not _is_exact:
-            _h = float(m.get("hours_until_resolve") or TIME_DECAY_BASE_HOURS)
-            edge = edge * math.sqrt(max(_h, 0.1) / TIME_DECAY_BASE_HOURS)
+        if _is_exact:
+            # Exact-bracket markets use their own lower thresholds — regime gates
+            # are designed for above/below markets and would reject all exact markets
+            # (exact prob is naturally 10-30%, regime gates require 60-80%).
+            prob = STRATEGY_EXACT_MIN_MODEL_PROB
+            edge = STRATEGY_EXACT_MIN_EDGE
+        else:
+            prob = float(gates.get("min_prob", min_model_prob))
+            edge = float(gates.get("min_edge", min_edge))
+            # Time-decay: scale min_edge by sqrt(hours / base_hours)
+            if TIME_DECAY_EDGE_ENABLED:
+                _h = float(m.get("hours_until_resolve") or TIME_DECAY_BASE_HOURS)
+                edge = edge * math.sqrt(max(_h, 0.1) / TIME_DECAY_BASE_HOURS)
         if (float(m.get("yes_price", 1.0)) <= mp
                 and float(m.get("model_prob", 0.0)) >= prob
                 and float(m.get("edge", -1.0)) >= edge):
