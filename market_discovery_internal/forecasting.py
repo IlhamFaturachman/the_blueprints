@@ -22,13 +22,34 @@ from market_discovery_internal.utils import fetch_with_retry
 logger = logging.getLogger(__name__)
 
 
+# METAR cache: stores (temp_c, timestamp) per ICAO to avoid redundant API calls.
+# METAR observations update every 30-60 minutes; 5-minute cache adds negligible staleness.
+# Safe for both paper and live trading — NOAA override has 5°C safety margin.
+_METAR_CACHE = {}
+_METAR_CACHE_LOCK = threading.Lock()
+_METAR_CACHE_TTL = 300  # 5 minutes
+
+
 def fetch_noaa_metar(icao: str) -> Optional[float]:
     """
     Fetch current temperature from NOAA METAR for an airport station.
     Returns temperature in Celsius, or None on failure.
+    Results are cached per ICAO for 5 minutes to avoid redundant API calls
+    (a city with 10 bracket markets would otherwise make 10 identical calls).
     """
     if not icao:
         return None
+
+    # Check cache first
+    with _METAR_CACHE_LOCK:
+        cached = _METAR_CACHE.get(icao)
+        if cached is not None:
+            _val, _ts = cached
+            if (time.time() - _ts) < _METAR_CACHE_TTL:
+                if _val is not None:
+                    logger.info("[NOAA] METAR %s: current temp = %.1f°C (cached)", icao, _val)
+                return _val
+
     try:
         params = {"ids": icao, "format": "json", "hours": 2}
         # fetch_with_retry returns parsed JSON; use requests directly for
@@ -68,11 +89,20 @@ def fetch_noaa_metar(icao: str) -> Optional[float]:
                 t = temp_match.group(1)
                 temp_c = -int(t[1:]) if t.startswith('M') else int(t)
         if temp_c is not None:
-            logger.info("[NOAA] METAR %s: current temp = %.1f°C", icao, float(temp_c))
-            return float(temp_c)
+            result = float(temp_c)
+            logger.info("[NOAA] METAR %s: current temp = %.1f°C", icao, result)
+            with _METAR_CACHE_LOCK:
+                _METAR_CACHE[icao] = (result, time.time())
+            return result
+        # Cache None result too (avoid retrying a station that has no data)
+        with _METAR_CACHE_LOCK:
+            _METAR_CACHE[icao] = (None, time.time())
         return None
     except Exception as e:
         logger.warning("[NOAA] METAR fetch failed for %s: %s", icao, e)
+        # Cache failure to avoid hammering a down endpoint
+        with _METAR_CACHE_LOCK:
+            _METAR_CACHE[icao] = (None, time.time())
         return None
 
 

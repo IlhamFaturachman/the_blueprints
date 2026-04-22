@@ -109,12 +109,12 @@ def _extract_top_orderbook_price(levels, side="ask"):
     except (IndexError, ValueError, TypeError):
         return None
 
-def fetch_orderbook_quote(token_id: str) -> Optional[dict[str, Optional[float]]]:
+def fetch_orderbook_quote(token_id: str, timeout: int = 10, max_retries: int = 3) -> Optional[dict[str, Optional[float]]]:
     """Fetch the real-time best bid/ask for a specific token from CLOB."""
     if not token_id: return None
     url = f"{CLOB_BOOK_API}?token_id={token_id}"
     try:
-        data = fetch_with_retry(url)
+        data = fetch_with_retry(url, timeout=timeout, max_retries=max_retries)
         # Gamma CLOB book returns { "bids": [...], "asks": [...] }
         best_bid = _extract_top_orderbook_price(data.get("bids", []), "bid")
         best_ask = _extract_top_orderbook_price(data.get("asks", []), "ask")
@@ -157,7 +157,7 @@ def check_liquidity_depth(token_id, target_stake_usd):
         logger.debug("Liquidity depth check failed for token %s", token_id)
         return False
 
-def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
+def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03, timeout=10, max_retries=3):
     """
     [MODUL L] Dynamically adjust stake based on orderbook depth and spread.
     Ensures we don't cross into prices that exceed our max slippage threshold.
@@ -169,7 +169,7 @@ def calculate_depth_adjusted_stake(token_id, base_stake, max_slippage_pct=0.03):
     
     url = f"{CLOB_BOOK_API}?token_id={token_id}"
     try:
-        data = fetch_with_retry(url)
+        data = fetch_with_retry(url, timeout=timeout, max_retries=max_retries)
         # Gamma CLOB book returns { "bids": [...], "asks": [...] }
         asks = data.get("asks", [])
         bids = data.get("bids", [])

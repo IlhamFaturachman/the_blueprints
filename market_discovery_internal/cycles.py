@@ -147,18 +147,16 @@ def enrich_discovery_markets(
     forecast_prefetch_ms = elapsed_ms_fn(prefetch_started)
 
     enrich_started = perf_counter_fn()
+    _api_calls_since_sleep = 0  # Track actual API calls for smart rate limiting
     for i, market in enumerate(parsed, 1):
         # Progress log for enrichment
         if total_parsed > 20 and i % 25 == 0:
              logger.info("[MODUL C] Enrichment progress: %d/%d markets...", i, total_parsed)
 
-        # [MODUL L] Rate Limit Shield: Dampen burst requests to provider
-        if i % 5 == 0:
-            time.sleep(0.5)
-
         city = market["city"]
         date = market["date"]
         _temp_type = market.get("temp_type", "max")
+        _misses_before = forecast_cache_stats.get("misses", 0)
         forecast_temp = fetch_forecast_with_cache_fn(
             city,
             date,
@@ -167,6 +165,16 @@ def enrich_discovery_markets(
             icao_override=market.get("icao_code"),
             temp_type=_temp_type,
         )
+        _was_cache_miss = forecast_cache_stats.get("misses", 0) > _misses_before
+        if _was_cache_miss:
+            _api_calls_since_sleep += 1
+
+        # [MODUL L] Rate Limit Shield: sleep only after actual API calls (not cache hits).
+        # Protects Open-Meteo, ensemble, and NOAA from burst requests.
+        # The prefetch bulk-fetches most forecasts, so most iterations are cache hits.
+        if _api_calls_since_sleep >= 3:
+            time.sleep(0.5)
+            _api_calls_since_sleep = 0
         evidence = build_weather_evidence_fn(city, date, forecast_temp)
         evidence_valid = is_weather_evidence_valid_fn(evidence)
 
@@ -2020,7 +2028,7 @@ def append_opened_positions_from_candidates(
         if PAPER_BYPASS_LIQUIDITY_CHECK:
             dynamic_stake = float(stake_usd)
         else:
-            dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE)
+            dynamic_stake = calculate_depth_adjusted_stake(token_id, stake_usd, max_slippage_pct=MAX_ACCEPTABLE_SLIPPAGE, timeout=4, max_retries=1)
             if dynamic_stake <= 0:
                 logger.warning(f"[LIQUIDITY] Skipping {token_id} - Insufficient depth for safe entry (Slippage Threat).")
                 continue
