@@ -1,6 +1,6 @@
 # THE BLUEPRINTS — Panduan Lengkap
 
-**Versi:** 1.0.0 | **Tanggal:** 22 April 2026 | **Mode:** Paper Trading ($5)
+**Versi:** 1.1.0 | **Tanggal:** 22 April 2026 | **Mode:** Paper Trading ($5) + Live Execution Bridge
 
 ---
 
@@ -13,12 +13,13 @@
 5. Bagaimana Bot Menilai Layak atau Tidak?
 6. Bagaimana Bot Menentukan Berapa Uang yang Ditaruh?
 7. Bagaimana Bot Mengelola Posisi yang Sudah Dibuka?
-8. Bagaimana Bot Belajar dari Kesalahan?
-9. Sistem Keamanan & Perlindungan
-10. Dashboard & Monitoring
-11. Infrastruktur Teknis
-12. Pengaturan Kunci
-13. Rencana ke Depan
+8. Execution Bridge — Eksekusi Order di Polymarket
+9. Bagaimana Bot Belajar dari Kesalahan?
+10. Sistem Keamanan & Perlindungan
+11. Dashboard & Monitoring
+12. Infrastruktur Teknis
+13. Pengaturan Kunci
+14. Rencana ke Depan
 
 ---
 
@@ -62,12 +63,16 @@ Bot berjalan non-stop 24 jam di server, dalam siklus yang berulang setiap ~1-2 m
 5. BUKA POSISI (kalau layak)
    Kelly Criterion tentukan berapa uang yang ditaruh
    Cek likuiditas orderbook sebelum masuk
+   Paper mode: simulasi instan | Live mode: maker order ke CLOB
 
 6. PANTAU POSISI TERBUKA
    WebSocket real-time pantau harga setiap detik
+   Live mode: monitor pending orders (fill/timeout/retry)
 
 7. TUTUP POSISI (kalau waktunya)
    7 kondisi exit yang dicek setiap siklus
+   Urgent exit (stop loss) → taker order (FOK, langsung)
+   Normal exit (take profit) → maker order (post-only, 0% fee)
 
 8. SIMPAN & BELAJAR
    Catat hasil, update kalibrasi, bot makin pintar
@@ -386,7 +391,152 @@ Setelah stop loss, kota tersebut masuk **blacklist 24 jam**. Mencegah churning (
 
 ---
 
-## 8. Bagaimana Bot Belajar dari Kesalahan?
+## 8. Execution Bridge — Eksekusi Order di Polymarket
+
+Bot memiliki **dua mode operasi** yang bisa dipilih via konfigurasi:
+
+| Mode | `LIVE_TRADING_ENABLED` | Apa yang terjadi |
+|---|---|---|
+| **Paper Trading** | `false` (default) | Simulasi instan — tidak ada order nyata ke Polymarket |
+| **Live Trading** | `true` | Order nyata via Polymarket CLOB API — uang sungguhan |
+
+Saat paper mode, semua logika trading tetap berjalan (discovery, edge calculation, exit decisions), tapi posisi dibuka/ditutup secara simulasi. Saat live mode, bot mengirim order nyata ke Polymarket menggunakan **Execution Bridge** (`BlueprintsExchange`).
+
+### 8.1 Arsitektur Execution Bridge
+
+```
+BlueprintsExchange (execution.py)
+├── __init__()          → L1 auth → derive API creds → L2 auth (creds=)
+├── start_heartbeat()   → daemon thread, POST /heartbeat setiap 5 detik
+├── stop()              → cancel semua order, stop heartbeat
+├── place_maker_buy()   → GTC post-only limit BUY (0% fee)
+├── place_taker_buy()   → FOK market BUY (taker fee)
+├── place_maker_sell()  → GTC post-only limit SELL (0% fee)
+├── place_taker_sell()  → FOK market SELL (taker fee)
+├── cancel_order()      → cancel satu order
+├── cancel_all_orders() → cancel semua order (orphan cleanup)
+├── get_order_status()  → cek fill status order
+├── get_open_orders()   → daftar semua order aktif
+├── get_orderbook_info()→ best bid/ask, spread, tick size, min order size
+├── compute_maker_buy_price()  → best_bid + 1 tick
+└── compute_maker_sell_price() → best_ask - 1 tick
+```
+
+Semua method thread-safe (dilindungi `threading.Lock`). Semua error ditangkap — tidak pernah crash. Kalau ada kegagalan, method mengembalikan `{"success": False, "reason": "..."}`.
+
+### 8.2 Dua Jenis Order
+
+Bot menggunakan **dua jenis order** tergantung urgensi:
+
+| Jenis | Kapan Dipakai | Fee | Kecepatan |
+|---|---|---|---|
+| **Maker (post-only)** | Entry, take profit, normal exit | **0%** | Lambat (menunggu fill) |
+| **Taker (FOK)** | Stop loss, flash crash, urgent exit | **~2%** | Instan |
+
+**Mengapa maker order?** Di Polymarket, maker order (limit order yang menambah likuiditas) tidak dikenakan fee. Taker order (yang mengambil likuiditas) dikenakan fee ~2%. Dengan menggunakan maker order untuk entry dan normal exit, bot menghemat fee secara signifikan.
+
+**Mengapa taker untuk urgent exit?** Saat stop loss terpicu, kecepatan lebih penting dari fee. Menunggu maker order terisi bisa berarti kerugian lebih besar dari fee yang dihemat.
+
+### 8.3 Alur Entry (Live Mode)
+
+```
+Kandidat lolos filter → Kelly sizing → cek min order size
+    │
+    ├─ shares < minimum? → SKIP (terlalu kecil)
+    │
+    ├─ Ambil orderbook → hitung maker price (best_bid + 1 tick)
+    │
+    ├─ maker price >= best_ask? → SKIP (spread terlalu sempit)
+    │
+    ├─ estimated cost > cash? → SKIP (uang tidak cukup)
+    │
+    └─ Place maker buy (GTC, post-only=True)
+        │
+        ├─ Berhasil → posisi status = "pending_entry"
+        │              order dipantau setiap siklus
+        │
+        └─ Gagal → SKIP (log error, lanjut ke kandidat berikut)
+```
+
+Posisi `pending_entry` dipantau oleh **Order Monitor** di awal setiap siklus:
+- **Terisi penuh** → status berubah ke `open`, entry_fee = $0 (maker)
+- **Terisi sebagian** → kalau cukup besar (≥ min shares), terima; kalau terlalu kecil, cancel
+- **Timeout (5 menit)** → cancel order, hapus posisi
+- **Dibatalkan exchange** → hapus posisi
+
+### 8.4 Alur Exit (Live Mode)
+
+```
+Hybrid Exit Decision = "sell"
+    │
+    ├─ Alasan URGENT? (stop_loss, hard_stop_loss, trailing_stop,
+    │                   trailing_stop_breakeven, flash_crash_exit,
+    │                   sniper_stop_loss_thesis_broken)
+    │   │
+    │   └─ Place taker sell (FOK) → langsung terisi → posisi ditutup
+    │
+    └─ Alasan NORMAL? (take_profit, late_window, dll)
+        │
+        └─ Place maker sell (GTC, post-only=True)
+            │
+            ├─ Berhasil → posisi status = "pending_exit"
+            │              order dipantau setiap siklus
+            │
+            └─ Gagal → fallback ke taker sell
+```
+
+Posisi `pending_exit` dipantau oleh Order Monitor:
+- **Terisi** → posisi ditutup, exit_fee = $0 (maker)
+- **Tidak terisi setelah 60 detik** → retry dengan harga lebih rendah (max 3 retry)
+- **Max retry tercapai** → fallback ke taker sell (bayar fee, tapi pasti terisi)
+
+### 8.5 Heartbeat & Keamanan
+
+Polymarket CLOB API memerlukan **heartbeat** aktif. Kalau heartbeat berhenti, semua open order bisa dibatalkan oleh exchange.
+
+- Bot mengirim heartbeat setiap **5 detik** via daemon thread
+- Kalau **3 heartbeat berturut-turut gagal**, bot menandai `heartbeat_healthy = False`
+- Saat shutdown (SIGTERM), bot otomatis cancel semua open order
+
+**Orphan Cleanup:** Saat startup, bot langsung menjalankan `cancel_all_orders()` untuk membersihkan order sisa dari sesi sebelumnya (misalnya setelah crash). Posisi `pending_entry` dihapus, posisi `pending_exit` direset ke `open`.
+
+### 8.6 Double-Sell Prevention
+
+Karena exit bisa dipicu dari **dua jalur** (main cycle dan WebSocket callback), ada risiko double-sell — dua order sell untuk posisi yang sama.
+
+Pencegahan:
+- Flag `_exit_in_progress` di-set saat exit dimulai
+- Kedua jalur mengecek flag ini sebelum menempatkan order
+- Kalau flag sudah `True`, exit di-skip (posisi sudah dalam proses penutupan)
+
+### 8.7 Perbedaan Paper vs Live
+
+| Aspek | Paper Mode | Live Mode |
+|---|---|---|
+| Entry | Simulasi instan, harga = best_ask | Maker order, harga = best_bid + 1 tick |
+| Entry fee | Simulasi (taker fee rate) | **$0** (maker, 0% fee) |
+| Exit | Simulasi instan, harga = best_bid | Maker/taker order tergantung urgensi |
+| Exit fee | Simulasi (taker fee rate) | **$0** (maker) atau ~2% (taker urgent) |
+| Pending status | Tidak ada | `pending_entry`, `pending_exit` |
+| Order monitoring | Tidak ada | Setiap siklus (fill/timeout/retry) |
+| Heartbeat | Tidak ada | Setiap 5 detik |
+| Orphan cleanup | Tidak ada | Saat startup |
+
+### 8.8 Catatan Teknis Penting (4 Bug Kritis yang Dihindari)
+
+Implementasi execution bridge harus menghindari 4 jebakan di library `py_clob_client`:
+
+1. **`create_and_post_order()` tidak support post-only** — method ini hardcode `post_order(order)` tanpa `post_only=True`. Kalau dipakai, semua order jadi taker (bayar fee 2%). Solusi: pakai two-step `create_order()` → `post_order(signed, post_only=True)`.
+
+2. **`MarketOrderArgs` pakai `amount`, bukan `size`** — `OrderArgs` (limit) pakai `size`, tapi `MarketOrderArgs` (market) pakai `amount`. Kalau salah, Python crash.
+
+3. **`create_market_order()` hanya sign, tidak post** — method ini mengembalikan signed order tapi TIDAK mengirimnya ke exchange. Harus panggil `post_order()` terpisah.
+
+4. **Level 2 auth wajib untuk trading** — `ClobClient` tanpa `creds=` hanya bisa baca data. Untuk trading, harus derive API credentials dulu via `create_or_derive_api_creds()` lalu pass `creds=` ke constructor.
+
+---
+
+## 9. Bagaimana Bot Belajar dari Kesalahan?
 
 ### 8.1 Kalibrasi Probabilitas (Bayesian)
 
@@ -406,38 +556,38 @@ Setiap 7 hari, bot mengirim laporan via Telegram: kota terbaik/terburuk, strateg
 
 ---
 
-## 9. Sistem Keamanan & Perlindungan
+## 10. Sistem Keamanan & Perlindungan
 
-### 9.1 Circuit Breaker
+### 10.1 Circuit Breaker
 Kerugian harian > 15% dari wallet → bot berhenti membuka posisi baru untuk hari itu.
 
-### 9.2 Leverage Cap
+### 10.2 Leverage Cap
 Selalu cek: "apakah kas cukup untuk minimal 1 posisi lagi?" Kalau tidak, gate ditutup.
 
-### 9.3 Validasi Prediksi Ganda
+### 10.3 Validasi Prediksi Ganda
 - Konsensus dua sumber (±2.5°C)
 - Anomaly check (±7°C dari historis 10 tahun)
 - NOAA METAR ground-truth (untuk highest temp)
 
-### 9.4 Consensus Guard
+### 10.4 Consensus Guard
 Kalau bot >90% yakin tapi harga pasar <30%, bot meredam keyakinannya. Hanya untuk above/below markets.
 
-### 9.5 Perlindungan Data
+### 10.5 Perlindungan Data
 - SQLite WAL mode + JSON mirror backup
 - PID lock (mencegah dua instance)
 - `base_wallet` hanya bisa diubah via reset script
 - Test isolation: pytest tidak bisa menulis ke database produksi
 
-### 9.6 METAR Cache
+### 10.6 METAR Cache
 Hasil NOAA METAR di-cache 5 menit per stasiun ICAO. Thread-safe dengan lock. Mencegah 300+ API call berulang per siklus.
 
 ---
 
-## 10. Dashboard & Monitoring
+## 11. Dashboard & Monitoring
 
 Dashboard web: `http://103.253.244.158:8080/web_ui/`
 
-### 10.1 Tiga Kartu Utama
+### 11.1 Tiga Kartu Utama
 
 | Kartu | Isi |
 |---|---|
@@ -445,46 +595,47 @@ Dashboard web: `http://103.253.244.158:8080/web_ui/`
 | **Today's PnL** | Keuntungan/kerugian hari ini |
 | **Win Rate** | Persentase menang, rata-rata PnL per trade |
 
-### 10.2 Status Bar
+### 11.2 Status Bar
 Gate status, bot health, jam WIB, next cycle countdown.
 
-### 10.3 Kartu Posisi
+### 11.3 Kartu Posisi
 Nama kota, countdown resolve, price progress bar (SL → Entry → TP), metrik (PnL, prob, edge, cost), link ke Polymarket.
 
-### 10.4 Data Source
+### 11.4 Data Source
 Primary: `/api/state` (live dari DB). Fallback: JSON file. Harga real-time via WebSocket.
 
 ---
 
-## 11. Infrastruktur Teknis
+## 12. Infrastruktur Teknis
 
-### 11.1 Server
+### 12.1 Server
 - VPS Jakarta (Depa Cloud), IP `103.253.244.158`
 - Debian 12, 1 CPU, 1GB RAM, 20GB storage
 - systemd service dengan auto-restart
 
-### 11.2 Komponen
+### 12.2 Komponen
 
 | Komponen | Fungsi |
 |---|---|
 | Bot utama | Siklus trading (discovery → entry → exit → learn) |
+| Execution Bridge | `BlueprintsExchange` — koneksi ke Polymarket CLOB API untuk order nyata |
 | Command Server (8083) | API untuk dashboard dan kill switch |
 | WS Broadcaster (8081) | Relay harga live ke browser |
 | WS Price Watcher | Koneksi ke Polymarket WebSocket |
 | Data Warmer | Background pre-fetch data historis |
 | Nginx (8080) | Serve dashboard + proxy API |
 
-### 11.3 Database
+### 12.3 Database
 SQLite (`logs/blueprints_master.db`): posisi, trade history, kalibrasi, cycle metrics, portfolio, weather archive (max + min temp), discovery cache.
 
-### 11.4 AI — Dinonaktifkan
+### 12.4 AI — Dinonaktifkan
 Claude Haiku (entry review, position monitor, market sensing) dinonaktifkan. Bot sepenuhnya deterministik.
 
 ---
 
-## 12. Pengaturan Kunci
+## 13. Pengaturan Kunci
 
-### 12.1 Trading Parameters
+### 13.1 Trading Parameters
 
 | Setting | Nilai | Keterangan |
 |---|---|---|
@@ -498,7 +649,7 @@ Claude Haiku (entry review, position monitor, market sensing) dinonaktifkan. Bot
 | `STRATEGY_MAX_YES_PRICE` | $0.75 | Harga maksimal untuk beli |
 | `ENTRY_BUCKET_WATCH_MAX_PRICE` | $0.15 | Batas atas watchlist |
 
-### 12.2 Risk Management
+### 13.2 Risk Management
 
 | Setting | Nilai | Keterangan |
 |---|---|---|
@@ -512,7 +663,7 @@ Claude Haiku (entry review, position monitor, market sensing) dinonaktifkan. Bot
 | `THESIS_DECAY_THRESHOLD` | 0.35 | Confidence di bawah ini = exit |
 | `CIRCUIT_BREAKER_DAILY_LOSS_PCT` | 15% | Batas kerugian harian |
 
-### 12.3 Forecast & Calibration
+### 13.3 Forecast & Calibration
 
 | Setting | Nilai | Keterangan |
 |---|---|---|
@@ -525,44 +676,67 @@ Claude Haiku (entry review, position monitor, market sensing) dinonaktifkan. Bot
 | `SIGMA_FOUR_SEASON` | 2.0°C | Gaussian sigma kota 4-musim |
 | `SIGMA_DEFAULT` | 1.5°C | Gaussian sigma default |
 
-### 12.4 Feature Flags
+### 13.4 Feature Flags
 
 | Flag | Default | Keterangan |
 |---|---|---|
+| `LIVE_TRADING_ENABLED` | false | Gate utama live trading (true = order nyata) |
 | `LOWEST_TEMP_MARKETS_ENABLED` | true | Trading pasar suhu terendah |
 | `TIME_DECAY_EDGE_ENABLED` | false | Scaling edge berdasarkan waktu (dormant) |
 | `NOAA_OVERRIDE_ENABLED` | true | Override probabilitas dari METAR |
 | `ENSEMBLE_ENABLED` | true | Gunakan 82-model ensemble |
 
+### 13.5 Execution Bridge
+
+| Setting | Default | Keterangan |
+|---|---|---|
+| `LIVE_TRADING_ENABLED` | `false` | Gate utama — `true` untuk order nyata |
+| `PREFER_MAKER_ORDERS` | `true` | Prioritaskan maker order (0% fee) |
+| `MAKER_ORDER_TIMEOUT_S` | `300` | Timeout pending order (5 menit) |
+| `MAKER_SELL_MAX_RETRIES` | `3` | Maksimal retry maker sell sebelum taker fallback |
+| `MAKER_SELL_RETRY_INTERVAL_S` | `60` | Interval antar retry (60 detik) |
+| `SIGNATURE_TYPE` | `1` | 1 = POLY_PROXY (Magic Link wallet) |
+| `PRIVATE_KEY` | (wajib isi) | Private key wallet Polygon |
+| `FUNDER_ADDRESS` | (wajib isi) | Funder address untuk POLY_PROXY |
+
 ---
 
-## 13. Rencana ke Depan
+## 14. Rencana ke Depan
 
-### Phase A — Data Collection (7 hari)
+### Phase A — Paper Trading + Validasi (Sekarang)
 
-Bot berjalan dengan $5 paper money. Target: 20-30 closed trades. Sistem kalibrasi dan auto-tuner mengumpulkan data.
+Bot berjalan dengan $5 paper money. Execution bridge sudah terpasang tapi `LIVE_TRADING_ENABLED=false`. Target: 20-30 closed trades untuk validasi kalibrasi dan auto-tuner.
 
 ### Transisi ke Live
 
 ```bash
-systemctl stop blueprints
-python scripts/reset_warehouse.py --wallet 7.0 --keep-learning
-systemctl start blueprints
+# 1. Pastikan paper trading sudah stabil (win rate, PnL, no errors)
+# 2. Update .env: LIVE_TRADING_ENABLED=true
+# 3. Restart
+systemctl restart blueprints
+# 4. Monitor 2-3 siklus pertama — pastikan order terisi
+# 5. Cek Telegram alerts untuk konfirmasi entry/exit
 ```
+
+Execution bridge sudah siap. Saat `LIVE_TRADING_ENABLED=true`:
+- Entry menggunakan **maker buy** (0% fee, harga = best_bid + 1 tick)
+- Normal exit menggunakan **maker sell** (0% fee)
+- Urgent exit menggunakan **taker sell** (FOK, ~2% fee)
+- Heartbeat aktif setiap 5 detik
+- Orphan cleanup otomatis saat startup
 
 ### Phase B — Live Trading ($7)
 
-Kelly otomatis menyesuaikan. Target: win rate > 55%, profit konsisten.
+Kelly otomatis menyesuaikan. Target: win rate > 55%, profit konsisten. Maker orders menghemat fee secara signifikan dibanding taker.
 
 ### Jangka Panjang
 
 1. **NO-side trading** — Trading sisi NO (10 dari 11 bucket kalah setiap hari)
-2. **Execution bridge** — Koneksi ke Polymarket CLOB API untuk order nyata
-3. **Full backtesting suite** — Replay engine dengan equity curves
-4. **Maker fee optimization** — Limit orders = 0% fee (vs 5% taker)
-5. **Per-city golden window** — Optimasi jam terbaik per kota
-6. **Perluas kota** — Tambah kota berdasarkan data yang terkumpul
+2. **Full backtesting suite** — Replay engine dengan equity curves
+3. **Per-city golden window** — Optimasi jam terbaik per kota
+4. **Perluas kota** — Tambah kota berdasarkan data yang terkumpul
+5. **Multi-exchange support** — Ekspansi ke prediction market lain
 
 ---
 
-*Dokumen ini adalah referensi lengkap The Blueprints Trading Bot v1.0.0. Terakhir diperbarui 22 April 2026.*
+*Dokumen ini adalah referensi lengkap The Blueprints Trading Bot v1.1.0. Terakhir diperbarui 22 April 2026.*
