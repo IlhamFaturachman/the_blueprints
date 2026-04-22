@@ -1,6 +1,6 @@
 # THE BLUEPRINTS — Panduan Lengkap
 
-**Versi:** 1.1.0 | **Tanggal:** 22 April 2026 | **Mode:** Paper Trading ($5) + Live Execution Bridge
+**Versi:** 1.0 | **Tanggal:** 22 April 2026 | **Mode:** Paper Trading ($5)
 
 ---
 
@@ -184,7 +184,7 @@ GFS+ECMWF Ensemble ──→ 45% ensemble + 55% model = final probability
                                 │
                         Cap absolut 95% (tidak pernah 100% yakin)
                                 │
-                        Edge = probability - (harga + slippage)
+                        Edge = probability - harga pasar
                                 │
                         Edge ≥ threshold? → BUKA POSISI
                         Edge < threshold? → SKIP
@@ -393,14 +393,14 @@ Setelah stop loss, kota tersebut masuk **blacklist 24 jam**. Mencegah churning (
 
 ## 8. Execution Bridge — Eksekusi Order di Polymarket
 
-Bot memiliki **dua mode operasi** yang bisa dipilih via konfigurasi:
+Bot beroperasi dalam **dua mode** yang dikontrol via satu flag konfigurasi:
 
 | Mode | `LIVE_TRADING_ENABLED` | Apa yang terjadi |
 |---|---|---|
-| **Paper Trading** | `false` (default) | Simulasi instan — tidak ada order nyata ke Polymarket |
+| **Paper Trading** | `false` (default) | Simulasi dengan fee structure identik live (maker 0%, taker ~2%) |
 | **Live Trading** | `true` | Order nyata via Polymarket CLOB API — uang sungguhan |
 
-Saat paper mode, semua logika trading tetap berjalan (discovery, edge calculation, exit decisions), tapi posisi dibuka/ditutup secara simulasi. Saat live mode, bot mengirim order nyata ke Polymarket menggunakan **Execution Bridge** (`BlueprintsExchange`).
+Kedua mode menjalankan logika trading yang **identik** — discovery, edge calculation, Kelly sizing, exit decisions. Perbedaannya hanya pada eksekusi: paper mode mensimulasikan order secara instan, live mode mengirim order nyata ke Polymarket melalui **Execution Bridge** (`BlueprintsExchange`). Fee structure di paper mode sudah mirror live: entry dan normal exit menggunakan maker fee (0%), urgent exit menggunakan taker fee (~2%).
 
 ### 8.1 Arsitektur Execution Bridge
 
@@ -509,40 +509,46 @@ Pencegahan:
 - Kedua jalur mengecek flag ini sebelum menempatkan order
 - Kalau flag sudah `True`, exit di-skip (posisi sudah dalam proses penutupan)
 
-### 8.7 Perbedaan Paper vs Live
+### 8.7 Paper Mode vs Live Mode
+
+Paper trading mensimulasikan fee structure yang identik dengan live trading, sehingga hasil paper trading bisa langsung dijadikan benchmark akurat untuk live.
 
 | Aspek | Paper Mode | Live Mode |
 |---|---|---|
 | Entry | Simulasi instan, harga = best_ask | Maker order, harga = best_bid + 1 tick |
-| Entry fee | Simulasi (taker fee rate) | **$0** (maker, 0% fee) |
-| Exit | Simulasi instan, harga = best_bid | Maker/taker order tergantung urgensi |
-| Exit fee | Simulasi (taker fee rate) | **$0** (maker) atau ~2% (taker urgent) |
-| Pending status | Tidak ada | `pending_entry`, `pending_exit` |
+| Entry fee | **$0** (maker, 0% fee) | **$0** (maker, 0% fee) |
+| Normal exit | Simulasi instan, harga = best_bid | Maker order (post-only) |
+| Normal exit fee | **$0** (maker, 0% fee) | **$0** (maker, 0% fee) |
+| Urgent exit | Simulasi instan, harga = best_bid | Taker order (FOK, instan) |
+| Urgent exit fee | **~2%** (taker fee) | **~2%** (taker fee) |
+| Pending status | Tidak ada (simulasi instan) | `pending_entry`, `pending_exit` |
 | Order monitoring | Tidak ada | Setiap siklus (fill/timeout/retry) |
 | Heartbeat | Tidak ada | Setiap 5 detik |
 | Orphan cleanup | Tidak ada | Saat startup |
 
-### 8.8 Catatan Teknis Penting (4 Bug Kritis yang Dihindari)
+> **Catatan:** Satu-satunya perbedaan kecil adalah entry price — paper menggunakan `best_ask`, live menggunakan `best_bid + 1 tick` (sedikit lebih murah). Ini membuat paper trading sedikit lebih konservatif dari live, yang merupakan safety margin yang baik.
 
-Implementasi execution bridge harus menghindari 4 jebakan di library `py_clob_client`:
+### 8.8 Catatan Teknis: py_clob_client API
 
-1. **`create_and_post_order()` tidak support post-only** — method ini hardcode `post_order(order)` tanpa `post_only=True`. Kalau dipakai, semua order jadi taker (bayar fee 2%). Solusi: pakai two-step `create_order()` → `post_order(signed, post_only=True)`.
+Execution bridge menggunakan library `py_clob_client` (v0.34.6) dengan beberapa keputusan desain penting:
 
-2. **`MarketOrderArgs` pakai `amount`, bukan `size`** — `OrderArgs` (limit) pakai `size`, tapi `MarketOrderArgs` (market) pakai `amount`. Kalau salah, Python crash.
+1. **Two-step order flow untuk maker orders** — Bot menggunakan `create_order()` → `post_order(signed, post_only=True)`, bukan `create_and_post_order()`. Method `create_and_post_order()` tidak mendukung `post_only` parameter, sehingga semua order akan menjadi taker (bayar fee). Two-step flow memastikan order benar-benar post-only (0% fee).
 
-3. **`create_market_order()` hanya sign, tidak post** — method ini mengembalikan signed order tapi TIDAK mengirimnya ke exchange. Harus panggil `post_order()` terpisah.
+2. **`amount` untuk MarketOrderArgs, `size` untuk OrderArgs** — Limit order (`OrderArgs`) menggunakan field `size` (jumlah shares). Market order (`MarketOrderArgs`) menggunakan field `amount` (BUY = dollar amount, SELL = jumlah shares).
 
-4. **Level 2 auth wajib untuk trading** — `ClobClient` tanpa `creds=` hanya bisa baca data. Untuk trading, harus derive API credentials dulu via `create_or_derive_api_creds()` lalu pass `creds=` ke constructor.
+3. **Two-step flow untuk taker orders juga** — `create_market_order()` hanya menandatangani order, tidak mengirimnya. Harus panggil `post_order()` terpisah untuk mengirim ke exchange.
+
+4. **Level 2 auth wajib** — Semua operasi trading memerlukan API credentials. Bot melakukan `create_or_derive_api_creds()` saat startup, lalu pass `creds=` ke `ClobClient` constructor.
 
 ---
 
 ## 9. Bagaimana Bot Belajar dari Kesalahan?
 
-### 8.1 Kalibrasi Probabilitas (Bayesian)
+### 9.1 Kalibrasi Probabilitas (Bayesian)
 
 Setiap trade yang selesai dicatat hasilnya. Bot menghitung **Brier Score** per kota, per direction, per horizon. Kalibrasi mulai efektif setelah ~30 trade.
 
-### 8.2 Auto-Tuner — Grading Per Kota
+### 9.2 Auto-Tuner — Grading Per Kota
 
 | Grade | Arti | Efek |
 |---|---|---|
@@ -550,7 +556,7 @@ Setiap trade yang selesai dicatat hasilnya. Bot menghitung **Brier Score** per k
 | C (Cautious) | Kota sering kalah | Threshold edge dinaikkan |
 | B (Blacklist) | Kerugian berturut-turut | Kota dilewati sementara |
 
-### 8.3 Laporan Atribusi (Mingguan)
+### 9.3 Laporan Atribusi (Mingguan)
 
 Setiap 7 hari, bot mengirim laporan via Telegram: kota terbaik/terburuk, strategi terbaik, alasan penutupan paling sering.
 
@@ -703,11 +709,13 @@ Claude Haiku (entry review, position monitor, market sensing) dinonaktifkan. Bot
 
 ## 14. Rencana ke Depan
 
-### Phase A — Paper Trading + Validasi (Sekarang)
+### Phase A — Paper Trading (Sekarang)
 
-Bot berjalan dengan $5 paper money. Execution bridge sudah terpasang tapi `LIVE_TRADING_ENABLED=false`. Target: 20-30 closed trades untuk validasi kalibrasi dan auto-tuner.
+Bot berjalan dengan $5 paper money dalam mode `LIVE_TRADING_ENABLED=false`. Fee structure sudah identik dengan live (maker 0%, taker ~2% untuk urgent exit). Target: 20-30 closed trades untuk validasi kalibrasi dan auto-tuner.
 
-### Transisi ke Live
+### Transisi ke Live (v2.0)
+
+Setelah paper trading menunjukkan hasil stabil:
 
 ```bash
 # 1. Pastikan paper trading sudah stabil (win rate, PnL, no errors)
@@ -718,7 +726,7 @@ systemctl restart blueprints
 # 5. Cek Telegram alerts untuk konfirmasi entry/exit
 ```
 
-Execution bridge sudah siap. Saat `LIVE_TRADING_ENABLED=true`:
+Saat `LIVE_TRADING_ENABLED=true`, bot beralih ke eksekusi nyata:
 - Entry menggunakan **maker buy** (0% fee, harga = best_bid + 1 tick)
 - Normal exit menggunakan **maker sell** (0% fee)
 - Urgent exit menggunakan **taker sell** (FOK, ~2% fee)
@@ -727,7 +735,7 @@ Execution bridge sudah siap. Saat `LIVE_TRADING_ENABLED=true`:
 
 ### Phase B — Live Trading ($7)
 
-Kelly otomatis menyesuaikan. Target: win rate > 55%, profit konsisten. Maker orders menghemat fee secara signifikan dibanding taker.
+Kelly otomatis menyesuaikan. Target: win rate > 55%, profit konsisten.
 
 ### Jangka Panjang
 
@@ -739,4 +747,4 @@ Kelly otomatis menyesuaikan. Target: win rate > 55%, profit konsisten. Maker ord
 
 ---
 
-*Dokumen ini adalah referensi lengkap The Blueprints Trading Bot v1.1.0. Terakhir diperbarui 22 April 2026.*
+*Dokumen ini adalah referensi lengkap The Blueprints Trading Bot v1.0. Terakhir diperbarui 22 April 2026.*
