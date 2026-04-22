@@ -236,7 +236,7 @@ def enrich_discovery_markets(
                 logger.debug("[ENSEMBLE] Enrichment fetch failed for %s/%s: %s", city, date, _ens_err)
         market["ensemble_data"] = ensemble_data
 
-        edge_result = calculate_edge_fn(market, forecast_temp)
+        edge_result = calculate_edge_fn(market, forecast_temp, hours_until_resolve=market.get("hours_until_resolve"))
         if edge_result:
             # Merge market metadata into edge result so downstream filters/entry have full context
             enriched_item = {**market, **edge_result}

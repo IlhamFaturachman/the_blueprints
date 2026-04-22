@@ -83,7 +83,7 @@ def test_run_discovery_cycle_prefetches_forecasts_when_threshold_reached():
     raw_markets = [{"id": "m1"}, {"id": "m2"}, {"id": "m3"}]
 
     # Mock the bulk forecast function to return temperatures for all cities
-    def mock_bulk_forecasts(cities, date):
+    def mock_bulk_forecasts(cities, date, temp_type="max"):
         return {city: 25.0 for city in cities}
 
     with patch("market_discovery.DISCOVERY_FORECAST_PREFETCH_MIN_KEYS", 1), \

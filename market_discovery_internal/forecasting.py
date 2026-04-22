@@ -675,34 +675,23 @@ def prefetch_forecasts(cache_keys: list[tuple], cache: dict[str, Any], min_keys:
 
     for date, city_type_pairs in by_date.items():
         try:
-            # Bulk fetch only supports max temp; separate min-temp cities for individual fetch
             max_cities = [c for c, tt in city_type_pairs if tt == "max"]
             min_cities = [c for c, tt in city_type_pairs if tt == "min"]
 
-            # [MODUL U] Bulk Fetch: 1 hit per date instead of N hits (max temp only)
-            if max_cities:
-                logger.info("[MODUL-K] Prefetching %d cities for %s (Bulk Mode)...", len(max_cities), date)
-                results = _fetch_bulk_forecasts(max_cities, date)
-                for city in max_cities:
-                    key = (city, date, None, "max")
+            # [MODUL U] Bulk Fetch: 1 API hit per (date, temp_type) instead of N individual hits
+            for temp_type, cities_group in [("max", max_cities), ("min", min_cities)]:
+                if not cities_group:
+                    continue
+                logger.info("[MODUL-K] Prefetching %d %s-temp cities for %s (Bulk)...",
+                            len(cities_group), temp_type, date)
+                results = _fetch_bulk_forecasts(cities_group, date, temp_type=temp_type)
+                for city in cities_group:
+                    key = (city, date, None, temp_type)
                     if results.get(city) is not None:
-                        cache[key] = ForecastTemp(results[city], "open-meteo (bulk)")
+                        cache[key] = ForecastTemp(results[city], f"open-meteo (bulk-{temp_type})")
                         stats["successful"] += 1
                     else:
                         stats["failed"] += 1
-
-            # Min-temp cities: individual fetch (no bulk API for min temp yet)
-            for city in min_cities:
-                try:
-                    ft = fetch_forecast_fn(city, date, temp_type="min")
-                    key = (city, date, None, "min")
-                    if ft is not None:
-                        cache[key] = ft
-                        stats["successful"] += 1
-                    else:
-                        stats["failed"] += 1
-                except Exception:
-                    stats["failed"] += 1
         except Exception as e:
             logger.error("[MODUL-U] Prefetch bulk error for %s: %s", date, e)
             stats["failed"] += len(city_type_pairs)
@@ -710,9 +699,9 @@ def prefetch_forecasts(cache_keys: list[tuple], cache: dict[str, Any], min_keys:
     return stats
 
 
-def _fetch_bulk_forecasts(cities, date):
+def _fetch_bulk_forecasts(cities, date, temp_type="max"):
     """[MODUL U] Aggregated forecast fetch for multiple cities.
-    Fetches the daily max temperature forecast for multiple coordinates in 1 request.
+    Fetches the daily max/min temperature forecast for multiple coordinates in 1 request.
     """
     if not cities or not date:
         return {}
@@ -730,10 +719,11 @@ def _fetch_bulk_forecasts(cities, date):
     if not valid_cities:
         return {}
 
+    _daily_var = "temperature_2m_min" if temp_type == "min" else "temperature_2m_max"
     params = {
         "latitude": ",".join(lats),
         "longitude": ",".join(lons),
-        "daily": "temperature_2m_max",
+        "daily": _daily_var,
         "timezone": "auto",
         "forecast_days": 10  # Cover the full warming window
     }
@@ -750,13 +740,14 @@ def _fetch_bulk_forecasts(cities, date):
             city = valid_cities[i]
             daily = data.get("daily", {})
             times = daily.get("time", [])
-            temps = daily.get("temperature_2m_max", [])
+            temps = daily.get(_daily_var, [])
             
             if date in times:
                 val = temps[times.index(date)]
                 if val is not None:
-                    # Save to Warehouse Cache
-                    db.save_cached_forecast(city, date, val, "open-meteo (bulk)")
+                    # Save to Warehouse Cache (max only — min uses separate key space)
+                    if temp_type == "max":
+                        db.save_cached_forecast(city, date, val, "open-meteo (bulk)")
                     results[city] = val
         
         return results

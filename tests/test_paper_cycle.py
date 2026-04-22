@@ -590,7 +590,7 @@ def test_run_paper_cycle_prefetches_open_position_forecasts(tmp_path):
     }
 
     # Mock the bulk forecast function since prefetch uses bulk mode
-    def mock_bulk_forecasts(cities, date):
+    def mock_bulk_forecasts(cities, date, temp_type="max"):
         return {city: 25.0 for city in cities}
 
     with patch("market_discovery.PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS", 1), patch(
