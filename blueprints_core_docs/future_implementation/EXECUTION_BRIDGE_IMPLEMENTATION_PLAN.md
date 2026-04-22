@@ -1,6 +1,13 @@
 # Execution Bridge + Maker Orders — Full Implementation Plan
 
-**Version:** 1.0 | **Date:** 22 April 2026 | **Status:** PLAN (Not Yet Implemented)
+**Version:** 1.1 | **Date:** 22 April 2026 | **Status:** PLAN (Not Yet Implemented)
+
+> **v1.1 Changes:** Fixed 4 critical API-level bugs found during deep re-check:
+> (B1) Maker orders must use two-step flow (create_order → post_order with post_only=True),
+> (B2) MarketOrderArgs uses `amount` not `size`,
+> (B3) create_market_order only signs — must call post_order separately,
+> (B4) L2 auth (creds=) required in ClobClient constructor for all trading ops.
+> Also fixed 4 type warnings (tick_size must be string, orderbook fields are strings).
 
 ---
 
@@ -191,27 +198,73 @@ LIVE_TRADING_ENABLED=true:
 ### 3.3 BlueprintsExchange Class Design
 
 ```python
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, PartialCreateOrderOptions
+from py_clob_client.order_builder.constants import BUY, SELL
+
 class BlueprintsExchange:
     """Live trading bridge to Polymarket CLOB API.
     
     Thread-safe: all CLOB operations protected by self._lock.
     Heartbeat: background daemon thread sends heartbeat every 5s.
     Graceful: never crashes — all errors caught, logged, and returned as status dicts.
+    
+    CRITICAL IMPLEMENTATION NOTES (verified against py_clob_client v0.34.6):
+    
+    1. MUST use two-step order flow for post-only (maker) orders:
+       signed = client.create_order(OrderArgs, options)
+       result = client.post_order(signed, OrderType.GTC, post_only=True)
+       
+       create_and_post_order() does NOT support post_only — it hardcodes
+       post_order(order) with defaults (post_only=False). Using it would
+       make us TAKER and pay 5% fee.
+    
+    2. MUST use two-step for market (taker) orders too:
+       signed = client.create_market_order(MarketOrderArgs, options)
+       result = client.post_order(signed, OrderType.FOK)
+       
+       create_market_order() only signs — does NOT post.
+    
+    3. MarketOrderArgs uses `amount` NOT `size`:
+       - BUY: amount = dollar amount to spend
+       - SELL: amount = number of shares to sell
+    
+    4. tick_size in PartialCreateOrderOptions MUST be a string ("0.01"),
+       not a float (0.01). TickSize is Literal['0.1','0.01','0.001','0.0001'].
+    
+    5. get_order_book returns fields as STRINGS (min_order_size="5",
+       tick_size="0.01"). Must cast to int/float for arithmetic.
+    
+    6. ALL trading operations require Level 2 auth (API creds).
+       Must call create_or_derive_api_creds() and pass creds= to constructor.
     """
     
     def __init__(self):
-        """Initialize ClobClient with credentials from .env.
+        """Initialize ClobClient with L1 + L2 credentials from .env.
         
         Steps:
         1. Read PRIVATE_KEY, FUNDER_ADDRESS, SIGNATURE_TYPE from env
-        2. Create temp ClobClient (L1 auth only)
-        3. Derive API credentials (L2 auth)
-        4. Create full ClobClient with L1 + L2 auth
+        2. Create temp ClobClient (L1 auth only — for deriving creds)
+        3. Derive API credentials via create_or_derive_api_creds() (L2 auth)
+        4. Create FULL ClobClient with L1 + L2 auth (creds= parameter)
         5. Verify connection with get_ok()
         
         If ANY step fails: set self.available = False, log CRITICAL.
         Bot falls back to paper mode.
+        
+        CRITICAL: Step 4 MUST pass creds= to ClobClient constructor.
+        Without creds, client is L1-only and ALL of these will throw
+        AssertionError from assert_level_2_auth():
+          - post_order, cancel, cancel_all, get_order, get_orders
+          - post_heartbeat
         """
+        # Pseudocode:
+        # temp_client = ClobClient(host=HOST, chain_id=137, key=PK,
+        #                          signature_type=SIG_TYPE, funder=FUNDER)
+        # api_creds = temp_client.create_or_derive_api_creds()
+        # self.client = ClobClient(host=HOST, chain_id=137, key=PK,
+        #                          creds=api_creds,  # <-- CRITICAL
+        #                          signature_type=SIG_TYPE, funder=FUNDER)
     
     def start_heartbeat(self):
         """Start background heartbeat thread (daemon).
@@ -219,98 +272,123 @@ class BlueprintsExchange:
         Thread sends POST /heartbeat every 5 seconds.
         If 3 consecutive failures: set self.heartbeat_healthy = False.
         Main cycle checks this flag before placing new orders.
+        
+        NOTE: post_heartbeat requires L2 auth. Will throw if creds missing.
         """
     
     def stop(self):
         """Stop heartbeat thread, cancel all open orders."""
     
     # === ORDER PLACEMENT ===
+    # ALL maker orders use TWO-STEP flow: create_order → post_order(post_only=True)
+    # ALL taker orders use TWO-STEP flow: create_market_order → post_order(FOK)
     
     def place_maker_buy(self, token_id, price, size, tick_size, neg_risk):
         """Place GTC post-only limit BUY order.
         
-        Args:
-            token_id: YES token ID from market
-            price: limit price (best_bid + tick_size)
-            size: number of shares (must be >= min_order_size)
-            tick_size: market tick size (from orderbook)
-            neg_risk: market neg_risk flag (from orderbook)
+        IMPLEMENTATION (two-step, verified against py_clob_client v0.34.6):
+          order_args = OrderArgs(token_id=token_id, price=price, size=size, side=BUY)
+          options = PartialCreateOrderOptions(tick_size=str(tick_size), neg_risk=neg_risk)
+          signed = self.client.create_order(order_args, options)
+          result = self.client.post_order(signed, orderType=OrderType.GTC, post_only=True)
         
         Returns:
-            {"success": True, "order_id": "0x...", "status": "live"}
-            {"success": False, "reason": "post_only_rejected"} — would cross spread
-            {"success": False, "reason": "insufficient_balance"}
+            {"success": True, "order_id": "...", "status": "live"}
+            {"success": False, "reason": "INVALID_POST_ONLY_ORDER"} — would cross spread
+            {"success": False, "reason": "INVALID_ORDER_NOT_ENOUGH_BALANCE"}
             {"success": False, "reason": "error", "detail": "..."}
         
         Post-only guarantee: if order would match immediately (become taker),
-        Polymarket REJECTS it. We NEVER accidentally pay taker fee.
+        Polymarket REJECTS it with INVALID_POST_ONLY_ORDER. We NEVER pay taker fee.
         """
     
     def place_taker_buy(self, token_id, amount_usd, worst_price, tick_size, neg_risk):
         """Place FOK market BUY order.
         
-        Args:
-            amount_usd: dollar amount to spend (NOT shares)
-            worst_price: maximum price willing to pay (slippage protection)
+        IMPLEMENTATION (two-step):
+          order_args = MarketOrderArgs(token_id=token_id, amount=amount_usd,
+                                       side=BUY, price=worst_price)
+          options = PartialCreateOrderOptions(tick_size=str(tick_size), neg_risk=neg_risk)
+          signed = self.client.create_market_order(order_args, options)
+          result = self.client.post_order(signed, orderType=OrderType.FOK)
         
-        Returns:
-            {"success": True, "order_id": "0x...", "status": "matched", "fill_price": ...}
-            {"success": False, "reason": "fok_not_filled"}
-        
-        Used as fallback when maker buy is repeatedly rejected.
+        NOTE: MarketOrderArgs uses `amount` (dollars for BUY), NOT `size`.
+        NOTE: create_market_order only signs — does NOT post. Must call post_order.
         """
     
     def place_maker_sell(self, token_id, size, price, tick_size, neg_risk):
         """Place GTC post-only limit SELL order.
         
-        Same as place_maker_buy but for selling.
-        Used for: take_profit, sniper, late_window_sell.
+        IMPLEMENTATION (two-step):
+          order_args = OrderArgs(token_id=token_id, price=price, size=size, side=SELL)
+          options = PartialCreateOrderOptions(tick_size=str(tick_size), neg_risk=neg_risk)
+          signed = self.client.create_order(order_args, options)
+          result = self.client.post_order(signed, orderType=OrderType.GTC, post_only=True)
         """
     
     def place_taker_sell(self, token_id, size, worst_price, tick_size, neg_risk):
         """Place FOK market SELL order.
         
-        Args:
-            size: number of shares to sell
-            worst_price: minimum price willing to accept (slippage protection)
+        IMPLEMENTATION (two-step):
+          order_args = MarketOrderArgs(token_id=token_id, amount=size,
+                                       side=SELL, price=worst_price)
+          options = PartialCreateOrderOptions(tick_size=str(tick_size), neg_risk=neg_risk)
+          signed = self.client.create_market_order(order_args, options)
+          result = self.client.post_order(signed, orderType=OrderType.FOK)
         
-        Used for: stop_loss, thesis_broken, trailing_stop, flash_crash.
-        Speed > fee savings for urgent exits.
+        NOTE: MarketOrderArgs.amount = number of shares for SELL (not dollars).
+        NOTE: worst_price = minimum price willing to accept (slippage protection).
         """
     
     # === ORDER MANAGEMENT ===
     
     def cancel_order(self, order_id):
-        """Cancel single order. Returns True if cancelled."""
+        """Cancel single order. Returns True if cancelled.
+        Uses: self.client.cancel(order_id)  # positional arg, not keyword
+        """
     
     def cancel_all_orders(self):
-        """Cancel all open orders. Returns count of cancelled orders."""
+        """Cancel all open orders. Returns count of cancelled orders.
+        Uses: self.client.cancel_all()
+        """
     
     def get_order_status(self, order_id):
         """Get order fill status.
+        Uses: self.client.get_order(order_id)
         
-        Returns:
-            {"status": "live", "size_matched": "0", "price": "0.05"}
-            {"status": "matched", "size_matched": "20", "price": "0.05"}
-            {"status": "cancelled", ...}
+        Returns RAW dict from API (not typed object). Use .get() defensively:
+            resp.get("status")        # "live", "matched", "cancelled"
+            resp.get("size_matched")  # string, must cast to float
+            resp.get("price")         # string, must cast to float
         """
     
     def get_open_orders(self):
-        """Get all open orders. Returns list of order dicts."""
+        """Get all open orders. Returns list of order dicts.
+        Uses: self.client.get_orders()
+        """
     
     # === MARKET DATA ===
     
     def get_orderbook_info(self, token_id):
         """Fetch orderbook and extract key info.
+        Uses: self.client.get_order_book(token_id)
+        
+        CRITICAL: Response fields are STRINGS, must cast:
+          best_bid = float(book.bids[0].price) if book.bids else None
+          best_ask = float(book.asks[0].price) if book.asks else None
+          tick_size = book.tick_size          # already string, keep as-is for options
+          min_order_size = int(book.min_order_size)  # cast to int
+          neg_risk = book.neg_risk            # bool
         
         Returns:
             {
-                "best_bid": 0.04,
-                "best_ask": 0.07,
-                "spread": 0.03,
-                "tick_size": "0.01",
-                "min_order_size": 5,
-                "neg_risk": False,
+                "best_bid": 0.04,       # float (casted)
+                "best_ask": 0.07,       # float (casted)
+                "spread": 0.03,         # float (computed)
+                "tick_size": "0.01",    # STRING (for PartialCreateOrderOptions)
+                "tick_size_float": 0.01, # float (for price computation)
+                "min_order_size": 5,    # int (casted)
+                "neg_risk": False,      # bool
             }
         
         Returns None if orderbook is empty or API fails.
@@ -318,23 +396,21 @@ class BlueprintsExchange:
     
     # === PRICE COMPUTATION ===
     
-    def compute_maker_buy_price(self, best_bid, tick_size):
+    def compute_maker_buy_price(self, best_bid, tick_size_float):
         """Compute maker buy price: best_bid + tick_size.
         
-        Example: best_bid=0.04, tick_size=0.01 → price=0.05
-        This places our order 1 tick above the best bid,
-        making us the new best bid (highest priority to fill).
+        Args: tick_size_float must be float (not string).
+        Example: best_bid=0.04, tick_size_float=0.01 → price=0.05
         """
-        return round(best_bid + float(tick_size), 4)
+        return round(best_bid + tick_size_float, 4)
     
-    def compute_maker_sell_price(self, best_ask, tick_size):
+    def compute_maker_sell_price(self, best_ask, tick_size_float):
         """Compute maker sell price: best_ask - tick_size.
         
-        Example: best_ask=0.07, tick_size=0.01 → price=0.06
-        This places our order 1 tick below the best ask,
-        making us the new best ask (highest priority to fill).
+        Args: tick_size_float must be float (not string).
+        Example: best_ask=0.07, tick_size_float=0.01 → price=0.06
         """
-        return round(best_ask - float(tick_size), 4)
+        return round(best_ask - tick_size_float, 4)
 ```
 
 ### 3.4 Entry Flow (Detailed)
@@ -765,6 +841,26 @@ Mock `ClobClient` for all tests. Test:
 ---
 
 ## 5. Critical Self-Questioning (Step 3b)
+
+### API-Level Bugs Found During Deep Re-Check (FIXED in this plan)
+
+| # | Bug | Root Cause | Fix Applied |
+|---|---|---|---|
+| **B1** | `create_and_post_order` cannot do post-only | Internally calls `post_order(order)` with defaults — no `post_only` param | ALL maker orders use two-step: `create_order()` → `post_order(signed, GTC, post_only=True)` |
+| **B2** | `MarketOrderArgs` uses `amount`, not `size` | Different dataclass from `OrderArgs`. BUY=dollars, SELL=shares. | All taker methods use `amount=` parameter |
+| **B3** | `create_market_order` only signs, doesn't post | Must call `post_order(signed, FOK)` separately | ALL taker orders use two-step: `create_market_order()` → `post_order(signed, FOK)` |
+| **B4** | L2 auth required for all trading operations | Without `creds=` in constructor, every post/cancel/heartbeat throws AssertionError | `__init__` derives creds via `create_or_derive_api_creds()` and passes `creds=` to final ClobClient |
+
+### Additional Type Warnings (FIXED in this plan)
+
+| # | Warning | Fix Applied |
+|---|---|---|
+| **W1** | `tick_size` in `PartialCreateOrderOptions` must be string `"0.01"`, not float `0.01` | `get_orderbook_info` returns both `tick_size` (string) and `tick_size_float` (float) |
+| **W2** | `get_order_book` returns fields as strings | All fields cast: `int(min_order_size)`, `float(bids[0].price)` |
+| **W3** | `get_order` returns raw dict, not typed object | All access via `.get()` with defaults |
+| **W4** | `post_heartbeat` response format is API-dependent | Access via `.get()` with defaults |
+
+### Design-Level Questions
 
 | # | Question | Answer | Action |
 |---|---|---|---|
