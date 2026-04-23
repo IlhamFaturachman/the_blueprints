@@ -974,7 +974,9 @@ def run_paper_trading_cycle(
     entry_selection_started = perf_counter_fn()
     
     # [FIX] Whiplash Shield: Build a blacklist of recently force-closed positions to avoid re-entry whiplash.
-    recent_exit_blacklist = set()
+    # [P3-FIX] Now blacklists BOTH token_id AND city_key to prevent same-city re-entry after SL.
+    recent_exit_blacklist = set()       # token_id blacklist
+    recent_exit_city_blacklist = set()  # city_key blacklist (prevents different bracket same city)
     _now_ts_whiplash = now_dt.timestamp()
     
     # Combined pool: memory history + database history
@@ -1003,11 +1005,15 @@ def run_paper_trading_cycle(
                 if any(r in reason for r in ["haiku_monitor_exit", "stop_loss", "broken_thesis"]):
                     token_id = str(h_pos.get("token_id"))
                     recent_exit_blacklist.add(token_id)
+                    # [P3-FIX] Also blacklist the city to prevent different-bracket same-city re-entry
+                    _city = _normalize_city_key(h_pos.get("city"))
+                    if _city:
+                        recent_exit_city_blacklist.add(_city)
         except Exception:
             logger.debug("[WHIPLASH-SHIELD] Skipping malformed history entry")
             continue
     if recent_exit_blacklist:
-        logger.warning(f"[WHIPLASH-SHIELD] Active blacklist for {len(recent_exit_blacklist)} tokens: {recent_exit_blacklist}")
+        logger.warning(f"[WHIPLASH-SHIELD] Active blacklist: {len(recent_exit_blacklist)} tokens, {len(recent_exit_city_blacklist)} cities")
 
     (
         entry_candidates,
@@ -1021,6 +1027,7 @@ def run_paper_trading_cycle(
         min_bound=min_bound,
         max_bound=max_bound,
         recent_exit_blacklist=recent_exit_blacklist,
+        recent_exit_city_blacklist=recent_exit_city_blacklist,
     )
 
     effective_allow_new_entries = bool(allow_new_entries)
@@ -1412,16 +1419,24 @@ def run_paper_trading_cycle(
 # ---------------------------------------------------------------------------
 
 def _compute_take_profit_price(entry_price, direction=""):
-    """Compute take-profit target price. Capped by TAKE_PROFIT_PRICE_CAP (default 1.0).
-    Exact-bracket markets use a higher multiplier (8x default) since they have
-    cheap entries ($0.03-$0.10) but pay $1.00 on resolution.
+    """Compute take-profit target price.
+
+    Above/below: capped by TAKE_PROFIT_PRICE_CAP (default 1.0).
+    Exact bracket: capped by EXACT_BRACKET_TP_CAP (default 0.80) to ensure
+    TP is reachable before resolve. Without this, any exact bracket entry
+    above $0.125 would have TP=$1.00 which is unreachable before resolution.
     """
-    from market_discovery_internal.config import TAKE_PROFIT_PRICE_CAP, EXACT_BRACKET_TP_MULTIPLIER
+    from market_discovery_internal.config import TAKE_PROFIT_PRICE_CAP, EXACT_BRACKET_TP_MULTIPLIER, EXACT_BRACKET_TP_CAP
     entry = _safe_float(entry_price, 0.0)
     if entry <= 0:
         return HYBRID_TAKE_PROFIT_MIN_PRICE
-    multiplier = EXACT_BRACKET_TP_MULTIPLIER if direction == "exact" else HYBRID_TAKE_PROFIT_MULTIPLIER
-    return round(min(entry * multiplier, TAKE_PROFIT_PRICE_CAP), 4)
+    if direction == "exact":
+        multiplier = EXACT_BRACKET_TP_MULTIPLIER
+        cap = EXACT_BRACKET_TP_CAP
+    else:
+        multiplier = HYBRID_TAKE_PROFIT_MULTIPLIER
+        cap = TAKE_PROFIT_PRICE_CAP
+    return round(min(entry * multiplier, cap), 4)
 
 
 def _ensure_take_profit_target(position):
@@ -1988,7 +2003,10 @@ def evaluate_hybrid_exit(
             _opened_dt = datetime.fromisoformat(str(_opened_at).replace("Z", "+00:00"))
             _now_aware = now_utc if now_utc.tzinfo is not None else now_utc.replace(tzinfo=_tz.utc)
             _age_hours = (_now_aware - _opened_dt).total_seconds() / 3600
-            if _age_hours < HYBRID_STOP_LOSS_COOLDOWN_HOURS:
+            # [P5-FIX] Exact brackets use shorter cooldown (more volatile)
+            from market_discovery_internal.config import EXACT_BRACKET_SL_COOLDOWN_HOURS
+            _sl_cooldown_h = EXACT_BRACKET_SL_COOLDOWN_HOURS if direction == "exact" else HYBRID_STOP_LOSS_COOLDOWN_HOURS
+            if _age_hours < _sl_cooldown_h:
                 _stop_loss_armed = False
         except Exception:
             logger.debug("[STOP-LOSS] Failed to compute cooldown age for position")
@@ -2215,6 +2233,7 @@ def build_entry_candidates(
     min_bound,
     max_bound,
     recent_exit_blacklist=None,
+    recent_exit_city_blacklist=None,  # [P3-FIX] City-level whiplash blacklist
 ):
     """Build ranked entry candidates while enforcing one-best-candidate per city."""
     bucket_counts = {
@@ -2255,6 +2274,12 @@ def build_entry_candidates(
         # [FIX] Whiplash Shield: Filter out recently force-closed markets
         if recent_exit_blacklist and str(token_id) in recent_exit_blacklist:
             continue
+
+        # [P3-FIX] City-level whiplash: block all markets for a city after SL
+        if recent_exit_city_blacklist:
+            _opp_city_key = _normalize_city_key(opportunity.get("city"))
+            if _opp_city_key and _opp_city_key in recent_exit_city_blacklist:
+                continue
 
         if price < min_bound or price > max_bound:
             continue

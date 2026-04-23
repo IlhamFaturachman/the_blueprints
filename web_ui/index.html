@@ -279,6 +279,7 @@ const IN_CYCLE_THRESHOLD_MS = 300000;
 let latestPositions = [];
 let latestCash = 0;
 let latestDailyBaseline = 0;
+let latestHistory = [];  // [P1-FIX] Persist history for WS updates
 let latestDailyTarget = 0;
 let cycleRowsCache = [];
 let lastCycleTs = null;
@@ -428,16 +429,21 @@ function renderHero(positions,cash,history,dailyBaseline){
     portEl.className='hero-value';
     document.getElementById('metaPortfolio').textContent=`Cash: $${cash.toFixed(2)} | Deployed: $${openCost.toFixed(2)}`;
 
-    // Today's PnL (floating + realized)
+    // Today's PnL (floating + realized TODAY only)
+    // [P1-FIX] Filter history to only include trades closed today (UTC)
+    const todayStr=new Date().toISOString().slice(0,10);
     let realizedPnl=0;
-    history.forEach(p=>realizedPnl+=Number(p.realized_pnl_usd||0));
+    history.forEach(p=>{
+        const closedDate=(p.closed_at||'').slice(0,10);
+        if(closedDate===todayStr) realizedPnl+=Number(p.realized_pnl_usd||0);
+    });
     const totalPnl=floatingPnl+realizedPnl;
     const pnlEl=document.getElementById('valPnl');
     pnlEl.textContent=`${pnlSign(totalPnl)}$${Math.abs(totalPnl).toFixed(2)}`;
     pnlEl.className='hero-value '+pnlClass(totalPnl);
     document.getElementById('metaPnl').textContent=`Floating: ${pnlSign(floatingPnl)}$${Math.abs(floatingPnl).toFixed(4)} | Realized: ${pnlSign(realizedPnl)}$${Math.abs(realizedPnl).toFixed(4)}`;
 
-    // Win Rate
+    // Win Rate (all-time, not today-only — more meaningful with small sample)
     let wins=0,losses=0;
     history.forEach(p=>{if(Number(p.realized_pnl_usd||0)>=0)wins++;else losses++});
     const total=wins+losses;
@@ -622,14 +628,19 @@ function renderHistory(closed){
         const{pc,label}=getCloseReasonDisplay(reason);
         const city=String(pos.city||'').toUpperCase();
         const dur=(pos.opened_at&&pos.closed_at)?fmtDur(new Date(pos.closed_at)-new Date(pos.opened_at)):'-';
+        const question=pos.market_question||'';
+        const slug=pos.market_slug||'';
+        const polyLink=slug?`https://polymarket.com/event/${slug}`:'';
 
         html+=`
-        <div class="trade-row">
+        <div class="trade-row" style="flex-wrap:wrap;gap:4px">
             <div class="trade-city">${city}</div>
-            <div class="trade-prices">$${Number(pos.entry_price||0).toFixed(2)} -> $${Number(pos.exit_price||0).toFixed(2)}</div>
+            <div class="trade-prices">$${Number(pos.entry_price||0).toFixed(2)} &rarr; $${Number(pos.exit_price||0).toFixed(2)}</div>
             <div class="trade-pnl ${pnlClass(pnl)}">${pnlSign(pnl)}$${Math.abs(pnl).toFixed(4)}</div>
             <span class="pill ${pc}">${label}</span>
             <div class="trade-meta">${dur} | ${fmtWibShort(pos.closed_at)}</div>
+            ${question?`<div style="width:100%;font-size:11px;color:#888;margin-top:2px">${question}</div>`:''}
+            ${polyLink?`<a href="${polyLink}" target="_blank" rel="noopener" style="font-size:11px;color:#4fc3f7;text-decoration:none;margin-top:2px">View on Polymarket &rarr;</a>`:''}
         </div>`;
     });
 
@@ -706,7 +717,8 @@ function updatePositionLiveByToken(tokenId,bidPrice){
     const pos=latestPositions.find(p=>String(p.token_id)===tokenId);
     if(!pos)return;
     pos.last_price=Number(bidPrice);
-    renderHero(latestPositions,latestCash,[],latestDailyBaseline);
+    // [P1-FIX] Use latestHistory instead of [] to preserve realized PnL during WS updates
+    renderHero(latestPositions,latestCash,latestHistory,latestDailyBaseline);
     renderPositions();
 }
 
@@ -752,6 +764,7 @@ async function fetchData(){
         latestPositions=(data.positions||[]).map(p=>({...p,last_price:Number(p.last_price||p.entry_quote_best_bid||0)}));
 
         const closed=data.history||[];
+        latestHistory=closed;  // [P1-FIX] Persist for WS updates
         const meta=data.meta||{};
         const baseWallet=Number(meta.base_wallet||5.0);
         latestCash=Number(meta.cash||meta.current_wallet||baseWallet);

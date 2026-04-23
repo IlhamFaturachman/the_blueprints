@@ -524,6 +524,19 @@ FLASH_CRASH_REST_CONFIRM_ENABLED = _env_bool("FLASH_CRASH_REST_CONFIRM_ENABLED",
 # L4: Minimum depth (USD) at the SL price level to consider it real
 FLASH_CRASH_MIN_DEPTH_USD = float(os.getenv("FLASH_CRASH_MIN_DEPTH_USD", "5.0"))
 
+# L1 escape hatch: override spike detector after this many seconds of sustained L2 ticks
+FLASH_CRASH_L1_ESCAPE_SECONDS = float(os.getenv("FLASH_CRASH_L1_ESCAPE_SECONDS", "60.0"))
+
+# Maximum SL delay: force-close if position has been below SL for this many seconds
+# Safety net for thin markets where flash crash shield blocks legitimate SL
+SL_MAX_DELAY_SECONDS = int(os.getenv("SL_MAX_DELAY_SECONDS", "600"))
+
+# Exact bracket SL cooldown (shorter than above/below because exact brackets are more volatile)
+EXACT_BRACKET_SL_COOLDOWN_HOURS = float(os.getenv("EXACT_BRACKET_SL_COOLDOWN_HOURS", "1.0"))
+
+# Exact bracket TP cap (lower than 1.0 to ensure TP is reachable before resolve)
+EXACT_BRACKET_TP_CAP = float(os.getenv("EXACT_BRACKET_TP_CAP", "0.80"))
+
 # ---------------------------------------------------------------------------
 # Kelly Criterion Stake Sizing
 # ---------------------------------------------------------------------------

@@ -20,6 +20,9 @@ from market_discovery_internal.config import (
     FLASH_CRASH_MIN_TICK_WINDOW_SECONDS,
     FLASH_CRASH_REST_CONFIRM_ENABLED,
     FLASH_CRASH_MIN_DEPTH_USD,
+    FLASH_CRASH_L1_ESCAPE_SECONDS,
+    SL_MAX_DELAY_SECONDS,
+    EXACT_BRACKET_SL_COOLDOWN_HOURS,
 )
 
 logger = logging.getLogger(__name__)
@@ -384,6 +387,9 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None
     # [Flash-Shield L1] Track last known good (non-spike) price per token
     _last_good_prices = {}
 
+    # [P5-FIX] Track when position first went below SL — force-close after SL_MAX_DELAY_SECONDS
+    _sl_first_below_at = {}  # {token_id: timestamp}
+
     def callback(token_id: str, bid_price: float) -> None:
         nonlocal _sl_cleanup_counter
         with lock:
@@ -406,6 +412,9 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None
                     stale_good = [k for k in _last_good_prices if k not in open_token_ids]
                     for k in stale_good:
                         del _last_good_prices[k]
+                    stale_below = [k for k in _sl_first_below_at if k not in open_token_ids]
+                    for k in stale_below:
+                        del _sl_first_below_at[k]
                 changed = False
 
                 for i, pos in enumerate(positions):
@@ -433,8 +442,8 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None
                             if _existing_l2:
                                 _l2_count, _l2_first = _existing_l2
                                 _l2_elapsed = time.time() - _l2_first
-                                if _l2_count >= 10 and _l2_elapsed >= 300:
-                                    # 10+ ticks over 5+ minutes — this is real, not a spike
+                                if _l2_count >= 10 and _l2_elapsed >= FLASH_CRASH_L1_ESCAPE_SECONDS:
+                                    # 10+ ticks over escape threshold — this is real, not a spike
                                     _l1_override = True
                                     logger.warning(
                                         "[FLASH-SHIELD] L1: Override — %d ticks over %.0fs for %s. Allowing through.",
@@ -453,20 +462,39 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None
 
                     reason = None
                     if bid_price <= stop:
+                        # [P5-FIX] Track first time below SL for max delay timer
+                        if token_id not in _sl_first_below_at:
+                            _sl_first_below_at[token_id] = time.time()
+
                         # [AUDIT] Fix B: cooldown for price-based Stop Loss
                         # This prevents "noise" exits during the initial spread friction.
+                        # [P5-FIX] Exact brackets use shorter cooldown (more volatile)
                         opened_at_str = pos.get("opened_at")
                         can_sl_fire = True
+                        _direction = pos.get("direction", "")
+                        _sl_cooldown = EXACT_BRACKET_SL_COOLDOWN_HOURS * 3600 if _direction == "exact" else SL_COOLDOWN_SECONDS
                         if opened_at_str:
                             try:
                                 opened_at = datetime.fromisoformat(opened_at_str)
                                 age_seconds = (datetime.now(timezone.utc) - opened_at).total_seconds()
-                                if age_seconds < SL_COOLDOWN_SECONDS:
+                                if age_seconds < _sl_cooldown:
                                     can_sl_fire = False
                             except (ValueError, TypeError):
                                 pass
 
-                        if can_sl_fire:
+                        # [P5-FIX] Max SL delay: force-close if below SL for too long
+                        # Safety net for thin markets where flash crash shield blocks legitimate SL
+                        _below_since = _sl_first_below_at.get(token_id)
+                        if _below_since and (time.time() - _below_since) >= SL_MAX_DELAY_SECONDS:
+                            reason = "stop_loss"
+                            _sl_tick_counters.pop(token_id, None)
+                            _sl_first_below_at.pop(token_id, None)
+                            logger.warning(
+                                "[FLASH-SHIELD] MAX-DELAY: %s below SL for %.0fs — force-closing.",
+                                pos.get('city', '?'), time.time() - _below_since,
+                            )
+
+                        if can_sl_fire and reason is None:
                             # ---------------------------------------------------
                             # L2: Time-Windowed Ticks — SL ticks must span a
                             #     minimum wall-clock window before triggering exit.
@@ -558,6 +586,7 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None
                     else:
                         # Reset counter if price is back in safety zone
                         _sl_tick_counters.pop(token_id, None)
+                        _sl_first_below_at.pop(token_id, None)  # [P5-FIX] Clear max delay timer
 
                     if bid_price >= target and strategy == "swing":
                         reason = "take_profit_100pct"
