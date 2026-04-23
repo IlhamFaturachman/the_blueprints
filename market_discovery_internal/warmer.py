@@ -69,8 +69,18 @@ class GudangDataWarmer:
             try:
                 # [MODUL U] Bulk Fetch: Collapse N requests into 1
                 res = _fetch_bulk_forecasts(cities, target_date)
+                # [FIX-S8] Validate fetched temperatures before caching.
+                # Reject extreme/garbage values that could poison probability calculations.
+                if isinstance(res, dict):
+                    for _city, _data in list(res.items()):
+                        if isinstance(_data, dict):
+                            _temp = _data.get("forecast_temp")
+                            if _temp is not None and (float(_temp) < -60 or float(_temp) > 60):
+                                logger.warning("[WARMER] Rejected extreme temp %.1f°C for %s on %s",
+                                               float(_temp), _city, target_date)
+                                res.pop(_city, None)
                 # Polite Sleep to avoid 429 during bulk burst
-                time.sleep(WARMER_POLITENESS_DELAY_SECONDS) 
+                time.sleep(WARMER_POLITENESS_DELAY_SECONDS)
             except Exception as e:
                 if "429" in str(e):
                     self._last_429_time = time.time()

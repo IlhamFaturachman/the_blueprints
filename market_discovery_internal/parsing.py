@@ -246,7 +246,10 @@ def parse_market(
     elif BELOW_RE.search(question_lower):
         direction = "below"
     else:
-        direction = "exact"
+        # [FIX-M1] Default to "above" instead of "exact". Most temperature markets
+        # are above/below. Defaulting to "exact" triggers Gaussian model, different
+        # thresholds, and regime gate bypass — all wrong for a standard market.
+        direction = "above"
 
     # Step 3b: Temperature type — "highest" (max) vs "lowest" (min)
     search_text_lower = _market_search_text(raw).lower()

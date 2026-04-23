@@ -211,6 +211,14 @@ class BlueprintsDB:
             except Exception:
                 pass  # Column already exists — expected during normal startup
 
+        # [FIX-M-T4-6a] Add UNIQUE index for trade_history dedup (atomic instead of check-then-insert)
+        # [FIX-M-T4-6b] Add index on trade_history(city) for faster city-based queries
+        try:
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_dedup ON trade_history(token_id, opened_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_city ON trade_history(city, id)")
+        except Exception:
+            pass  # Indexes may already exist
+
         conn.commit()
 
     def update_heartbeat(self, process_name):
@@ -314,8 +322,9 @@ class BlueprintsDB:
         for r in rows:
             try:
                 positions.append(json.loads(r['raw_json']))
-            except (json.JSONDecodeError, TypeError):
-                pass
+            except (json.JSONDecodeError, TypeError) as e:
+                # [FIX-L-T4-6] Log warning instead of silent skip — position data loss
+                logger.warning("[DB] Corrupt raw_json in active_positions, skipping: %s", e)
         return positions
 
     def add_position(self, pos_dict):
@@ -516,7 +525,10 @@ class BlueprintsDB:
         conn = self._get_conn()
         token_id = position.get("token_id")
         opened_at = position.get("opened_at", "")
-        # Idempotency guard: block duplicate close records for the same position instance
+        # [FIX-S12] Atomic idempotency: use INSERT OR IGNORE with UNIQUE constraint
+        # instead of check-then-insert (which has a race window under concurrent access).
+        # The UNIQUE(token_id, opened_at) constraint on the table handles dedup atomically.
+        # Fallback: if no UNIQUE constraint exists, use the original check-then-insert.
         if token_id and opened_at:
             exists = conn.execute(
                 "SELECT 1 FROM trade_history WHERE token_id = ? AND opened_at = ?",

@@ -175,14 +175,15 @@ def enrich_discovery_markets(
         if _api_calls_since_sleep >= 3:
             time.sleep(0.5)
             _api_calls_since_sleep = 0
-        evidence = build_weather_evidence_fn(city, date, forecast_temp)
-        evidence_valid = is_weather_evidence_valid_fn(evidence)
-
+        # [FIX-M-T3-3] Check forecast_temp BEFORE building evidence (was after)
         if forecast_temp is None:
             if city not in failed_city_keys:
                 failed_city_keys.add(city)
                 failed_cities.append(city)
             continue
+
+        evidence = build_weather_evidence_fn(city, date, forecast_temp)
+        evidence_valid = is_weather_evidence_valid_fn(evidence)
 
         # [ENSEMBLE] Fetch GFS 31-member ensemble forecast for probability weighting
         # Dedup: cache per city+date to avoid N API calls for N brackets of same event
@@ -245,6 +246,11 @@ def enrich_discovery_markets(
         market["ensemble_data"] = ensemble_data
 
         edge_result = calculate_edge_fn(market, forecast_temp, hours_until_resolve=market.get("hours_until_resolve"))
+        if not edge_result:
+            # [FIX-T3-3-HIGH] Log when edge calculation returns None — previously silent drop
+            logger.debug("[ENRICH] Edge calculation returned None for %s/%s — skipping", city, market.get("direction", "?"))
+            skipped_markets += 1
+            continue
         if edge_result:
             # Merge market metadata into edge result so downstream filters/entry have full context
             enriched_item = {**market, **edge_result}
@@ -666,8 +672,9 @@ def run_paper_trading_cycle(
 
     # [EXECUTION BRIDGE] Monitor pending orders before position management
     from market_discovery_internal.config import LIVE_TRADING_ENABLED as _LIVE_ENABLED
+    _monitor_closed_positions = []
     if _LIVE_ENABLED and exchange is not None:
-        monitor_pending_orders(state, exchange, close_paper_position_fn=close_paper_position_fn)
+        _monitor_closed_positions = monitor_pending_orders(state, exchange, close_paper_position_fn=close_paper_position_fn) or []
 
     position_management_started = perf_counter_fn()
     haiku_monitor_calls = 0
@@ -686,11 +693,22 @@ def run_paper_trading_cycle(
         token_id = position.get("token_id")
         live_market = market_by_token.get(token_id)
 
+        # [FIX-C2] When live_market is None (market fell outside golden window,
+        # e.g. <4h from resolve), we MUST still evaluate the position for exits.
+        # Without this, positions approaching resolution are invisible to the
+        # main cycle — late-window, thesis decay, and hold-to-resolve never fire.
+        # We use an empty dict so CLOB quote and position's end_date provide data.
+        _live_market_missing = not live_market
         if not live_market:
-            next_open_positions.append(position)
-            continue
+            live_market = {}
 
-        quote = _get_orderbook_quote(token_id)
+        # [FIX-C2] Skip expensive CLOB call when live_market is missing AND position
+        # has last_price — use last_price directly for exit evaluation.
+        # This avoids consuming CLOB API quota for markets no longer in discovery.
+        if _live_market_missing:
+            quote = None
+        else:
+            quote = _get_orderbook_quote(token_id)
         # [FIX] fetch_orderbook_quote returns {"bid": X, "ask": Y} keys,
         # not "best_bid"/"best_ask". Dual-key lookup matches entry path (line 2376).
         raw_bid = (quote or {}).get("bid") or (quote or {}).get("best_bid")
@@ -751,6 +769,9 @@ def run_paper_trading_cycle(
             continue
 
         hours_until_resolve = live_market.get("hours_until_resolve")
+        # [FIX-C2] Fallback: compute from position's end_date when discovery data is missing
+        if hours_until_resolve is None:
+            hours_until_resolve = _hours_until_resolve_from_end_date(position.get("end_date"), now_utc=now_dt)
 
         monitor_result = None
         if callable(haiku_position_monitor_fn):
@@ -857,8 +878,9 @@ def run_paper_trading_cycle(
                     )
                     if sell_result.get("success"):
                         fill_price = book["best_bid"]
+                        # [FIX-H5] Use updated_position (has peak_price, partial_tp, raised SL)
                         updated_position = close_paper_position_fn(
-                            position=position, exit_price=fill_price,
+                            position=updated_position, exit_price=fill_price,
                             reason=exit_reason, now_utc=now_dt,
                         )
                     else:
@@ -878,7 +900,7 @@ def run_paper_trading_cycle(
                         )
                         if sell_result.get("success"):
                             # Convert to pending_exit — don't close yet
-                            updated_position = {**position}  # Reset to pre-close state
+                            updated_position = {**updated_position}  # [FIX-H5] Preserve updates
                             updated_position["status"] = "pending_exit"
                             updated_position["pending_exit_order_id"] = sell_result["order_id"]
                             updated_position["pending_exit_reason"] = exit_reason
@@ -896,8 +918,9 @@ def run_paper_trading_cycle(
                                 )
                                 if taker_result.get("success"):
                                     fill_price = book["best_bid"]
+                                    # [FIX-H5] Use updated_position
                                     updated_position = close_paper_position_fn(
-                                        position=position, exit_price=fill_price,
+                                        position=updated_position, exit_price=fill_price,
                                         reason=exit_reason, now_utc=now_dt,
                                     )
 
@@ -966,6 +989,10 @@ def run_paper_trading_cycle(
             next_open_positions.append(updated_position)
     position_management_ms = elapsed_ms_fn(position_management_started)
 
+    # [FIX-H4] Include positions closed by order monitor in cycle metrics
+    if _monitor_closed_positions:
+        closed_this_cycle.extend(_monitor_closed_positions)
+
     min_bound = paper_entry_min_price if min_price is None else float(min_price)
     max_bound = paper_entry_max_price if max_price is None else float(max_price)
 
@@ -1002,7 +1029,10 @@ def run_paper_trading_cycle(
             
             age_hours = (_now_ts_whiplash - closed_dt.timestamp()) / 3600.0
             if age_hours <= WHIPLASH_COOLDOWN_HOURS:
-                reason = str(h_pos.get("reason", "") or h_pos.get("close_reason", "")).lower()
+                # [FIX-M2] Check close_reason FIRST (authoritative), then fallback to reason.
+                # Previous code: `get("reason", "") or get("close_reason", "")` could
+                # short-circuit on a non-matching "reason" value, skipping close_reason.
+                reason = str(h_pos.get("close_reason", "") or h_pos.get("reason", "")).lower()
                 # Blacklist if closed by AI monitor or Stop Loss (to prevent immediate whiplash)
                 if any(r in reason for r in ["haiku_monitor_exit", "stop_loss", "broken_thesis"]):
                     token_id = str(h_pos.get("token_id"))
@@ -1580,7 +1610,10 @@ def monitor_pending_orders(state, exchange, close_paper_position_fn=None):
     )
 
     if exchange is None or not getattr(exchange, 'available', False):
-        return
+        return []
+
+    # [FIX-H4] Track positions closed by order monitor for cycle metrics + Telegram
+    _monitor_closed = []
 
     positions = state.get("positions", [])
     state_meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
@@ -1778,17 +1811,28 @@ def monitor_pending_orders(state, exchange, close_paper_position_fn=None):
                             token_id, float(pos.get("quantity", 0)),
                             worst_price, book["tick_size"], book["neg_risk"],
                         )
-                        fill_price = float(book["best_bid"])
-                        exit_reason = pos.get("pending_exit_reason", "taker_fallback_max_retries")
-                        closed = close_paper_position_fn(
-                            position=pos, exit_price=fill_price,
-                            reason=exit_reason, now_utc=now,
-                        )
-                        state.setdefault("history", []).append(closed)
-                        net_exit = float(closed.get("net_exit_value", closed.get("exit_value", 0.0)))
-                        state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + net_exit, 4)
-                        pos["status"] = "closed"
-                        logger.warning("[ORDER-MONITOR] Max retries for %s — taker fallback", pos.get("city", "?"))
+                        # [FIX-C3] Check taker sell result before closing position.
+                        # Without this, a failed taker sell creates a phantom close —
+                        # bot thinks it sold but shares are still on-chain.
+                        if not taker_result or not taker_result.get("success"):
+                            logger.error("[ORDER-MONITOR] Taker fallback FAILED for %s: %s — reverting to open",
+                                         pos.get("city", "?"), (taker_result or {}).get("reason", "unknown"))
+                            pos["status"] = "open"
+                            for _k in ["pending_exit_order_id", "pending_exit_reason",
+                                        "pending_exit_retry_count", "pending_exit_placed_at"]:
+                                pos.pop(_k, None)
+                        else:
+                            fill_price = float(book["best_bid"])
+                            exit_reason = pos.get("pending_exit_reason", "taker_fallback_max_retries")
+                            closed = close_paper_position_fn(
+                                position=pos, exit_price=fill_price,
+                                reason=exit_reason, now_utc=now,
+                            )
+                            state.setdefault("history", []).append(closed)
+                            net_exit = float(closed.get("net_exit_value", closed.get("exit_value", 0.0)))
+                            state_meta["cash"] = round(float(state_meta.get("cash", 0.0)) + net_exit, 4)
+                            pos["status"] = "closed"
+                            logger.warning("[ORDER-MONITOR] Max retries for %s — taker fallback", pos.get("city", "?"))
 
     # Remove cancelled/timed-out pending_entry positions (reverse order to preserve indices)
     for idx in sorted(to_remove, reverse=True):
@@ -1796,7 +1840,9 @@ def monitor_pending_orders(state, exchange, close_paper_position_fn=None):
         logger.info("[ORDER-MONITOR] Removed pending position: %s", removed.get("city", "?"))
 
     # Remove closed positions from the open list (they were already added to history above)
+    _monitor_closed.extend([p for p in positions if p.get("status") == "closed"])
     state["positions"] = [p for p in positions if p.get("status") != "closed"]
+    return _monitor_closed
 
 
 def build_paper_position(opportunity: dict[str, Any], stake_usd: float = PAPER_STAKE_USD, available_cash: float | None = None) -> dict[str, Any]:
@@ -1926,7 +1972,9 @@ def _position_confidence_score(position, current_yes_price, forecast_still_valid
 
     base_prob = position.get("entry_model_prob")
     if base_prob is None:
-        base_prob = 1.0
+        # [FIX-T3-6-HIGH] Default to 0.5 (uncertain), not 1.0 (maximum confidence).
+        # Previously, positions with missing prob data got score ~1.0, preventing exits.
+        base_prob = 0.5
     base_prob = max(0.0, min(float(base_prob), 1.0))
 
     current_price = max(0.0, min(float(current_yes_price), 1.0))
@@ -2002,6 +2050,7 @@ def evaluate_hybrid_exit(
         confidence_score = 1.0 if forecast_still_valid else 0.0
     confidence_score = max(0.0, min(float(confidence_score), 1.0))
     strategy = position.get("target_strategy", "swing")
+    direction = position.get("direction", "")
 
     # [PACK D] Track peak price for trailing stop
     peak_price = float(position.get("peak_price") or price)
@@ -2017,15 +2066,15 @@ def evaluate_hybrid_exit(
         partial_tp_triggered = True
         # (The updated peak and partial_tp_taken flag are returned in peak_updates)
 
-    # [PACK D] Trailing stop: trigger if price drops 15% from peak AND peak was 20%+ profitable
-    # AND price is back at or below entry — avoids premature exit on normal market oscillation.
-    # Regular stop_loss handles downside below entry independently.
+    # [PACK D] Trailing stop: trigger if price drops 15% from peak AND peak was 20%+ profitable.
+    # [FIX-H2] Removed `price <= entry_price` condition which made trailing stop dead code —
+    # it required price to drop all the way back to entry, which regular SL already handles.
+    # Now triggers on retrace from peak regardless of entry price, protecting profits.
     _TRAILING_TRIGGER = TRAILING_STOP_TRIGGER   # position must have been 20%+ profitable to arm trailing stop
     _TRAILING_PCT = TRAILING_STOP_DISTANCE       # retrace 15% from peak triggers the stop
     if (entry_price > 0
             and updated_peak >= entry_price * _TRAILING_TRIGGER
-            and price < updated_peak * (1.0 - _TRAILING_PCT)
-            and price <= entry_price):
+            and price < updated_peak * (1.0 - _TRAILING_PCT)):
         return {
             "action": "sell",
             "reason": "trailing_stop",

@@ -75,7 +75,7 @@ from market_discovery_internal.config import (
     DISCOVERY_FORECAST_PREFETCH_MIN_KEYS, DISCOVERY_FORECAST_PREFETCH_MAX_WORKERS,
     PAPER_POSITION_FORECAST_PREFETCH_MIN_KEYS, PAPER_POSITION_FORECAST_PREFETCH_MAX_WORKERS,
     HAIKU_MONITOR_MIN_CONFIDENCE_TO_EXIT, THRESHOLD_RE, WEATHER_CONTEXT_RE,
-    DIRECTION_CANDIDATE_RE, WS_STALE_DETECTION_MINUTES
+    DIRECTION_CANDIDATE_RE, WS_STALE_DETECTION_MINUTES, PENNY_BID_THRESHOLD
 )
 from market_discovery_internal.utils import (
     fetch_with_retry, _safe_float, _safe_div, _clamp, _parse_iso_utc,
@@ -429,8 +429,8 @@ def _start_background_services():
                 if token_id == "__ws_heartbeat__":
                     continue
                 
-                # Update UI (filter penny bids — $0.01 market-maker placeholders)
-                if _ws_broadcaster and price > 0.01:
+                # Update UI (filter penny bids — market-maker placeholders)
+                if _ws_broadcaster and price > PENNY_BID_THRESHOLD:
                     _ws_broadcaster.broadcast_price(token_id, price)
                 
                 # Check Exits (Atomic)

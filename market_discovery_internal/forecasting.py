@@ -57,9 +57,14 @@ def fetch_noaa_metar(icao: str) -> Optional[float]:
         import requests as _requests
         resp = _requests.get(NOAA_METAR_API, params=params, timeout=8)
         if not resp or resp.status_code != 200:
+            # [FIX-M-T2-7a] Cache non-200 responses to prevent repeated API hammering
+            with _METAR_CACHE_LOCK:
+                _METAR_CACHE[icao] = (None, time.time())
             return None
         data = resp.json()
         if not data or not isinstance(data, list) or len(data) == 0:
+            with _METAR_CACHE_LOCK:
+                _METAR_CACHE[icao] = (None, time.time())
             return None
         # METAR data: temp field (already in Celsius)
         latest = data[0]
@@ -77,7 +82,8 @@ def fetch_noaa_metar(icao: str) -> Optional[float]:
                     logger.warning("[NOAA] METAR %s: observation %.0f min old — too stale, skipping", icao, obs_age_s / 60)
                     return None
             except Exception:
-                pass  # Can't parse time — proceed with caution
+                # [FIX-M-T2-7b] Log warning instead of silent pass — stale data risk
+                logger.warning("[NOAA] METAR %s: could not parse observation time — proceeding with caution", icao)
         temp_c = latest.get("temp")
         if temp_c is None:
             # Try parsing from rawOb
@@ -207,7 +213,8 @@ def fetch_ensemble_forecast(city: str, date: str, lat: float, lon: float,
 
     # Calculate ensemble probability based on direction
     if direction == "above":
-        count = sum(1 for m in all_members if m > threshold_c)
+        # [FIX-M-T2-8a] Use >= for "above" (consistent with "below" using <=)
+        count = sum(1 for m in all_members if m >= threshold_c)
         ensemble_prob = count / len(all_members)
     elif direction == "below":
         count = sum(1 for m in all_members if m <= threshold_c)
@@ -376,7 +383,8 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None,
     cached = db.get_cached_forecast(city, date) if temp_type == "max" else None
     if cached:
         # Re-fetch historical avg for the full ForecastTemp object
-        hist_avg = _fetch_historical_average(city, date)
+        # [FIX-M5] Pass temp_type to get correct historical avg (max vs min)
+        hist_avg = _fetch_historical_average(city, date, temp_type=temp_type)
         _src = cached['source']
         if not _src.endswith(" (cache)"):
             _src += " (cache)"
@@ -605,7 +613,9 @@ def position_to_market(position, current_yes_price, hours_until_resolve):
 # Negative cache: stores (None, expiry_timestamp) for failed fetches to avoid repeated API calls.
 _NEGATIVE_CACHE = {}
 _NEGATIVE_CACHE_LOCK = threading.Lock()
-_NEGATIVE_CACHE_TTL_SECONDS = 300  # 5 minutes
+# [FIX-M-T6-4a] Reduced from 300s to 120s — 5 min suppression was too long
+# for transient API failures, blocking cities for ~5 missed cycles
+_NEGATIVE_CACHE_TTL_SECONDS = 120  # 2 minutes
 
 def fetch_forecast_with_cache(city: str, date: str, cache: dict[str, Any], stats: Optional[dict[str, int]] = None, *, fetch_forecast_fn: Any, icao_override: Optional[str] = None, temp_type: str = "max") -> Optional[ForecastTemp]:
     """Fetch forecast with per-cycle cache for successful city/date lookups.

@@ -58,9 +58,13 @@ def build_weather_evidence(city: str, date: str, forecast_temp_c: Optional[float
 
     if forecast_temp_c is not None:
         age_component = max(0, 1.0 - (evidence["age_hours"] / 72.0))
-        if source == "dual-source":
+        # [FIX-H3] Use substring matching for source quality scoring.
+        # Actual sources include "verified-triple-source", "verified-dual-source",
+        # "verified-dual-source (METAR)", "open-meteo (bulk)", etc.
+        _src = str(source).lower()
+        if "triple" in _src or "dual" in _src:
             source_component = 0.95
-        elif source == "open-meteo":
+        elif "open-meteo" in _src:
             source_component = 0.85
         else:
             source_component = 0.70

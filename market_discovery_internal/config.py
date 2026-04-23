@@ -191,7 +191,9 @@ THRESHOLD_PATTERN = r"(\d+(?:\.\d+)?)\s*(?:degrees?\s*)?(?:°\s*)?([FC])?\b"
 RANGE_THRESHOLD_PATTERN = r"(?:between\s+)?(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*(?:degrees?\s*)?(?:°\s*)?([FC])?\b"
 
 # Direction hints
-EXACT_KEYWORDS = r"\b(exact(?:ly)?|equal(?:s| to)?|at exactly|precisely|on the dot)\b"
+# [FIX-M-T6-2] "equal or exceed/above" should be "above", not "exact".
+# Use negative lookahead to exclude "equal" when followed by "or above/exceed/more".
+EXACT_KEYWORDS = r"\b(exact(?:ly)?|equal(?:s| to)?(?!\s+or\s+(?:above|exceed|more|higher))|at exactly|precisely|on the dot)\b"
 ABOVE_KEYWORDS = r"\bor higher\b|\bor above\b|\bor more\b|\bat least\b|\b(above|over|exceed|reach|hit)\b"
 BELOW_KEYWORDS = r"\bor lower\b|\bor below\b|\bor less\b|\bat most\b|\b(below|under|less than|cooler than|drop below|stay under)\b"
 WEATHER_CONTEXT_PATTERN = r"\b(weather|forecast|temperature|temp|degrees?|rain|snow|humidity|hot|cold|heat|chill|high|low)\b"
@@ -599,9 +601,15 @@ SIGMA_FOUR_SEASON = float(os.getenv("SIGMA_FOUR_SEASON", "2.0"))
 SIGMA_DEFAULT = float(os.getenv("SIGMA_DEFAULT", "1.5"))
 
 # City climate classification
-TROPICAL_CITIES = {"singapore", "hong kong", "lucknow", "shenzhen", "taipei", "miami"}
+# [FIX-M-T6-3a] Expanded city classification — previously 13 of 31 cities were unclassified
+TROPICAL_CITIES = {"singapore", "hong kong", "lucknow", "shenzhen", "taipei", "miami",
+                   "los angeles", "san francisco"}  # Mediterranean/mild year-round
 FOUR_SEASON_CITIES = {"new york city", "chicago", "london", "toronto", "seoul", "beijing",
-                       "denver", "warsaw", "shanghai", "chengdu", "chongqing", "wuhan"}
+                       "denver", "warsaw", "shanghai", "chengdu", "chongqing", "wuhan",
+                       "paris", "milan", "madrid", "ankara", "houston", "dallas",
+                       "atlanta", "austin", "buenos aires", "sao paulo", "sydney", "tokyo"}
+# Southern Hemisphere cities (seasons inverted — July=winter, January=summer)
+SOUTHERN_HEMISPHERE_CITIES = {"buenos aires", "sao paulo", "sydney"}
 
 # Seasonal sigma multipliers for 4-season cities (month number → multiplier).
 # Spring/fall transitions have higher forecast uncertainty; summer is more stable.

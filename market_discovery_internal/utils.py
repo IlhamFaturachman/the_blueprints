@@ -5,6 +5,7 @@ import time
 import json
 import os
 import string
+import threading
 from datetime import datetime, timezone
 import requests
 
@@ -88,15 +89,17 @@ def send_telegram_alert(message, is_html=True, bypass_dedup=False):
             return False
 
         # [DEDUP] Suppress identical/near-identical messages within window
+        _dedup_key = None
         if not bypass_dedup:
-            dedup_key = _telegram_dedup_key(message)
-            last_sent_at = rl["last_sent"].get(dedup_key, 0.0)
+            _dedup_key = _telegram_dedup_key(message)
+            last_sent_at = rl["last_sent"].get(_dedup_key, 0.0)
             if now - last_sent_at < _TELEGRAM_DEDUP_WINDOW_SECONDS:
-                logger.debug("[TELEGRAM] Dedup suppressed (key=%s, age=%.0fs)", dedup_key, now - last_sent_at)
+                logger.debug("[TELEGRAM] Dedup suppressed (key=%s, age=%.0fs)", _dedup_key, now - last_sent_at)
                 return True  # Return True so callers don't think it failed
             # Cleanup old entries (keep dict small)
             rl["last_sent"] = {k: v for k, v in rl["last_sent"].items() if now - v < _TELEGRAM_DEDUP_WINDOW_SECONDS}
-            rl["last_sent"][dedup_key] = now
+            # [FIX-S3] Do NOT record dedup key here — record AFTER successful send.
+            # Previously, failed sends poisoned the dedup cache, suppressing retries for 5 min.
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -124,6 +127,9 @@ def send_telegram_alert(message, is_html=True, bypass_dedup=False):
         with _telegram_lock:
             _telegram_consecutive_failures = 0
             rl["window_count"] += 1
+            # [FIX-S3] Record dedup key AFTER successful send (not before)
+            if _dedup_key:
+                rl["last_sent"][_dedup_key] = time.time()
         return True
     except Exception as e:
         with _telegram_lock:
@@ -153,10 +159,12 @@ def fetch_with_retry(url, params=None, headers=None, max_retries=3, fail_fast_on
                     raise requests.HTTPError(f"429 Client Error: Too Many Requests (Fail-Fast) for url: {url}", response=response)
                 
                 # Default backoff behavior (for non-weather or aggregated calls)
-                backoff = 30 * (2 ** attempt)
-                print(f"[RETRY] Rate limit hit (429). Cooling down for {backoff}s before retry {attempt+1}/{max_retries}...")
                 last_error = requests.HTTPError(f"429 Client Error: Too Many Requests for url: {url}", response=response)
-                time.sleep(backoff)
+                # [FIX-M-T3-5b] Skip sleep on final attempt — no retry follows
+                if attempt < max_retries - 1:
+                    backoff = 30 * (2 ** attempt)
+                    print(f"[RETRY] Rate limit hit (429). Cooling down for {backoff}s before retry {attempt+1}/{max_retries}...")
+                    time.sleep(backoff)
                 continue
             response.raise_for_status()
             return response.json()
@@ -228,3 +236,19 @@ def _save_json_blob(path, payload):
     except OSError:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+def send_telegram_alert_async(message, is_html=True, bypass_dedup=False):
+    """[FIX-S4] Non-blocking Telegram send — fires in a daemon thread.
+
+    Prevents Telegram API latency (5-10s timeout) from blocking the main
+    trading cycle. Critical alerts still go through; failures are logged.
+    """
+    t = threading.Thread(
+        target=send_telegram_alert,
+        args=(message,),
+        kwargs={"is_html": is_html, "bypass_dedup": bypass_dedup},
+        daemon=True,
+        name="TelegramAsync",
+    )
+    t.start()

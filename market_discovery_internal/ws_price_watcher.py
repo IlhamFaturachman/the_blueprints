@@ -427,45 +427,62 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None
                     target = float(pos.get("target_price", 1))
                     strategy = pos.get("target_strategy", "swing")
 
+                    # [FIX-T2-6-CRIT] Track max-delay timer BEFORE L1 check.
+                    # Previously, L1's `continue` fired before _sl_first_below_at was set,
+                    # creating a deadlock where genuine >40% crashes could never be closed.
+                    # The max-delay safety net must work independently of flash crash shield.
+                    reason = None
+                    if bid_price <= stop:
+                        if token_id not in _sl_first_below_at:
+                            _sl_first_below_at[token_id] = time.time()
+                        # Check max delay FIRST — force-close regardless of L1/L2/L3/L4
+                        _below_since = _sl_first_below_at.get(token_id)
+                        if _below_since and (time.time() - _below_since) >= SL_MAX_DELAY_SECONDS:
+                            reason = "stop_loss"
+                            _sl_tick_counters.pop(token_id, None)
+                            _sl_first_below_at.pop(token_id, None)
+                            logger.warning(
+                                "[FLASH-SHIELD] MAX-DELAY: %s below SL for %.0fs — force-closing.",
+                                pos.get('city', '?'), time.time() - _below_since,
+                            )
+                    else:
+                        # Price recovered above SL — reset max-delay timer
+                        _sl_first_below_at.pop(token_id, None)
+
                     # ---------------------------------------------------
                     # L1: Spike Detector — ignore single-tick flash crashes
                     # Escape hatch: if L2 tick counter already has 10+ ticks
                     # spanning 5+ minutes, this is NOT a spike — it's a real
                     # price movement. Allow it through.
                     # ---------------------------------------------------
-                    last_good = _last_good_prices.get(token_id)
-                    if last_good is not None and last_good > 0:
-                        drop_pct = (last_good - bid_price) / last_good
-                        if drop_pct > FLASH_CRASH_MAX_DROP_PCT:
-                            # Check escape hatch: has L2 accumulated enough evidence?
-                            _existing_l2 = _sl_tick_counters.get(token_id)
-                            _l1_override = False
-                            if _existing_l2:
-                                _l2_count, _l2_first = _existing_l2
-                                _l2_elapsed = time.time() - _l2_first
-                                if _l2_count >= 10 and _l2_elapsed >= FLASH_CRASH_L1_ESCAPE_SECONDS:
-                                    # 10+ ticks over escape threshold — this is real, not a spike
-                                    _l1_override = True
+                    if reason is None:  # Skip L1 if max-delay already triggered
+                        last_good = _last_good_prices.get(token_id)
+                        if last_good is not None and last_good > 0:
+                            drop_pct = (last_good - bid_price) / last_good
+                            if drop_pct > FLASH_CRASH_MAX_DROP_PCT:
+                                _existing_l2 = _sl_tick_counters.get(token_id)
+                                _l1_override = False
+                                if _existing_l2:
+                                    _l2_count, _l2_first = _existing_l2
+                                    _l2_elapsed = time.time() - _l2_first
+                                    if _l2_count >= 10 and _l2_elapsed >= FLASH_CRASH_L1_ESCAPE_SECONDS:
+                                        _l1_override = True
+                                        logger.warning(
+                                            "[FLASH-SHIELD] L1: Override — %d ticks over %.0fs for %s. Allowing through.",
+                                            _l2_count, _l2_elapsed, pos.get('city', '?'),
+                                        )
+                                if not _l1_override:
                                     logger.warning(
-                                        "[FLASH-SHIELD] L1: Override — %d ticks over %.0fs for %s. Allowing through.",
-                                        _l2_count, _l2_elapsed, pos.get('city', '?'),
+                                        "[FLASH-SHIELD] L1: Spike detected for %s: %.4f -> %.4f (%.0f%% drop). IGNORING.",
+                                        pos.get('city', '?'), last_good, bid_price, drop_pct * 100,
                                     )
-                            if not _l1_override:
-                                logger.warning(
-                                    "[FLASH-SHIELD] L1: Spike detected for %s: %.4f -> %.4f (%.0f%% drop). IGNORING.",
-                                    pos.get('city', '?'), last_good, bid_price, drop_pct * 100,
-                                )
-                                continue  # Skip this position entirely for this tick
+                                    continue  # Skip this position entirely for this tick
 
                     # Update last known good price (only for non-penny bids)
                     if bid_price > PENNY_BID_THRESHOLD:
                         _last_good_prices[token_id] = bid_price
 
-                    reason = None
-                    if bid_price <= stop:
-                        # [P5-FIX] Track first time below SL for max delay timer
-                        if token_id not in _sl_first_below_at:
-                            _sl_first_below_at[token_id] = time.time()
+                    if bid_price <= stop and reason is None:
 
                         # [AUDIT] Fix B: cooldown for price-based Stop Loss
                         # This prevents "noise" exits during the initial spread friction.
@@ -483,13 +500,8 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None
                             except (ValueError, TypeError):
                                 pass
 
-                        # [P5-FIX] Max SL delay: force-close if below SL for too long
-                        # Safety net for thin markets where flash crash shield blocks legitimate SL
-                        _below_since = _sl_first_below_at.get(token_id)
-                        if _below_since and (time.time() - _below_since) >= SL_MAX_DELAY_SECONDS:
-                            reason = "stop_loss"
-                            _sl_tick_counters.pop(token_id, None)
-                            _sl_first_below_at.pop(token_id, None)
+                        # [FIX-T2-6-CRIT] Max-delay timer moved ABOVE L1 check.
+                        # It now fires independently of flash crash shield.
                             logger.warning(
                                 "[FLASH-SHIELD] MAX-DELAY: %s below SL for %.0fs — force-closing.",
                                 pos.get('city', '?'), time.time() - _below_since,

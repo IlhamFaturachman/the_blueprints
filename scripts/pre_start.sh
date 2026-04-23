@@ -11,9 +11,10 @@ BK_DIR="$DB_DIR/backups"
 echo "[PRE-START $(date +'%H:%M:%S.%N')] Starting high-resilience pre-flight checks."
 
 # 1. Neutralize Ghost Processes (Anti-Stall)
+# [FIX-M-T4-1] Use more specific patterns to avoid killing unrelated processes
 echo "[PRE-START] Purging ghost discovery and warmer processes..."
-pkill -9 -f "market_discovery" 2>/dev/null
-pkill -9 -f "warmer.py" 2>/dev/null
+pkill -9 -f "python.*market_discovery" 2>/dev/null
+pkill -9 -f "python.*warmer\.py" 2>/dev/null
 pkill -9 -f "PriceWatcherProcess" 2>/dev/null
 
 if [ -f "$PF" ]; then
@@ -26,21 +27,27 @@ if [ -f "$PF" ]; then
     rm -f "$PF"
 fi
 
-# 2. SQLite Stale Lock Cleanup (Corruption Shield)
-# If the bot crashed, stale shared memory or write-ahead logs can block the new instance.
-echo "[PRE-START] Clearing any stale database locks..."
-rm -f "$DB_DIR"/*.db-shm 2>/dev/null
-rm -f "$DB_DIR"/*.db-wal 2>/dev/null
-
-# 3. Database Integrity Backup
+# 2. Database Integrity Backup (BEFORE any WAL operations)
+# [FIX-T4-1-HIGH] Backup FIRST, then checkpoint WAL safely.
+# Previously: rm -f *.db-wal deleted committed transactions after crash.
 if [ -f "$DB_FILE" ]; then
     mkdir -p "$BK_DIR"
     TS=$(date +'%Y%m%d_%H%M%S')
     echo "[PRE-START] Backing up database to $BK_DIR/blueprints_backup_$TS.db"
     cp "$DB_FILE" "$BK_DIR/blueprints_backup_$TS.db"
+    # Also backup WAL if it exists (contains committed data)
+    [ -f "$DB_FILE-wal" ] && cp "$DB_FILE-wal" "$BK_DIR/blueprints_backup_${TS}.db-wal"
     # Keep last 7 days of backups
-    find "$BK_DIR" -name "blueprints_backup_*.db" -mtime +7 -delete
+    find "$BK_DIR" -name "blueprints_backup_*" -mtime +7 -delete
 fi
+
+# 3. SQLite WAL Recovery (Corruption Shield)
+# [FIX-T4-1-HIGH] Checkpoint WAL safely instead of deleting it.
+# WAL may contain committed transactions not yet merged into main DB.
+echo "[PRE-START] Checkpointing SQLite WAL..."
+sqlite3 "$DB_FILE" "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+# Only remove shm (shared memory) — it's recreated on connect
+rm -f "$DB_DIR"/*.db-shm 2>/dev/null
 
 echo "[PRE-START $(date +'%H:%M:%S.%N')] Environment PRISTINE. Proceeding to startup."
 exit 0

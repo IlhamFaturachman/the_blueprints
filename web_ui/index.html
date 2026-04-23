@@ -405,7 +405,10 @@ function getCloseReasonDisplay(reason){
     if(/take_profit_100pct/.test(r)){pc='pill-green';label='TAKE PROFIT';detail='Target price reached'}
     else if(/sniper_take_profit/.test(r)){pc='pill-green';label='SNIPER TP';detail='Price surged above $0.90'}
     else if(/sniper_stop_loss_thesis_broken/.test(r)){pc='pill-red';label='THESIS BROKEN';detail='Forecast no longer supports position'}
+    else if(/taker_fallback/.test(r)){pc='pill-yellow';label='TAKER FALLBACK';detail='Maker sell failed, taker used'}
+    else if(/maker_sell_filled/.test(r)){pc='pill-green';label='MAKER FILLED';detail='Maker sell order filled'}
     else if(/stop_loss/.test(r)){pc='pill-red';label='STOP LOSS';detail='Price dropped below stop-loss'}
+    else if(/late_window/.test(r)){pc='pill-blue';label='LATE WINDOW';detail='Exited in final hours before resolve'}
     else if(/hold_to_resolve|resolve/.test(r)){pc='pill-blue';label='RESOLVED';detail='Held until resolution'}
     else if(/haiku_monitor_exit|haiku|ai|monitor/.test(r)){pc='pill-yellow';label='AI EXIT';detail='AI recommended exit'}
     else if(/broken_thesis|thesis_decay/.test(r)){pc='pill-yellow';label='BROKEN THESIS';detail='Forecast invalidated'}

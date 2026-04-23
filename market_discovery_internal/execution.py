@@ -216,6 +216,10 @@ class BlueprintsExchange:
         """
         if not self.available:
             return {"success": False, "reason": "exchange_unavailable"}
+        # [FIX-H1] Block orders when heartbeat is dead — exchange may auto-cancel
+        if not self.heartbeat_healthy:
+            logger.warning("[EXCHANGE] Heartbeat unhealthy — blocking maker buy for %s", token_id)
+            return {"success": False, "reason": "heartbeat_dead"}
         try:
             order_args = OrderArgs(
                 token_id=str(token_id),
@@ -264,6 +268,9 @@ class BlueprintsExchange:
         """
         if not self.available:
             return {"success": False, "reason": "exchange_unavailable"}
+        if not self.heartbeat_healthy:
+            logger.warning("[EXCHANGE] Heartbeat unhealthy — blocking taker buy for %s", token_id)
+            return {"success": False, "reason": "heartbeat_dead"}
         try:
             order_args = MarketOrderArgs(
                 token_id=str(token_id),
@@ -302,6 +309,9 @@ class BlueprintsExchange:
         """
         if not self.available:
             return {"success": False, "reason": "exchange_unavailable"}
+        if not self.heartbeat_healthy:
+            logger.warning("[EXCHANGE] Heartbeat unhealthy — blocking maker sell for %s", token_id)
+            return {"success": False, "reason": "heartbeat_dead"}
         try:
             order_args = OrderArgs(
                 token_id=str(token_id),
@@ -347,6 +357,9 @@ class BlueprintsExchange:
         """
         if not self.available:
             return {"success": False, "reason": "exchange_unavailable"}
+        if not self.heartbeat_healthy:
+            logger.warning("[EXCHANGE] Heartbeat unhealthy — blocking taker sell for %s", token_id)
+            return {"success": False, "reason": "heartbeat_dead"}
         try:
             order_args = MarketOrderArgs(
                 token_id=str(token_id),

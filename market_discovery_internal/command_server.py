@@ -36,11 +36,9 @@ class _CommandHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return False
 
-        # Accept token via X-Kill-Token header or ?token= query parameter
+        # [FIX-S6] Accept token ONLY via X-Kill-Token header (not query param).
+        # Query params are logged in web server access logs and browser history.
         token = self.headers.get("X-Kill-Token", "")
-        if not token:
-            qs = parse_qs(urlparse(self.path).query)
-            token = qs.get("token", [""])[0]
 
         if token != _KILL_API_TOKEN:
             _logger.warning("AUTH FAILED from %s on %s", self.client_address[0], self.path)
@@ -90,6 +88,14 @@ class _CommandHandler(BaseHTTPRequestHandler):
             try:
                 from market_discovery_internal.state_persistence import load_paper_state
                 state = load_paper_state()
+                # [FIX-S7] Strip sensitive trading strategy fields from public API.
+                # Prevents front-running if VPS is misconfigured or nginx bypassed.
+                _sensitive_keys = {"stop_loss_price", "target_price", "target_price_high",
+                                   "target_price_low", "entry_confidence_score", "entry_edge",
+                                   "entry_model_prob", "raw_prob", "risk_multiplier"}
+                for _p in state.get("positions", []):
+                    for _sk in _sensitive_keys:
+                        _p.pop(_sk, None)
                 body = json.dumps(state, default=str).encode()
                 self._send_cors_headers(200)
                 self.send_header("Content-Type", "application/json")
@@ -136,10 +142,18 @@ class _CommandHandler(BaseHTTPRequestHandler):
 
     def _send_cors_headers(self, code):
         self.send_response(code)
-        # Validate Origin against allowed patterns (dashboard on port 8080)
+        # [FIX-S5] Strict CORS: only allow configured origin or exact VPS dashboard URL.
+        # Previous code allowed ANY origin containing ":8080" (e.g., https://evil.com:8080).
         origin = self.headers.get("Origin", "")
-        # Allow: configured origin, or same-host on port 8080 (dashboard)
-        if origin == _CORS_ORIGIN or (origin and ":8080" in origin):
+        _allowed = {_CORS_ORIGIN}
+        # Also allow the VPS IP on port 8080 (dashboard)
+        if _CORS_ORIGIN:
+            from urllib.parse import urlparse as _urlparse
+            _parsed = _urlparse(_CORS_ORIGIN)
+            if _parsed.hostname:
+                _allowed.add(f"http://{_parsed.hostname}:8080")
+                _allowed.add(f"https://{_parsed.hostname}:8080")
+        if origin in _allowed:
             self.send_header("Access-Control-Allow-Origin", origin)
         else:
             self.send_header("Access-Control-Allow-Origin", _CORS_ORIGIN)

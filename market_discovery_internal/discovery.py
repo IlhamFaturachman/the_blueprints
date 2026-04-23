@@ -55,7 +55,11 @@ def fetch_markets(inspect=False, aggressive_scan=False):
             logger.info("--- Event %d: %s ---", i, event.get('title', ''))
             for j, market in enumerate(event.get("markets", [])[:3], 1):
                 logger.info("  Market %d:\n%s", j, json.dumps(market, indent=4, default=str))
-        sys.exit(0)
+        # [FIX-T3-4-HIGH] Return empty result instead of sys.exit(0).
+        # sys.exit raises SystemExit which bypasses except Exception in the main loop,
+        # killing the process without cleanup (WS, exchange, PID lock).
+        return {"markets_raw": events, "parsed": [], "enriched": [], "opportunities": [],
+                "failed_cities": [], "skipped_markets": 0, "exact_skipped": 0}
 
     markets = _events_to_markets(events, reset_family_cache=True)
     candidates = [m for m in markets if _is_temperature_market_candidate(m)]

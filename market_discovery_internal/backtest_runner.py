@@ -3,10 +3,17 @@
 Replays recently-resolved Polymarket weather markets against the Blueprints
 strategy to validate edge calculation, win rate, and simulated PnL.
 
+⚠️ IMPORTANT: PERFECT-INFORMATION BACKTEST (LOOKAHEAD BIAS)
+This backtest uses ACTUAL OBSERVED temperatures from Open-Meteo's historical
+archive, NOT forecasts that would have been available at entry time. This means:
+- Win rate and PnL are systematically OVERSTATED
+- Results should NOT be used for strategy tuning or live-trading decisions
+- Use only for directional validation ("does the model pick the right side?")
+
 Strategy:
   1. Fetch resolved weather markets from last N days via Gamma API.
   2. For each market, reconstruct what our model would have predicted at entry
-     (using historical Open-Meteo data for the target date).
+     (using historical Open-Meteo data — actual observed, not forecast).
   3. Compare model prediction vs actual outcome (outcomePrices).
   4. Report: markets_scanned, entered, wins, losses, win_rate, simulated_pnl.
 """

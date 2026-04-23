@@ -13,7 +13,7 @@ from market_discovery_internal.config import (
     NOAA_OVERRIDE_ENABLED, NOAA_OVERRIDE_WINDOW_HOURS,
     NOAA_OVERRIDE_CONFIRM_PROB, NOAA_OVERRIDE_CONTRADICT_PROB,
     SIGMA_TROPICAL, SIGMA_FOUR_SEASON, SIGMA_DEFAULT,
-    TROPICAL_CITIES, FOUR_SEASON_CITIES, SEASONAL_SIGMA_MULTIPLIERS,
+    TROPICAL_CITIES, FOUR_SEASON_CITIES, SOUTHERN_HEMISPHERE_CITIES, SEASONAL_SIGMA_MULTIPLIERS,
     ENSEMBLE_WEIGHT, POINT_FORECAST_WEIGHT, WTRIN_WEIGHT,
 )
 from market_discovery_internal.utils import (
@@ -70,7 +70,14 @@ def _compute_market_implied_prob(token_id):
         if not match: continue
 
         threshold = _safe_float(match.group(1))
-        unit = str(match.group(2)).upper()
+        # [FIX-T6-2-HIGH] Handle None unit — str(None).upper() produced "NONE",
+        # treating unitless F values as Celsius. Now infer unit from magnitude.
+        _unit_raw = match.group(2)
+        if _unit_raw:
+            unit = _unit_raw.upper()
+        else:
+            # Infer: values >= 60 are likely Fahrenheit (same heuristic as parsing.py)
+            unit = "F" if threshold >= 60 else "C"
         threshold_c = ((threshold - 32) * 5.0 / 9.0) if unit == "F" else threshold
         
         rows.append({
@@ -253,6 +260,10 @@ def _calibrated_prob(city, direction, horizon_bin, price_bin, raw_prob, min_samp
 
     prior_weight = float(min_samples)
     calibrated = (hits + raw_prob * prior_weight) / (total + prior_weight)
+    # [FIX-M-T2-1] Clamp max deviation to ±0.20 from raw_prob.
+    # Prevents sparse/noisy historical data from catastrophically overriding
+    # a correct model probability (e.g., 85% crushed to 25% by 2/20 bin).
+    calibrated = max(raw_prob - 0.20, min(raw_prob + 0.20, calibrated))
     calibrated = max(0.0, min(1.0, calibrated))
 
     avg_brier = round(brier_sum / total, 4) if total > 0 else None
@@ -333,6 +344,10 @@ def _get_city_sigma(city: str, date: str = None) -> float:
         if date and len(date) >= 7:
             try:
                 month = int(date[5:7])
+                # [FIX-M-T6-3b] Southern Hemisphere: invert seasons (offset by 6 months)
+                # July=winter in Buenos Aires/Sao Paulo/Sydney, not summer
+                if city_lower in SOUTHERN_HEMISPHERE_CITIES:
+                    month = ((month + 5) % 12) + 1
                 multiplier = SEASONAL_SIGMA_MULTIPLIERS.get(month, 1.0)
                 return round(base * multiplier, 3)
             except (ValueError, IndexError):
@@ -496,6 +511,7 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     # not the daily minimum. Comparing current temp vs daily-low threshold is unreliable.
     _temp_type = market.get("temp_type", "max")
     hours_left = float(hours_until_resolve) if hours_until_resolve is not None else 24.0
+    _noaa_override_fired = False  # [FIX-T2-4-HIGH] Track if NOAA override fired
     if NOAA_OVERRIDE_ENABLED and hours_left <= NOAA_OVERRIDE_WINDOW_HOURS and threshold is not None and _temp_type == "max":
         icao = market.get("icao_code") or ""
         if icao:
@@ -506,7 +522,8 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
                 # Price cap: don't override if market price > $0.80 (avoid overpaying)
                 _price_safe = price is not None and float(price) <= 0.80
                 if direction == "above" and _price_safe:
-                    if noaa_temp > threshold:
+                    # [FIX-T2-3-HIGH] Add 0.5°C margin for METAR measurement accuracy
+                    if noaa_temp > threshold + 0.5:
                         logger.info("[NOAA-OVERRIDE] %s: %.1f°C > %.1f°C threshold. Overriding prob to %.2f",
                                     city, noaa_temp, threshold, NOAA_OVERRIDE_CONFIRM_PROB)
                         raw_prob = max(raw_prob, NOAA_OVERRIDE_CONFIRM_PROB)
@@ -515,9 +532,13 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
                                     city, noaa_temp, threshold, hours_left, NOAA_OVERRIDE_CONTRADICT_PROB)
                         raw_prob = min(raw_prob, NOAA_OVERRIDE_CONTRADICT_PROB)
                 elif direction == "below" and _price_safe:
-                    if noaa_temp < threshold:
-                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C < %.1f°C threshold. Overriding prob to %.2f",
-                                    city, noaa_temp, threshold, NOAA_OVERRIDE_CONFIRM_PROB)
+                    # [FIX-T2-3-CRIT] "Below" confirm for max-temp markets: METAR reports
+                    # instantaneous temp, NOT the daily high. Current temp being below threshold
+                    # does NOT mean the daily high will stay below it — temp could still rise.
+                    # Only confirm when late in the day (<=2h) AND temp is well below threshold.
+                    if noaa_temp < threshold - 2.0 and hours_left <= 2.0:
+                        logger.info("[NOAA-OVERRIDE] %s: %.1f°C < %.1f°C threshold (margin 2°C, %.1fh left). Overriding prob to %.2f",
+                                    city, noaa_temp, threshold, hours_left, NOAA_OVERRIDE_CONFIRM_PROB)
                         raw_prob = max(raw_prob, NOAA_OVERRIDE_CONFIRM_PROB)
                     elif noaa_temp > threshold + 5.0 and hours_left <= 2.0:
                         logger.info("[NOAA-OVERRIDE] %s: %.1f°C >> %.1f°C with %.1fh left. Overriding prob to %.2f",
@@ -536,6 +557,12 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
                                     city, noaa_temp, _lower, _upper, hours_left, NOAA_OVERRIDE_CONTRADICT_PROB)
                         raw_prob = min(raw_prob, NOAA_OVERRIDE_CONTRADICT_PROB)
 
+    # [FIX-T2-4-HIGH] Detect if NOAA override changed raw_prob.
+    # When NOAA fires, it's based on real-time ground truth — don't let
+    # calibration and ensemble dilute it back toward model averages.
+    if raw_prob >= NOAA_OVERRIDE_CONFIRM_PROB or raw_prob <= NOAA_OVERRIDE_CONTRADICT_PROB:
+        _noaa_override_fired = True
+
     # [PACK A] Calibration bins
     _h = hours_until_resolve if hours_until_resolve is not None else market.get("hours_until_resolve")
     if _h is not None:
@@ -552,25 +579,29 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
     except (TypeError, ValueError):
         price_bin = 5
 
-    calibrated, calib_meta = _calibrated_prob(city, str(direction), horizon_bin, price_bin, raw_prob)
-    model_prob = calibrated  # Use calibrated for edge calculation
+    # [FIX-T2-4-HIGH] Skip calibration + ensemble when NOAA override fired.
+    # NOAA is real-time ground truth — don't dilute it with model averages.
+    if _noaa_override_fired:
+        model_prob = raw_prob
+        calib_meta = {"skipped": "noaa_override"}
+        ensemble_applied = False
+    else:
+        calibrated, calib_meta = _calibrated_prob(city, str(direction), horizon_bin, price_bin, raw_prob)
+        model_prob = calibrated  # Use calibrated for edge calculation
 
-    # [ENSEMBLE] Weighted merge with GFS ensemble probability if available
-    ensemble_data = market.get("ensemble_data")
-    ensemble_applied = False
-    if ensemble_data and isinstance(ensemble_data, dict) and ensemble_data.get("ensemble_prob") is not None:
-        try:
-            ensemble_prob = float(ensemble_data["ensemble_prob"])
-            # Weighted merge: ensemble probability + calibrated model probability.
-            # model_prob already blends Open-Meteo + wtr.in via consensus in forecasting.
-            # Use ENSEMBLE_WEIGHT for ensemble, remainder for model.
-            _ew = ENSEMBLE_WEIGHT  # default 0.45
-            _mw = 1.0 - _ew       # default 0.55
-            merged_prob = _ew * ensemble_prob + _mw * model_prob
-            model_prob = max(0.0, min(1.0, merged_prob))
-            ensemble_applied = True
-        except (TypeError, ValueError):
-            pass  # Fall back to model_prob without ensemble
+        # [ENSEMBLE] Weighted merge with GFS ensemble probability if available
+        ensemble_data = market.get("ensemble_data")
+        ensemble_applied = False
+        if ensemble_data and isinstance(ensemble_data, dict) and ensemble_data.get("ensemble_prob") is not None:
+            try:
+                ensemble_prob = max(0.0, min(1.0, float(ensemble_data["ensemble_prob"])))  # [FIX-L-T2-4] Clamp
+                _ew = ENSEMBLE_WEIGHT  # default 0.45
+                _mw = 1.0 - _ew       # default 0.55
+                merged_prob = _ew * ensemble_prob + _mw * model_prob
+                model_prob = max(0.0, min(1.0, merged_prob))
+                ensemble_applied = True
+            except (TypeError, ValueError):
+                pass  # Fall back to model_prob without ensemble
 
     # [ABSOLUTE CAP] Weather probability must NEVER exceed 95%.
     # Forecast models have inherent ±2-3°C error, resolution source may differ

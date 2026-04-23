@@ -53,13 +53,16 @@ def test_raises_on_fetch_failure():
 
 
 def test_inspect_mode_exits_after_printing(caplog):
+    """[FIX-T3-4-HIGH] Inspect mode now returns empty result instead of sys.exit(0)."""
     import logging
     with caplog.at_level(logging.INFO, logger="market_discovery_internal.discovery"):
         with patch("market_discovery_internal.discovery.fetch_with_retry", return_value=EVENTS_RESPONSE):
-            with pytest.raises(SystemExit) as exc_info:
-                fetch_markets(inspect=True)
-    assert exc_info.value.code == 0
+            result = fetch_markets(inspect=True)
     assert "INSPECT MODE" in caplog.text
+    # Should return a valid result dict with empty parsed/opportunities
+    assert isinstance(result, dict)
+    assert result["parsed"] == []
+    assert result["opportunities"] == []
 
 
 def test_fetch_uses_events_endpoint_with_tag_slug():

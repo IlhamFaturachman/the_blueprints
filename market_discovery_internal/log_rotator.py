@@ -23,19 +23,21 @@ def rotate_log(log_path, max_size_mb=50, backup_count=5):
     rotated_path = f"{log_path}.{timestamp}"
     gzip_path = f"{rotated_path}.gz"
 
-    # 1. Atomically move the log file so no lines are lost
+    # [FIX-M-T5-4a] Use copy-then-truncate instead of rename-then-create.
+    # Rename creates a window where the log file doesn't exist, causing
+    # concurrent writers to lose log lines. Copy-truncate keeps the file
+    # open and accessible throughout the rotation.
     try:
-        os.rename(log_path, rotated_path)
+        shutil.copy2(log_path, rotated_path)
     except OSError as e:
-        logger.error(f"[ROTATOR] Error renaming log file: {e}")
+        logger.error(f"[ROTATOR] Error copying log file: {e}")
         return
 
-    # 2. Create a new empty log file at the original path
     try:
         with open(log_path, 'w') as f:
             f.write(f"--- Log rotated at {datetime.now().isoformat()} ---\n")
     except OSError as e:
-        logger.error(f"[ROTATOR] Error creating new log file: {e}")
+        logger.error(f"[ROTATOR] Error truncating log file: {e}")
 
     # 3. Compress the renamed log file
     try:
@@ -49,7 +51,8 @@ def rotate_log(log_path, max_size_mb=50, backup_count=5):
         return
 
     # 3. Retention management (Keep only N latest .gz files)
-    folder = os.path.dirname(log_path)
+    # [FIX-M-T5-4b] Default to "." if dirname is empty (bare filename)
+    folder = os.path.dirname(log_path) or "."
     base_name = os.path.basename(log_path)
     gz_files = [
         os.path.join(folder, f) for f in os.listdir(folder) 

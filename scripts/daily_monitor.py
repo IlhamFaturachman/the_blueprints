@@ -24,7 +24,8 @@ def generate_daily_report():
     
     # 1. Capture Anomaly Counts
     anomalies_today = 0
-    today_prefix = datetime.now().strftime("%Y-%m-%d")
+    # [FIX-M-T5-7] Use UTC for consistent day boundary (bot operates on UTC)
+    today_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if os.path.exists(ANOMALY_LOG_FILE):
         try:
             with open(ANOMALY_LOG_FILE, "r") as f:
@@ -62,7 +63,8 @@ def generate_daily_report():
     )
 
     # 3. Format Telegram Message using Template
-    rolling = report["rolling_acceptance_metrics"]
+    # [FIX-T5-7-HIGH] Use .get() with defaults to prevent KeyError crashes
+    rolling = report.get("rolling_acceptance_metrics", {})
     pnl_val = float(rolling.get('closed_realized_pnl_total_usd', 0.0))
     _wins = int(rolling.get('closed_wins', 0))
     _losses = int(rolling.get('closed_losses', 0))
@@ -71,15 +73,16 @@ def generate_daily_report():
     _baseline = float(state.get('base_wallet', 0))
     _meta = state.get('meta', {}) if isinstance(state.get('meta'), dict) else {}
     _cycles_run = _meta.get('total_cycles', 'N/A')
-    # Estimate uptime from cycle count (5 min per cycle)
     _uptime_h = (int(_cycles_run) * 5 / 60) if str(_cycles_run).isdigit() else 0
     _uptime_str = f"{_uptime_h:.1f}h" if _uptime_h else "N/A"
+    _anomaly_counters = report.get('anomaly_counters', {})
+    _zero_opp_streak = _anomaly_counters.get('current_zero_opportunity_streak', 0)
     
     msg = load_telegram_template(
         category="system",
         type_name="summary",
         date_str=today_prefix,
-        status="ONLINE" if report['anomaly_counters']['current_zero_opportunity_streak'] < 5 else "HALTED",
+        status="ONLINE" if _zero_opp_streak < 5 else "HALTED",
         total_trades=int(rolling.get('closed_total', 0)),
         win_rate=f"{rolling.get('close_win_rate', 0.0)*100:.1f}",
         wins=_wins,
