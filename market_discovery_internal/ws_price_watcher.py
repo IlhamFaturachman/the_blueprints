@@ -349,11 +349,12 @@ class PriceWatcher:
                 "custom_feature_enabled": True,
             }
         else:
-            # Unsubscribe: re-subscribe with empty list or just log
-            # Polymarket WS doesn't have explicit unsubscribe — we just
-            # don't include these assets in the next subscription.
-            ilogger.info("[WS-MPC] Unsubscribe requested for %d assets (will exclude from next sub)", len(str_ids))
-            return
+            # [FIX] Polymarket WS DOES support explicit unsubscribe via
+            # {"operation": "unsubscribe", "assets_ids": [...]} per official docs.
+            payload = {
+                "operation": "unsubscribe",
+                "assets_ids": str_ids,
+            }
         
         msg = json.dumps(payload)
         try:

@@ -691,8 +691,10 @@ def run_paper_trading_cycle(
             continue
 
         quote = _get_orderbook_quote(token_id)
-        raw_bid = (quote or {}).get("best_bid")
-        raw_ask = (quote or {}).get("best_ask")
+        # [FIX] fetch_orderbook_quote returns {"bid": X, "ask": Y} keys,
+        # not "best_bid"/"best_ask". Dual-key lookup matches entry path (line 2376).
+        raw_bid = (quote or {}).get("bid") or (quote or {}).get("best_bid")
+        raw_ask = (quote or {}).get("ask") or (quote or {}).get("best_ask")
         if raw_bid is None:
             raw_bid = live_market.get("best_bid")
         if raw_ask is None:

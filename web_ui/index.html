@@ -403,11 +403,12 @@ function getCloseReasonDisplay(reason){
     const r=String(reason).toLowerCase();
     let pc='pill-yellow',label=reason.replace(/_/g,' ').toUpperCase(),detail='';
     if(/take_profit_100pct/.test(r)){pc='pill-green';label='TAKE PROFIT';detail='Target price reached'}
-    else if(/sniper_take_profit|sniper/.test(r)){pc='pill-green';label='SNIPER TP';detail='Price surged above $0.90'}
+    else if(/sniper_take_profit/.test(r)){pc='pill-green';label='SNIPER TP';detail='Price surged above $0.90'}
+    else if(/sniper_stop_loss_thesis_broken/.test(r)){pc='pill-red';label='THESIS BROKEN';detail='Forecast no longer supports position'}
     else if(/stop_loss/.test(r)){pc='pill-red';label='STOP LOSS';detail='Price dropped below stop-loss'}
     else if(/hold_to_resolve|resolve/.test(r)){pc='pill-blue';label='RESOLVED';detail='Held until resolution'}
     else if(/haiku_monitor_exit|haiku|ai|monitor/.test(r)){pc='pill-yellow';label='AI EXIT';detail='AI recommended exit'}
-    else if(/broken_thesis/.test(r)){pc='pill-yellow';label='BROKEN THESIS';detail='Forecast invalidated'}
+    else if(/broken_thesis|thesis_decay/.test(r)){pc='pill-yellow';label='BROKEN THESIS';detail='Forecast invalidated'}
     else if(/trailing_stop|trailing/.test(r)){pc='pill-yellow';label='TRAILING STOP';detail='Pullback from peak'}
     return{pc,label,detail};
 }
@@ -760,8 +761,16 @@ async function fetchData(){
         const seen=new Set();
         cycleRowsCache=rawCycles.filter(c=>{if(!c.timestamp||seen.has(c.timestamp))return false;seen.add(c.timestamp);return true}).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
 
-        // Positions
-        latestPositions=(data.positions||[]).map(p=>({...p,last_price:Number(p.last_price||p.entry_quote_best_bid||0)}));
+        // Positions — [FIX] Preserve WS-updated prices across fetchData refreshes.
+        // Without this, fetchData (every 10s) overwrites real-time WS prices with
+        // stale last_price from state file (only updated every ~5min by main cycle).
+        const _wsPrices={};
+        latestPositions.forEach(p=>{if(p.token_id&&p.last_price>0)_wsPrices[String(p.token_id)]=p.last_price});
+        latestPositions=(data.positions||[]).map(p=>{
+            const serverPrice=Number(p.last_price||p.entry_quote_best_bid||0);
+            const wsPrice=_wsPrices[String(p.token_id)];
+            return{...p,last_price:(wsPrice&&wsPrice>0.01)?wsPrice:serverPrice};
+        });
 
         const closed=data.history||[];
         latestHistory=closed;  // [P1-FIX] Persist for WS updates
