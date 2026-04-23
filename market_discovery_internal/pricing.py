@@ -300,15 +300,20 @@ def compute_regime_score(market, weather_evidence=None):
     regime_score = (spread_score * 0.45 + depth_score * 0.30 + evidence_score * 0.25)
     regime_score = round(max(0.0, min(1.0, regime_score)), 4)
 
+    from market_discovery_internal.config import (
+        REGIME_GOOD_MIN_PROB, REGIME_GOOD_MIN_EDGE, REGIME_GOOD_MAX_PRICE,
+        REGIME_NEUTRAL_MIN_PROB, REGIME_NEUTRAL_MIN_EDGE, REGIME_NEUTRAL_MAX_PRICE,
+        REGIME_STRESS_MIN_PROB, REGIME_STRESS_MIN_EDGE, REGIME_STRESS_MAX_PRICE,
+    )
     if regime_score >= 0.65:
         regime_class = "good"
-        gates = {"min_prob": 0.68, "min_edge": 0.18, "max_price": 0.65}
+        gates = {"min_prob": REGIME_GOOD_MIN_PROB, "min_edge": REGIME_GOOD_MIN_EDGE, "max_price": REGIME_GOOD_MAX_PRICE}
     elif regime_score >= 0.40:
         regime_class = "neutral"
-        gates = {"min_prob": 0.72, "min_edge": 0.22, "max_price": 0.60}
+        gates = {"min_prob": REGIME_NEUTRAL_MIN_PROB, "min_edge": REGIME_NEUTRAL_MIN_EDGE, "max_price": REGIME_NEUTRAL_MAX_PRICE}
     else:
         regime_class = "stress"
-        gates = {"min_prob": 0.80, "min_edge": 0.28, "max_price": 0.55}
+        gates = {"min_prob": REGIME_STRESS_MIN_PROB, "min_edge": REGIME_STRESS_MIN_EDGE, "max_price": REGIME_STRESS_MAX_PRICE}
 
     return regime_class, regime_score, gates
 

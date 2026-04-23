@@ -651,7 +651,9 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
         }
 
     # SWING: price in the mid-range above the watchlist ceiling — enter now
-    if ENTRY_BUCKET_WATCH_MAX_PRICE < price <= _max:
+    # [FIX] Exclude exact brackets — they have their own stricter gate below
+    _opp_direction = opportunity.get("direction", "")
+    if _opp_direction != "exact" and ENTRY_BUCKET_WATCH_MAX_PRICE < price <= _max:
         return {
             "bucket": "enter_swing",
             "strategy": "swing",
@@ -662,18 +664,24 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
             "confidence": round(prob, 4),
         }
 
-    # EXACT BRACKET: cheap but high-ROI markets — enter if edge is positive
-    # Exact brackets (direction == "exact") naturally have low prices ($0.05-$0.40)
-    # and low model_prob (10-38%) but offer 150-900% ROI on wins.
-    # Bypass the watchlist gate for these — they are tradeable, not just watchable.
+    # EXACT BRACKET: cheap, high-probability, high-edge entries only
+    # Exact brackets must pass strict quality gates: min prob 25%, min edge 10%, max price $0.15.
+    # This ensures only the best exact bracket opportunities are entered.
+    from market_discovery_internal.config import (
+        STRATEGY_EXACT_MIN_MODEL_PROB, STRATEGY_EXACT_MIN_EDGE, STRATEGY_EXACT_MAX_ENTRY_PRICE,
+    )
     direction = opportunity.get("direction", "")
-    if direction == "exact" and _min <= price <= _max and edge > 0:
+    _exact_max = min(_max, STRATEGY_EXACT_MAX_ENTRY_PRICE)
+    if (direction == "exact"
+            and _min <= price <= _exact_max
+            and edge >= STRATEGY_EXACT_MIN_EDGE
+            and prob >= STRATEGY_EXACT_MIN_MODEL_PROB):
         return {
             "bucket": "enter_swing",
             "strategy": "swing",
             "reason": (
                 f"Exact bracket USD {price:.2f} with Prob {prob_pct}, Edge {edge_pct}. "
-                f"High-ROI bracket entry."
+                f"High-ROI bracket entry (max ${_exact_max:.2f})."
             ),
             "confidence": round(prob, 4),
         }

@@ -116,11 +116,12 @@ def filter_enriched_opportunities(
         _is_exact = (_dir == "exact")
         mp = float(gates.get("max_price", max_yes_price))
         if _is_exact:
-            # Exact-bracket markets use their own lower thresholds — regime gates
-            # are designed for above/below markets and would reject all exact markets
-            # (exact prob is naturally 10-30%, regime gates require 60-80%).
+            # Exact-bracket markets use their own stricter thresholds (tightened from 10%/2%)
+            # Also enforce max entry price for exact brackets (default $0.15)
+            from market_discovery_internal.config import STRATEGY_EXACT_MAX_ENTRY_PRICE
             prob = STRATEGY_EXACT_MIN_MODEL_PROB
             edge = STRATEGY_EXACT_MIN_EDGE
+            mp = min(mp, STRATEGY_EXACT_MAX_ENTRY_PRICE)  # Cap max price for exact brackets
         else:
             prob = float(gates.get("min_prob", min_model_prob))
             edge = float(gates.get("min_edge", min_edge))
@@ -194,7 +195,7 @@ def filter_opportunities(
             parsed.update(edge_data)
             parsed["forecast_source"] = getattr(forecast_temp, "source", "unknown")
             
-            # Strategy filters — use lower thresholds for exact bracket markets
+            # Strategy filters — use stricter thresholds for exact bracket markets
             _dir = parsed.get("direction", "")
             _min_prob = STRATEGY_EXACT_MIN_MODEL_PROB if _dir == "exact" else min_model_prob
             _min_edge = STRATEGY_EXACT_MIN_EDGE if _dir == "exact" else min_edge
@@ -202,6 +203,11 @@ def filter_opportunities(
             if TIME_DECAY_EDGE_ENABLED and _dir != "exact":
                 _h = float(parsed.get("hours_until_resolve") or TIME_DECAY_BASE_HOURS)
                 _min_edge = _min_edge * math.sqrt(max(_h, 0.1) / TIME_DECAY_BASE_HOURS)
+            # Exact bracket max price filter
+            if _dir == "exact":
+                from market_discovery_internal.config import STRATEGY_EXACT_MAX_ENTRY_PRICE
+                if float(parsed.get("yes_price", 1.0)) > STRATEGY_EXACT_MAX_ENTRY_PRICE:
+                    continue
             if parsed["model_prob"] >= _min_prob and parsed["edge"] >= _min_edge:
                 opportunities.append(parsed)
         except Exception as e:

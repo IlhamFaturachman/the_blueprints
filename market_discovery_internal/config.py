@@ -231,7 +231,7 @@ CITY_REGEXES = [
 # Paper-trading strategy defaults (can be overridden via environment variables)
 PAPER_STAKE_USD = float(os.getenv("PAPER_STAKE_USD", "100"))
 HYBRID_TAKE_PROFIT_MULTIPLIER = float(os.getenv("HYBRID_TAKE_PROFIT_MULTIPLIER", "2.0"))
-EXACT_BRACKET_TP_MULTIPLIER = float(os.getenv("EXACT_BRACKET_TP_MULTIPLIER", "8.0"))  # Higher TP for exact markets ($0.05 entry → $0.40 target)
+EXACT_BRACKET_TP_MULTIPLIER = float(os.getenv("EXACT_BRACKET_TP_MULTIPLIER", "3.0"))  # 3x TP for exact markets (reachable before resolve)
 HYBRID_TAKE_PROFIT_MIN_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MIN_PRICE", "0.50"))
 HYBRID_TAKE_PROFIT_MAX_PRICE = float(os.getenv("HYBRID_TAKE_PROFIT_MAX_PRICE", "0.60"))
 TAKE_PROFIT_PRICE_CAP = float(os.getenv("TAKE_PROFIT_PRICE_CAP", "1.0"))  # Max TP target (1.0 = hold to resolve, 0.92 = exit before resolve)
@@ -274,8 +274,23 @@ MARKET_MIN_VOLUME_24HR = float(os.getenv("MARKET_MIN_VOLUME_24HR", "500"))
 
 # Probability model for exact-bracket markets (Gaussian around forecast)
 MODEL_EXACT_SIGMA_C = float(os.getenv("MODEL_EXACT_SIGMA_C", "1.5"))
-STRATEGY_EXACT_MIN_EDGE = float(os.getenv("STRATEGY_EXACT_MIN_EDGE", "0.02"))
-STRATEGY_EXACT_MIN_MODEL_PROB = float(os.getenv("STRATEGY_EXACT_MIN_MODEL_PROB", "0.10"))
+STRATEGY_EXACT_MIN_EDGE = float(os.getenv("STRATEGY_EXACT_MIN_EDGE", "0.10"))  # 10% min edge (was 2%)
+STRATEGY_EXACT_MIN_MODEL_PROB = float(os.getenv("STRATEGY_EXACT_MIN_MODEL_PROB", "0.25"))  # 25% min prob (was 10%)
+STRATEGY_EXACT_MAX_ENTRY_PRICE = float(os.getenv("STRATEGY_EXACT_MAX_ENTRY_PRICE", "0.15"))  # Max $0.15 entry for exact
+
+# ---------------------------------------------------------------------------
+# Regime Gate Thresholds (configurable — above/below markets only)
+# ---------------------------------------------------------------------------
+REGIME_GOOD_MIN_PROB = float(os.getenv("REGIME_GOOD_MIN_PROB", "0.68"))
+REGIME_GOOD_MIN_EDGE = float(os.getenv("REGIME_GOOD_MIN_EDGE", "0.18"))
+REGIME_GOOD_MAX_PRICE = float(os.getenv("REGIME_GOOD_MAX_PRICE", "0.65"))
+REGIME_NEUTRAL_MIN_PROB = float(os.getenv("REGIME_NEUTRAL_MIN_PROB", "0.72"))
+REGIME_NEUTRAL_MIN_EDGE = float(os.getenv("REGIME_NEUTRAL_MIN_EDGE", "0.22"))
+REGIME_NEUTRAL_MAX_PRICE = float(os.getenv("REGIME_NEUTRAL_MAX_PRICE", "0.60"))
+REGIME_STRESS_MIN_PROB = float(os.getenv("REGIME_STRESS_MIN_PROB", "0.80"))
+REGIME_STRESS_MIN_EDGE = float(os.getenv("REGIME_STRESS_MIN_EDGE", "0.28"))
+REGIME_STRESS_MAX_PRICE = float(os.getenv("REGIME_STRESS_MAX_PRICE", "0.55"))
+
 PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"))
 PAPER_LOOP_CONTINUE_ON_ERROR = _env_bool("PAPER_LOOP_CONTINUE_ON_ERROR", True)
 PAPER_LOOP_ERROR_BACKOFF_SECONDS = max(
@@ -535,7 +550,7 @@ SL_MAX_DELAY_SECONDS = int(os.getenv("SL_MAX_DELAY_SECONDS", "600"))
 EXACT_BRACKET_SL_COOLDOWN_HOURS = float(os.getenv("EXACT_BRACKET_SL_COOLDOWN_HOURS", "1.0"))
 
 # Exact bracket TP cap (lower than 1.0 to ensure TP is reachable before resolve)
-EXACT_BRACKET_TP_CAP = float(os.getenv("EXACT_BRACKET_TP_CAP", "0.80"))
+EXACT_BRACKET_TP_CAP = float(os.getenv("EXACT_BRACKET_TP_CAP", "0.60"))
 
 # ---------------------------------------------------------------------------
 # Kelly Criterion Stake Sizing
