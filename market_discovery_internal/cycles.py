@@ -1395,6 +1395,48 @@ def run_paper_trading_cycle(
     if len(next_history) > HISTORY_MAX_ENTRIES:
         next_history = next_history[-HISTORY_MAX_ENTRIES:]
 
+    # [FIX] Zombie Guard: Re-read current state from DB to detect positions
+    # closed by WS callback during this cycle. Without this, the main cycle's
+    # stale in-memory positions overwrite the WS callback's correct state,
+    # resurrecting closed positions as "zombies" (open in positions + closed
+    # in history simultaneously). Race window: entire cycle duration (~1-5 min).
+    #
+    # Logic: only remove positions that existed at cycle START (in the original
+    # state) but are no longer in the fresh state (removed by WS callback).
+    # Positions opened DURING this cycle are always kept.
+    try:
+        _fresh_state = load_paper_state_fn(path=state_path)
+        _fresh_token_keys = {
+            (str(p.get("token_id")), p.get("opened_at"))
+            for p in _fresh_state.get("positions", [])
+            if p.get("status") in ("open", "pending_entry", "pending_exit")
+        }
+        # Build set of positions that existed at cycle start (loaded at line 427/675)
+        _original_token_keys = {
+            (str(p.get("token_id")), p.get("opened_at"))
+            for p in state.get("positions", [])
+        }
+        _before_count = len(next_open_positions)
+        next_open_positions = [
+            p for p in next_open_positions
+            if (str(p.get("token_id")), p.get("opened_at")) not in _original_token_keys  # NEW this cycle → keep
+            or (str(p.get("token_id")), p.get("opened_at")) in _fresh_token_keys          # still in fresh → keep
+        ]
+        _zombie_count = _before_count - len(next_open_positions)
+        if _zombie_count:
+            logger.info("[ZOMBIE-GUARD] Removed %d position(s) closed by WS during cycle", _zombie_count)
+            # Merge WS-closed trades into next_history so they are not lost
+            _our_history_keys = {
+                (str(h.get("token_id")), h.get("opened_at"))
+                for h in next_history
+            }
+            for _fh in _fresh_state.get("history", []):
+                _fh_key = (str(_fh.get("token_id")), _fh.get("opened_at"))
+                if _fh_key not in _our_history_keys:
+                    next_history.append(_fh)
+    except Exception as _zg_exc:
+        logger.warning("[ZOMBIE-GUARD] Re-read failed: %s (proceeding with stale data)", _zg_exc)
+
     next_state = {
         "positions": next_open_positions,
         "history": next_history,
