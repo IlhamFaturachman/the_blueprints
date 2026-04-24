@@ -239,16 +239,20 @@ def parse_market(
 
     # Step 3: Direction
     question_lower = question.lower()
-    if EXACT_RE.search(question_lower):
+    # [FIX] Range brackets ("between 60-61°F") are ALWAYS exact direction.
+    # Previously, "between" wasn't in EXACT_KEYWORDS, so range brackets
+    # defaulted to "above" — causing the bot to use sigmoid (above/below)
+    # instead of Gaussian (exact), producing wildly wrong probabilities
+    # (93% instead of ~6% for a specific 2°F bracket).
+    if threshold_high is not None:
+        direction = "exact"
+    elif EXACT_RE.search(question_lower):
         direction = "exact"
     elif ABOVE_RE.search(question_lower):
         direction = "above"
     elif BELOW_RE.search(question_lower):
         direction = "below"
     else:
-        # [FIX-M1] Default to "above" instead of "exact". Most temperature markets
-        # are above/below. Defaulting to "exact" triggers Gaussian model, different
-        # thresholds, and regime gate bypass — all wrong for a standard market.
         direction = "above"
 
     # Step 3b: Temperature type — "highest" (max) vs "lowest" (min)
