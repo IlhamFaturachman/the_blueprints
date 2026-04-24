@@ -88,11 +88,11 @@ class _CommandHandler(BaseHTTPRequestHandler):
             try:
                 from market_discovery_internal.state_persistence import load_paper_state
                 state = load_paper_state()
-                # [FIX-S7] Strip sensitive trading strategy fields from public API.
-                # Prevents front-running if VPS is misconfigured or nginx bypassed.
-                _sensitive_keys = {"stop_loss_price", "target_price", "target_price_high",
-                                   "target_price_low", "entry_confidence_score", "entry_edge",
-                                   "entry_model_prob", "raw_prob", "risk_multiplier"}
+                # [FIX-S7-REVISED] Only strip truly sensitive internal fields.
+                # Dashboard NEEDS: stop_loss_price, target_price, entry_model_prob, entry_edge
+                # for correct display (SL/TP bars, probability, edge metrics).
+                # Only strip internal model parameters that could enable front-running.
+                _sensitive_keys = {"raw_prob", "risk_multiplier", "entry_regime_score"}
                 for _p in state.get("positions", []):
                     for _sk in _sensitive_keys:
                         _p.pop(_sk, None)

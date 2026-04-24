@@ -427,17 +427,28 @@ def make_ws_exit_callback(state_path: str, lock, broadcaster=None, exchange=None
                     target = float(pos.get("target_price", 1))
                     strategy = pos.get("target_strategy", "swing")
 
-                    # [FIX-T2-6-CRIT] Track max-delay timer BEFORE L1 check.
-                    # Previously, L1's `continue` fired before _sl_first_below_at was set,
-                    # creating a deadlock where genuine >40% crashes could never be closed.
-                    # The max-delay safety net must work independently of flash crash shield.
+                    # [FIX-T2-6-CRIT-v2] Track max-delay timer BEFORE L1 check.
+                    # Max-delay fires independently of flash crash shield BUT must
+                    # still respect the SL cooldown period (2h above/below, 1h exact).
                     reason = None
                     if bid_price <= stop:
                         if token_id not in _sl_first_below_at:
                             _sl_first_below_at[token_id] = time.time()
-                        # Check max delay FIRST — force-close regardless of L1/L2/L3/L4
+                        # Check max delay — but only AFTER cooldown has passed
                         _below_since = _sl_first_below_at.get(token_id)
-                        if _below_since and (time.time() - _below_since) >= SL_MAX_DELAY_SECONDS:
+                        _direction = pos.get("direction", "")
+                        _sl_cooldown = EXACT_BRACKET_SL_COOLDOWN_HOURS * 3600 if _direction == "exact" else SL_COOLDOWN_SECONDS
+                        _can_max_delay = True
+                        _opened_at_str = pos.get("opened_at")
+                        if _opened_at_str:
+                            try:
+                                _opened_at = datetime.fromisoformat(_opened_at_str)
+                                _age_s = (datetime.now(timezone.utc) - _opened_at).total_seconds()
+                                if _age_s < _sl_cooldown:
+                                    _can_max_delay = False
+                            except (ValueError, TypeError):
+                                pass
+                        if _can_max_delay and _below_since and (time.time() - _below_since) >= SL_MAX_DELAY_SECONDS:
                             reason = "stop_loss"
                             _sl_tick_counters.pop(token_id, None)
                             _sl_first_below_at.pop(token_id, None)
