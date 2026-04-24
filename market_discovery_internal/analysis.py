@@ -670,25 +670,43 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
 
     # EXACT BRACKET: cheap, high-probability, high-edge entries only
     # Exact brackets must pass strict quality gates: min prob 25%, min edge 10%, max price $0.15.
-    # This ensures only the best exact bracket opportunities are entered.
+    # Plus proximity filter: forecast must be within 2σ of the bracket threshold.
     from market_discovery_internal.config import (
         STRATEGY_EXACT_MIN_MODEL_PROB, STRATEGY_EXACT_MIN_EDGE, STRATEGY_EXACT_MAX_ENTRY_PRICE,
     )
     direction = opportunity.get("direction", "")
     _exact_max = min(_max, STRATEGY_EXACT_MAX_ENTRY_PRICE)
-    if (direction == "exact"
-            and _min <= price <= _exact_max
-            and edge >= STRATEGY_EXACT_MIN_EDGE
-            and prob >= STRATEGY_EXACT_MIN_MODEL_PROB):
-        return {
-            "bucket": "enter_swing",
-            "strategy": "swing",
-            "reason": (
-                f"Exact bracket USD {price:.2f} with Prob {prob_pct}, Edge {edge_pct}. "
-                f"High-ROI bracket entry (max ${_exact_max:.2f})."
-            ),
-            "confidence": round(prob, 4),
-        }
+    if direction == "exact":
+        # [PROXIMITY FILTER] Only enter exact brackets where forecast is close to threshold.
+        # Uses 2× city sigma as max distance. Prevents entering "dead" brackets
+        # where the forecast is far from the threshold (e.g., forecast 28°C, bracket 24°C).
+        _proximity_ok = True
+        _threshold_c = opportunity.get("threshold")
+        _evidence = opportunity.get("weather_evidence") or {}
+        _forecast_c = _evidence.get("forecast_temp_c")
+        if _threshold_c is not None and _forecast_c is not None:
+            from market_discovery_internal.pricing import _get_city_sigma
+            _city = opportunity.get("city", "")
+            _date = opportunity.get("date", "")
+            _sigma = _get_city_sigma(_city, _date)
+            _max_distance = 2.0 * _sigma  # 2σ proximity gate
+            _distance = abs(float(_forecast_c) - float(_threshold_c))
+            if _distance > _max_distance:
+                _proximity_ok = False
+
+        if (_proximity_ok
+                and _min <= price <= _exact_max
+                and edge >= STRATEGY_EXACT_MIN_EDGE
+                and prob >= STRATEGY_EXACT_MIN_MODEL_PROB):
+            return {
+                "bucket": "enter_swing",
+                "strategy": "swing",
+                "reason": (
+                    f"Exact bracket USD {price:.2f} with Prob {prob_pct}, Edge {edge_pct}. "
+                    f"High-ROI bracket entry (max ${_exact_max:.2f})."
+                ),
+                "confidence": round(prob, 4),
+            }
 
     # WATCHLIST: cheap markets within the entry floor — monitor but don't enter yet
     if _min <= price <= ENTRY_BUCKET_WATCH_MAX_PRICE:
