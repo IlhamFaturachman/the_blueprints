@@ -239,19 +239,27 @@ def parse_market(
 
     # Step 3: Direction
     question_lower = question.lower()
-    # [FIX] Range brackets ("between 60-61°F") are ALWAYS exact direction.
-    # Previously, "between" wasn't in EXACT_KEYWORDS, so range brackets
-    # defaulted to "above" — causing the bot to use sigmoid (above/below)
-    # instead of Gaussian (exact), producing wildly wrong probabilities
-    # (93% instead of ~6% for a specific 2°F bracket).
+    # Priority order for direction detection:
+    # 1. Range brackets ("between 60-61°F") → always exact
+    # 2. Explicit above/below keywords ("or higher", "or below") → above/below
+    # 3. Explicit exact keywords ("exactly", "precisely") → exact
+    # 4. Plain "be X°C/F" without qualifier → exact (350 of 666 markets on Polymarket)
+    #    This is the MOST COMMON pattern for exact bracket markets.
+    # 5. Default fallback → above (rare — only if no pattern matches at all)
     if threshold_high is not None:
-        direction = "exact"
-    elif EXACT_RE.search(question_lower):
         direction = "exact"
     elif ABOVE_RE.search(question_lower):
         direction = "above"
     elif BELOW_RE.search(question_lower):
         direction = "below"
+    elif EXACT_RE.search(question_lower):
+        direction = "exact"
+    elif re.search(r'\bbe\s+(?:-?\d+)', question_lower):
+        # [FIX] "be 6°C", "be 21°C", "be -1°C" without any above/below qualifier
+        # = exact bracket. This covers 350+ markets (53% of all temperature markets).
+        # ABOVE_RE and BELOW_RE are checked FIRST, so "be 6°C or higher" correctly
+        # matches above, and only bare "be 6°C" falls through to here.
+        direction = "exact"
     else:
         direction = "above"
 
