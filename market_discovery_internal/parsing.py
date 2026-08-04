@@ -114,6 +114,60 @@ def _normalize_city_key(city):
     if not city: return ""
     return str(city).strip().lower()
 
+def check_golden_window(hours_until_resolve, hours_into_weather_day, city=None, market_date=None):
+    """
+    Dynamic timezone-aware golden window check.
+    
+    Uses hours_into_weather_day (time since local midnight at station) as primary
+    criterion. When hours_into_weather_day is None (missing gameStartTime),
+    computes it from city timezone + market_date (local midnight at station).
+    Falls back to legacy flat hours_until_resolve check only when both
+    weather-day data and timezone fallback are unavailable.
+    
+    Returns: None if market is in golden window (pass), or a rejection reason string.
+    """
+    from market_discovery_internal.config import (
+        GOLDEN_WINDOW_HOURS_MIN,
+        GOLDEN_WINDOW_HOURS_MAX,
+        GOLDEN_WINDOW_WEATHER_DAY_MIN_HOURS,
+        GOLDEN_WINDOW_WEATHER_DAY_MAX_HOURS,
+        GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS,
+        TARGET_CITIES,
+    )
+    
+    # Safety floor: never enter if market is about to resolve
+    if hours_until_resolve is not None and hours_until_resolve < GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS:
+        return "too_close_to_resolve"
+    
+    # Primary check: weather-day-based (timezone-aware)
+    if hours_into_weather_day is None and city and market_date:
+        # Fallback: compute from city timezone + market date
+        try:
+            from zoneinfo import ZoneInfo
+            _tz_name = (TARGET_CITIES.get(city) or {}).get("tz") or "UTC"
+            _local_tz = ZoneInfo(_tz_name)
+            _local_midnight = datetime.fromisoformat(market_date).replace(tzinfo=_local_tz)
+            _now = datetime.now(timezone.utc)
+            hours_into_weather_day = (_now - _local_midnight).total_seconds() / 3600.0
+        except Exception:
+            pass
+    
+    if hours_into_weather_day is not None:
+        if hours_into_weather_day < GOLDEN_WINDOW_WEATHER_DAY_MIN_HOURS:
+            return "too_early_weather_day"
+        if hours_into_weather_day > GOLDEN_WINDOW_WEATHER_DAY_MAX_HOURS:
+            return "too_late_weather_day"
+        return None  # in golden window
+    
+    # Last resort: legacy flat check when no weather day data at all
+    if hours_until_resolve is not None:
+        if hours_until_resolve > GOLDEN_WINDOW_HOURS_MAX:
+            return "too_early_to_enter"
+        if hours_until_resolve < GOLDEN_WINDOW_HOURS_MIN:
+            return "too_close_to_resolve"
+    
+    return None
+
 def parse_market(
     raw,
     now_utc=None,

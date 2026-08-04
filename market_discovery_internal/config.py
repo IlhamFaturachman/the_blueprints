@@ -248,6 +248,17 @@ PAPER_MAX_OPEN_PER_CITY = max(1, int(os.getenv("PAPER_MAX_OPEN_PER_CITY", "1")))
 WHIPLASH_COOLDOWN_HOURS = float(os.getenv("WHIPLASH_COOLDOWN_HOURS", "24.0"))
 GOLDEN_WINDOW_HOURS_MAX = float(os.getenv("GOLDEN_WINDOW_HOURS_MAX", "18.0"))
 GOLDEN_WINDOW_HOURS_MIN = float(os.getenv("GOLDEN_WINDOW_HOURS_MIN", "4.0"))
+# [DYNAMIC GOLDEN WINDOW] Weather-day-based entry timing.
+# Instead of flat hours_until_resolve (which includes dead time between
+# weather day end and 12:00 UTC resolve), use hours_into_weather_day
+# (time since local midnight at station timezone).
+# Entry allowed when weather day is 2-20h in: temps developing, forecast has edge.
+# Below 2h: too early, not enough observation data.
+# Above 20h: temps mostly locked, market converging.
+GOLDEN_WINDOW_WEATHER_DAY_MIN_HOURS = float(os.getenv("GOLDEN_WINDOW_WEATHER_DAY_MIN_HOURS", "2.0"))
+GOLDEN_WINDOW_WEATHER_DAY_MAX_HOURS = float(os.getenv("GOLDEN_WINDOW_WEATHER_DAY_MAX_HOURS", "20.0"))
+# Safety floor: don't enter if < 1h until resolve (market about to close).
+GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS = float(os.getenv("GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS", "1.0"))
 PAPER_BASE_WALLET = max(
     0.01,
     float(
