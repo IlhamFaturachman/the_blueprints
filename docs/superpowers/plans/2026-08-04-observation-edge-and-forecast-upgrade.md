@@ -804,27 +804,74 @@ git commit -m "feat: add running-max METAR tracker with lock detection"
 ```python
 # tests/test_running_max_lag.py (append)
 
-def test_lag_study_records_price_after_lock():
-    from scripts.running_max_lag_study import run_lag_study_single_city
+def test_lag_study_records_lock_event():
+    """Test that lock detection works — recording the lock event itself, not delayed price fetches.
+    
+    The lag study is restructured as a long-running tracker that records a lock event
+    (city, date, running_max, winning_bracket, price_at_lock) when lock criteria are met.
+    Price convergence is measured by the main() loop polling over real wall-clock time,
+    NOT by back-to-back fetches within a single function call.
+    """
+    from scripts.running_max_lag_study import detect_lock_event
     mock_metar = [{"temp": 35.2, "reportTime": "2026-08-05T22:00:00Z"}]
-    call_count = [0]
-    def mock_quote(tid, **kw):
-        call_count[0] += 1
-        prices = [{"bid": 0.14, "ask": 0.15}, {"bid": 0.20, "ask": 0.22},
-                  {"bid": 0.38, "ask": 0.41}, {"bid": 0.60, "ask": 0.65}]
-        return prices[min(call_count[0] - 1, 3)]
+    mock_quote = {"bid": 0.14, "ask": 0.15}
     brackets = [{"threshold": 35, "threshold_high": 36, "token_id": "tok35"}]
     with patch("market_discovery_internal.running_max_tracker.fetch_metar_24h", return_value=mock_metar), \
-         patch("market_discovery_internal.pricing.fetch_orderbook_quote", side_effect=mock_quote):
-        result = run_lag_study_single_city("dallas", "KDFW", "America/Chicago", brackets)
+         patch("scripts.running_max_lag_study.fetch_orderbook_quote", return_value=mock_quote):
+        result = detect_lock_event("dallas", "KDFW", "America/Chicago", brackets)
     assert result is not None
     assert result["winning_bracket_token"] == "tok35"
     assert result["price_at_lock"] == 0.15
+    assert result["running_max_c"] == 35.2
+
+
+def test_detect_lock_returns_none_before_min_hour():
+    """Before lock_min_hour_local, should return None."""
+    from scripts.running_max_lag_study import detect_lock_event
+    mock_metar = [{"temp": 35.2, "reportTime": "2026-08-05T15:00:00Z"}]  # 10am CDT
+    brackets = [{"threshold": 35, "threshold_high": 36, "token_id": "tok35"}]
+    with patch("market_discovery_internal.running_max_tracker.fetch_metar_24h", return_value=mock_metar):
+        result = detect_lock_event("dallas", "KDFW", "America/Chicago", brackets,
+                                   lock_min_hour_local=16)
+    assert result is None  # Too early (10am < 4pm)
+
+
+def test_track_price_convergence_records_over_time():
+    """Test that price tracker records prices at wall-clock intervals.
+    
+    Uses an injectable clock and quote function to simulate time passing.
+    No real time.sleep() — the tracker calls the quote_fn at each interval.
+    """
+    from scripts.running_max_lag_study import track_price_convergence
+    # Simulate: lock at t=0, prices rise over 3 hours
+    prices_by_time = {
+        0: {"bid": 0.14, "ask": 0.15},     # at lock
+        60: {"bid": 0.18, "ask": 0.20},    # +1m
+        300: {"bid": 0.28, "ask": 0.30},   # +5m
+        900: {"bid": 0.40, "ask": 0.42},   # +15m
+        1800: {"bid": 0.55, "ask": 0.58},  # +30m — crosses 0.50
+        3600: {"bid": 0.72, "ask": 0.75},  # +1h
+        7200: {"bid": 0.85, "ask": 0.88},  # +2h
+        10800: {"bid": 0.92, "ask": 0.95}, # +3h
+    }
+    def mock_quote_fn(token_id, elapsed_seconds):
+        return prices_by_time.get(elapsed_seconds)
+    
+    result = track_price_convergence(
+        token_id="tok35",
+        entry_price=0.15,
+        quote_fn=mock_quote_fn,
+        intervals=[("+1m", 60), ("+5m", 300), ("+15m", 900),
+                    ("+30m", 1800), ("+1h", 3600), ("+2h", 7200), ("+3h", 10800)],
+    )
+    assert result["+30m"]["bid"] == 0.55
+    assert result["time_to_050"] == 1800
+    assert result["time_to_090"] == 10800
 ```
 
 - [ ] **Step 2: Run test**
 
-Run: `pytest tests/test_running_max_lag.py::test_lag_study_records_price_after_lock -v`
+Run: `pytest tests/test_running_max_lag.py::test_lag_study_records_lock_event tests/test_running_max_lag.py::test_detect_lock_returns_none_before_min_hour tests/test_running_max_lag.py::test_track_price_convergence_records_over_time -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: Create lag study script**
@@ -833,8 +880,13 @@ Expected: FAIL — `ModuleNotFoundError`
 # scripts/running_max_lag_study.py
 """Phase 1: Running-Max Lag Study.
 
-Polls METAR running-max + CLOB bracket prices. Determines if there's a
-tradeable window between running max becoming a "lock" and price convergence.
+Restructured as a long-running tracker. Two phases:
+1. detect_lock_event(): checks if running max is locked, records lock event + price at lock
+2. track_price_convergence(): given a lock event, polls prices at wall-clock intervals
+
+The main() loop runs continuously, calling detect_lock_event() for each city each cycle.
+Once a lock is detected, it spawns track_price_convergence() for that city+date (in a thread
+or sequentially with real time.sleep between intervals).
 
 Usage: python scripts/running_max_lag_study.py [--duration-hours 168]
 Output: logs/running_max_lag_study.jsonl
@@ -847,12 +899,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from market_discovery_internal.config import (
     TARGET_CITIES, LAG_STUDY_POLL_INTERVAL_SECONDS, LAG_STUDY_OUTPUT_FILE,
     LAG_STUDY_LOCK_THRESHOLD, LAG_STUDY_LOCK_MIN_HOUR_LOCAL,
+    GAMMA_API, GAMMA_EVENTS_API,
 )
 from market_discovery_internal.running_max_tracker import (
     RunningMaxTracker, fetch_metar_24h, determine_winning_bracket,
 )
 from market_discovery_internal.lock_probability import compute_lock_probability
 from market_discovery_internal.pricing import fetch_orderbook_quote
+from market_discovery_internal.parsing import parse_market
+from market_discovery_internal.utils import fetch_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -869,10 +924,68 @@ PRICE_INTERVALS = [("+1m", 60), ("+5m", 300), ("+15m", 900),
                    ("+30m", 1800), ("+1h", 3600), ("+2h", 7200), ("+3h", 10800)]
 
 
-def run_lag_study_single_city(city, icao, local_tz, brackets,
-                              lock_threshold=LAG_STUDY_LOCK_THRESHOLD,
-                              lock_min_hour_local=LAG_STUDY_LOCK_MIN_HOUR_LOCAL):
-    """Run single lag study observation for one city."""
+def fetch_city_brackets(city, now_utc=None):
+    """Fetch live Polymarket bracket markets for a city.
+    
+    Uses the existing Gamma API + parse_market pipeline to get real
+    bracket structures with token_ids, thresholds, and threshold_high values.
+    """
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    
+    # Fetch from Gamma Events API with tag_slug for weather
+    params = {
+        "tag_slug": "weather",
+        "active": "true",
+        "closed": "false",
+        "limit": 200,
+        "order": "volume24hr",
+        "ascending": "false",
+    }
+    data = fetch_with_retry(GAMMA_EVENTS_API, params=params, timeout=15)
+    if not data or not isinstance(data, list):
+        return []
+    
+    brackets = []
+    for event in data:
+        markets = event.get("markets", [])
+        if not markets:
+            continue
+        for raw_market in markets:
+            parsed = parse_market(raw_market, now_utc=now_utc)
+            if parsed is None:
+                continue
+            if parsed.get("city") != city:
+                continue
+            if parsed.get("direction") != "exact":
+                continue
+            if parsed.get("temp_type") != "max":
+                continue
+            brackets.append({
+                "threshold": parsed.get("threshold"),
+                "threshold_high": parsed.get("threshold_high"),
+                "token_id": parsed.get("token_id"),
+                "yes_price": parsed.get("yes_price"),
+                "market_slug": parsed.get("market_slug", ""),
+            })
+    
+    logger.info("[LAG-STUDY] %s: fetched %d bracket markets", city, len(brackets))
+    return brackets
+
+
+def detect_lock_event(city, icao, local_tz, brackets,
+                      lock_threshold=LAG_STUDY_LOCK_THRESHOLD,
+                      lock_min_hour_local=LAG_STUDY_LOCK_MIN_HOUR_LOCAL):
+    """Check if running max is locked for a city. Returns lock event dict or None.
+    
+    This function is called each poll cycle. It:
+    1. Refreshes running max from METAR (24h fetch)
+    2. Checks if local hour >= lock_min_hour_local
+    3. Computes lock probability
+    4. If lock prob >= threshold, determines winning bracket
+    5. Fetches price at lock time
+    6. Returns lock event record (no delayed price fetches here)
+    """
     tracker = RunningMaxTracker(icao=icao, local_tz=local_tz)
     tracker.refresh_from_metar()
     if tracker.running_max <= -900:
@@ -900,60 +1013,153 @@ def run_lag_study_single_city(city, icao, local_tz, brackets,
     if not quote or quote.get("ask") is None:
         return None
 
-    price_at_lock = quote.get("ask")
-    prices_after = {}
-    for label, _ in PRICE_INTERVALS:
-        q = fetch_orderbook_quote(winner["token_id"])
-        prices_after[label] = {"bid": q.get("bid"), "ask": q.get("ask")} if q else None
-
-    prices_list = [price_at_lock] + [(p.get("bid", 0) if p else 0) for p in prices_after.values()]
-    time_to_050 = next((PRICE_INTERVALS[i-1][1] if i > 0 else 0 for i, p in enumerate(prices_list) if p and p >= 0.50), None)
-    time_to_090 = next((PRICE_INTERVALS[i-1][1] if i > 0 else 0 for i, p in enumerate(prices_list) if p and p >= 0.90), None)
-
     return {
-        "city": city, "date": tracker.current_local_date, "icao": icao,
+        "city": city,
+        "date": tracker.current_local_date,
+        "icao": icao,
         "running_max_c": round(tracker.running_max, 2),
-        "margin_c": tracker.margin, "local_hour": local_hour,
+        "margin_c": tracker.margin,
+        "local_hour": local_hour,
         "lock_probability": round(p_lock, 4),
         "winning_bracket_token": winner["token_id"],
-        "price_at_lock": price_at_lock,
-        "prices_after_lock": prices_after,
-        "time_to_050": time_to_050, "time_to_090": time_to_090,
+        "price_at_lock": quote.get("ask"),
+        "bid_at_lock": quote.get("bid", 0),
         "timestamp_utc": now_utc.isoformat(),
     }
 
 
+def track_price_convergence(token_id, entry_price, quote_fn, intervals=PRICE_INTERVALS):
+    """Track price convergence after a lock event.
+    
+    Calls quote_fn(token_id, elapsed_seconds) at each interval to get the price.
+    In production, the main() loop handles real time.sleep() between intervals.
+    In tests, quote_fn is a mock that returns pre-set prices per elapsed time.
+    
+    Returns dict with prices at each interval + computed time_to_050/090.
+    """
+    prices_after = {}
+    bid_at_lock = entry_price  # fallback
+    
+    for label, delay_s in intervals:
+        q = quote_fn(token_id, delay_s)
+        if q:
+            prices_after[label] = {"bid": q.get("bid"), "ask": q.get("ask")}
+        else:
+            prices_after[label] = None
+
+    # Compute time_to_050 and time_to_090 from bid prices
+    prices_list = [entry_price] + [
+        (p.get("bid", 0) if p else 0) for p in prices_after.values()
+    ]
+    time_to_050 = None
+    time_to_090 = None
+    for i, p in enumerate(prices_list):
+        if p and p >= 0.50 and time_to_050 is None:
+            time_to_050 = 0 if i == 0 else intervals[i-1][1]
+        if p and p >= 0.90 and time_to_090 is None:
+            time_to_090 = 0 if i == 0 else intervals[i-1][1]
+
+    return {
+        **prices_after,
+        "time_to_050": time_to_050,
+        "time_to_090": time_to_090,
+    }
+
+
 def main():
+    """Main lag study loop. Runs continuously, polling US cities.
+    
+    Each cycle:
+    1. For each US city: fetch live brackets from Polymarket, detect lock event
+    2. If lock detected (first time for this city+date): record lock event,
+       then poll prices at real wall-clock intervals (time.sleep between fetches)
+    3. Append result to JSONL
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    logger.info("[LAG-STUDY] Starting (US cities)")
+    logger.info("[LAG-STUDY] Starting running-max lag study (US cities)")
+
     os.makedirs(os.path.dirname(LAG_STUDY_OUTPUT_FILE), exist_ok=True)
-    recorded = set()
-    duration_hours = 168
+    recorded = set()  # (city, date) pairs already locked
+
+    duration_hours = 168  # 7 days default
     if "--duration-hours" in sys.argv:
-        duration_hours = int(sys.argv[sys.argv.index("--duration-hours") + 1])
+        idx = sys.argv.index("--duration-hours")
+        duration_hours = int(sys.argv[idx + 1])
+
     end_time = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
 
     while datetime.now(timezone.utc) < end_time:
         for city, tz in US_CITIES.items():
-            info = TARGET_CITIES.get(city)
-            if not info:
+            city_info = TARGET_CITIES.get(city)
+            if not city_info:
                 continue
-            icao = info.get("icao")
+            icao = city_info.get("icao")
             if not icao:
                 continue
-            key = (city, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-            if key in recorded:
+
+            record_key = (city, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+            if record_key in recorded:
                 continue
+
             try:
-                brackets = [{"threshold": 35, "threshold_high": 36, "token_id": "placeholder"}]
-                result = run_lag_study_single_city(city, icao, tz, brackets)
-                if result:
-                    with open(LAG_STUDY_OUTPUT_FILE, "a") as f:
-                        f.write(json.dumps(result) + "\n")
-                    recorded.add(key)
+                # Fetch REAL Polymarket brackets for this city
+                brackets = fetch_city_brackets(city)
+                if not brackets:
+                    logger.debug("[LAG-STUDY] %s: no bracket markets found", city)
+                    continue
+
+                # Detect lock event
+                lock_event = detect_lock_event(city, icao, tz, brackets)
+                if not lock_event:
+                    continue
+
+                logger.info("[LAG-STUDY] Lock detected: %s max=%.1f°C bracket=%s price=%.2f",
+                            city, lock_event["running_max_c"],
+                            lock_event["winning_bracket_token"],
+                            lock_event["price_at_lock"])
+
+                # Track price convergence with REAL time delays
+                token_id = lock_event["winning_bracket_token"]
+                entry_price = lock_event["price_at_lock"]
+
+                convergence = {}
+                for label, delay_s in PRICE_INTERVALS:
+                    # Real sleep between intervals — this is the actual lag measurement
+                    time.sleep(delay_s)
+                    q = fetch_orderbook_quote(token_id)
+                    convergence[label] = {"bid": q.get("bid"), "ask": q.get("ask")} if q else None
+                    bid = q.get("bid", 0) if q else 0
+                    logger.info("[LAG-STUDY] %s %s: bid=%.3f", city, label, bid)
+
+                # Compute time metrics
+                prices_list = [entry_price] + [
+                    (p.get("bid", 0) if p else 0) for p in convergence.values()
+                ]
+                time_to_050 = None
+                time_to_090 = None
+                for i, p in enumerate(prices_list):
+                    if p and p >= 0.50 and time_to_050 is None:
+                        time_to_050 = 0 if i == 0 else PRICE_INTERVALS[i-1][1]
+                    if p and p >= 0.90 and time_to_090 is None:
+                        time_to_090 = 0 if i == 0 else PRICE_INTERVALS[i-1][1]
+
+                result = {
+                    **lock_event,
+                    "prices_after_lock": convergence,
+                    "time_to_050": time_to_050,
+                    "time_to_090": time_to_090,
+                }
+
+                with open(LAG_STUDY_OUTPUT_FILE, "a") as f:
+                    f.write(json.dumps(result) + "\n")
+                recorded.add(record_key)
+
             except Exception as e:
-                logger.error("[LAG-STUDY] %s: %s", city, e)
+                logger.error("[LAG-STUDY] Error for %s: %s", city, e)
+
         time.sleep(LAG_STUDY_POLL_INTERVAL_SECONDS)
+
+    logger.info("[LAG-STUDY] Completed after %d hours", duration_hours)
 
 
 if __name__ == "__main__":
@@ -963,13 +1169,13 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run tests**
 
 Run: `pytest tests/test_running_max_lag.py -v`
-Expected: 7 PASSED
+Expected: 9 PASSED (6 from Task 5 + 3 new)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add scripts/running_max_lag_study.py tests/test_running_max_lag.py
-git commit -m "feat: add Phase 1 running-max lag study script"
+git commit -m "feat: add Phase 1 running-max lag study with real-time price tracking"
 ```
 
 ---
