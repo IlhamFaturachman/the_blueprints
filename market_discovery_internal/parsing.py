@@ -379,14 +379,15 @@ def parse_market(
         return _with_reason(None)
 
     if daily_resolve_only:
-        # [MODUL C] Golden Window: only enter markets within the configured
-        # hours-until-resolve range (default 4-18h). This balances forecast
-        # accuracy (better closer to resolve) vs market inefficiency (better
-        # further from resolve). Tunable via GOLDEN_WINDOW_HOURS_MIN/MAX.
-        if hours_until_resolve > GOLDEN_WINDOW_HOURS_MAX:
-            return _with_reason(None, "too_early_to_enter")
-        if hours_until_resolve < GOLDEN_WINDOW_HOURS_MIN:
-            return _with_reason(None, "too_close_to_resolve")
+        # [DYNAMIC GOLDEN WINDOW] Use weather-day-based check (timezone-aware)
+        # Replaces flat hours_until_resolve check that never hit due to
+        # dead time gap (3h→27h) between weather day end and 12:00 UTC resolve.
+        _gw_result = check_golden_window(
+            hours_until_resolve, hours_into_weather_day,
+            city=city, market_date=date_str,
+        )
+        if _gw_result is not None:
+            return _with_reason(None, _gw_result)
 
     market_slug = raw.get("slug") or raw.get("event_slug") or ""
 
