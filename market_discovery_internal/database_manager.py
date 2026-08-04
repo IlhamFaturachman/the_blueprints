@@ -194,6 +194,15 @@ class BlueprintsDB:
             )
         """)
 
+        # 10. ECMWF Ensemble Raw Data (Phase 2)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ecmwf_ensemble_raw (
+                city TEXT NOT NULL, date TEXT NOT NULL, member_id INTEGER NOT NULL,
+                forecast_temp REAL, fetched_at TEXT,
+                PRIMARY KEY (city, date, member_id)
+            )
+        """)
+
         # Schema migrations — idempotent via try/except for each new column.
         _migrations = [
             "ALTER TABLE active_positions ADD COLUMN raw_json TEXT",
@@ -299,6 +308,38 @@ class BlueprintsDB:
             VALUES (?, ?, ?, ?, ?, ?)
         """, (city.lower(), month_day, max_temp, min_temp, precip, datetime.now().timestamp()))
         conn.commit()
+
+    # --- ECMWF Ensemble Logic ---
+    def save_ecmwf_ensemble(self, city, date, members):
+        """Save ECMWF ensemble members for a city/date. members = list of {member_id, temp_c}."""
+        conn = self._get_conn()
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        conn.executemany("""
+            INSERT OR REPLACE INTO ecmwf_ensemble_raw (city, date, member_id, forecast_temp, fetched_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, [(city.lower(), date, m["member_id"], m["temp_c"], fetched_at) for m in members])
+        conn.commit()
+
+    def get_ecmwf_ensemble(self, city, date):
+        """Retrieve all ensemble members for a city/date."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT member_id, forecast_temp, fetched_at FROM ecmwf_ensemble_raw WHERE city = ? AND date = ? ORDER BY member_id",
+            (city.lower(), date)
+        ).fetchall()
+        return [{"member_id": r["member_id"], "forecast_temp": r["forecast_temp"], "fetched_at": r["fetched_at"]} for r in rows]
+
+    def get_ecmwf_ensemble_stats(self, city, date):
+        """Compute mean and std dev of ensemble members for a city/date."""
+        conn = self._get_conn()
+        row = conn.execute("""
+            SELECT COUNT(*) as count, AVG(forecast_temp) as mean,
+                   COALESCE(SQRT(AVG(forecast_temp * forecast_temp) - AVG(forecast_temp) * AVG(forecast_temp)), 0) as std
+            FROM ecmwf_ensemble_raw WHERE city = ? AND date = ?
+        """, (city.lower(), date)).fetchone()
+        if row and row["count"] > 0:
+            return {"count": row["count"], "mean": row["mean"], "std": row["std"]}
+        return {"count": 0, "mean": None, "std": None}
 
     # --- Portfolio & Position Logic ---
     def get_portfolio(self):
