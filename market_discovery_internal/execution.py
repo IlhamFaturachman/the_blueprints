@@ -405,7 +405,11 @@ class BlueprintsExchange:
             return False
         try:
             with self._lock:
-                self.client.cancel_order(order_id)
+                if PY_CLOB_V2:
+                    from py_clob_client_v2.clob_types import OrderPayload
+                    self.client.cancel_order(OrderPayload(orderID=str(order_id)))
+                else:
+                    self.client.cancel_order(order_id)
             logger.info("[EXCHANGE] Cancelled order %s", order_id)
             return True
         except Exception as exc:
@@ -467,14 +471,8 @@ class BlueprintsExchange:
     # ----------------------------------------------------------- market data
     def get_orderbook_info(self, token_id):
         """Fetch orderbook and extract key info.
-
-        CRITICAL: Response fields are STRINGS, must cast:
-          best_bid = float(book.bids[0].price) if book.bids else None
-          best_ask = float(book.asks[0].price) if book.asks else None
-          tick_size = book.tick_size          # already string, keep as-is
-          min_order_size = int(book.min_order_size)  # cast to int
-
-        Returns dict or None if orderbook is empty or API fails.
+        V2: get_order_book returns raw dict, not typed object.
+        Bids/asks are list of dicts with string 'price' and 'size' fields.
         """
         if not self.available:
             return None
@@ -482,26 +480,34 @@ class BlueprintsExchange:
             with self._lock:
                 book = self.client.get_order_book(str(token_id))
 
-            # Extract best bid/ask - OrderSummary has .price (str) and .size (str)
+            # V2: book is a dict, not typed object
+            if not isinstance(book, dict):
+                logger.error("[EXCHANGE] Unexpected orderbook type: %s", type(book).__name__)
+                return None
+
+            bids = book.get("bids") or []
+            asks = book.get("asks") or []
+
             best_bid = None
             best_ask = None
-            if book.bids:
-                best_bid = float(book.bids[0].price)
-            if book.asks:
-                best_ask = float(book.asks[0].price)
+            if bids:
+                best_bid = float(bids[0].get("price", 0))
+            if asks:
+                best_ask = float(asks[0].get("price", 0))
 
             if best_bid is None and best_ask is None:
                 return None
 
-            # tick_size is already a string - keep as-is for PartialCreateOrderOptions
-            tick_size_str = book.tick_size or "0.01"
-            tick_size_float = float(tick_size_str)
+            # V2: tick_size can be float or string — normalize to string for options
+            _tick = book.get("tick_size")
+            tick_size_str = str(_tick) if _tick is not None else "0.01"
+            tick_size_float = float(_tick) if _tick is not None else 0.01
 
-            # min_order_size is a string - cast to int
-            min_order_size = int(float(book.min_order_size or "5"))
+            _min_size = book.get("min_order_size")
+            min_order_size = int(float(_min_size)) if _min_size is not None else 5
 
-            # neg_risk is already a bool
-            neg_risk = bool(book.neg_risk) if book.neg_risk is not None else False
+            _neg_risk = book.get("neg_risk")
+            neg_risk = bool(_neg_risk) if _neg_risk is not None else False
 
             spread = round(best_ask - best_bid, 6) if (best_bid is not None and best_ask is not None) else None
 
@@ -509,10 +515,10 @@ class BlueprintsExchange:
                 "best_bid": best_bid,
                 "best_ask": best_ask,
                 "spread": spread,
-                "tick_size": tick_size_str,       # STRING for PartialCreateOrderOptions
-                "tick_size_float": tick_size_float,  # float for price computation
-                "min_order_size": min_order_size,    # int (casted)
-                "neg_risk": neg_risk,                # bool
+                "tick_size": tick_size_str,
+                "tick_size_float": tick_size_float,
+                "min_order_size": min_order_size,
+                "neg_risk": neg_risk,
             }
         except Exception as exc:
             logger.error("[EXCHANGE] get_orderbook_info failed for %s: %s", token_id, exc)
