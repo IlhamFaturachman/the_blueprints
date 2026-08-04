@@ -439,7 +439,7 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
                 if _model_row and _model_row.get("max_temp") is not None:
                     _a = float(_model_row["max_temp"])
                     _b = float(_model_row["min_temp"])
-                    _c = float(_model_row["precip"])
+                    _c = float(_model_row["precipitation"])
                     _d_row = db.get_weather(_icao.lower(), "emos_model_d")
                     _d = float(_d_row["max_temp"]) if _d_row and _d_row.get("max_temp") is not None else 1.0
                     _model = {"a": _a, "b": _b, "c": _c, "d": _d}

@@ -117,7 +117,7 @@ def load_emos_model(icao):
         return None
     a = float(row["max_temp"])
     b = float(row["min_temp"])
-    c = float(row["precip"])
+    c = float(row["precipitation"])
     row_d = db.get_weather(icao.lower(), "emos_model_d")
     d = float(row_d["max_temp"]) if row_d and row_d.get("max_temp") is not None else 1.0
     return {"a": a, "b": b, "c": c, "d": d}
