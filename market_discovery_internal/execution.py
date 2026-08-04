@@ -134,7 +134,7 @@ class BlueprintsExchange:
             )
 
             # Step 3: Derive L2 API credentials
-            api_creds = temp_client.create_or_derive_api_creds()
+            api_creds = temp_client.create_or_derive_api_key()
             logger.info("[EXCHANGE] L2 API credentials derived successfully")
 
             # Step 4: Create FULL client with L2 auth (creds= CRITICAL)
@@ -405,7 +405,7 @@ class BlueprintsExchange:
             return False
         try:
             with self._lock:
-                self.client.cancel(order_id)
+                self.client.cancel_order(order_id)
             logger.info("[EXCHANGE] Cancelled order %s", order_id)
             return True
         except Exception as exc:
@@ -456,7 +456,7 @@ class BlueprintsExchange:
             return []
         try:
             with self._lock:
-                result = self.client.get_orders()
+                result = self.client.get_open_orders()
             if isinstance(result, list):
                 return result
             return []
