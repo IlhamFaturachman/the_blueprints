@@ -11,7 +11,7 @@ Once a lock is detected, it polls prices at real wall-clock intervals (time.slee
 Usage: python scripts/running_max_lag_study.py [--duration-hours 168]
 Output: logs/running_max_lag_study.jsonl
 """
-import json, logging, os, sys, time
+import json, logging, os, sys, threading, time
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -164,13 +164,68 @@ def track_price_convergence(token_id, entry_price, quote_fn, intervals=PRICE_INT
     }
 
 
+def _track_convergence_thread(lock_event, recorded, output_file):
+    """Background thread: track price convergence after a lock event.
+
+    Runs independently of the main poll loop so other cities are not blocked.
+    Sleeps for real wall-clock intervals between price fetches, then writes
+    the final result to the JSONL output file.
+    """
+    token_id = lock_event["winning_bracket_token"]
+    entry_price = lock_event["price_at_lock"]
+    city = lock_event["city"]
+
+    convergence = {}
+    for label, delay_s in PRICE_INTERVALS:
+        time.sleep(delay_s)
+        try:
+            q = fetch_orderbook_quote(token_id)
+            convergence[label] = {"bid": q.get("bid"), "ask": q.get("ask")} if q else None
+            bid = q.get("bid", 0) if q else 0
+            logger.info("[LAG-STUDY] %s %s: bid=%.3f", city, label, bid)
+        except Exception as e:
+            logger.warning("[LAG-STUDY] %s %s: fetch error: %s", city, label, e)
+            convergence[label] = None
+
+    # Compute time metrics
+    prices_list = [entry_price] + [
+        (p.get("bid", 0) if p else 0) for p in convergence.values()
+    ]
+    time_to_050 = None
+    time_to_090 = None
+    for i, p in enumerate(prices_list):
+        if p and p >= 0.50 and time_to_050 is None:
+            time_to_050 = 0 if i == 0 else PRICE_INTERVALS[i-1][1]
+        if p and p >= 0.90 and time_to_090 is None:
+            time_to_090 = 0 if i == 0 else PRICE_INTERVALS[i-1][1]
+
+    result = {
+        **lock_event,
+        "prices_after_lock": convergence,
+        "time_to_050": time_to_050,
+        "time_to_090": time_to_090,
+    }
+
+    try:
+        with open(output_file, "a") as f:
+            f.write(json.dumps(result) + "\n")
+    except Exception as e:
+        logger.error("[LAG-STUDY] %s: failed to write result: %s", city, e)
+
+
 def main():
-    """Main lag study loop. Runs continuously, polling US cities."""
+    """Main lag study loop. Runs continuously, polling US cities.
+
+    Lock detection runs at 60s cadence across ALL cities.
+    Price convergence tracking runs in background threads (one per lock event),
+    so a 3-hour convergence sleep for one city does NOT block detection for others.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     logger.info("[LAG-STUDY] Starting running-max lag study (US cities)")
 
     os.makedirs(os.path.dirname(LAG_STUDY_OUTPUT_FILE), exist_ok=True)
-    recorded = set()
+    recorded = set()  # (city, date) pairs with active or completed convergence tracking
+    active_threads = []  # Track background convergence threads
 
     duration_hours = 168
     if "--duration-hours" in sys.argv:
@@ -180,6 +235,9 @@ def main():
     end_time = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
 
     while datetime.now(timezone.utc) < end_time:
+        # Clean up finished threads
+        active_threads = [t for t in active_threads if t.is_alive()]
+
         for city, tz in US_CITIES.items():
             city_info = TARGET_CITIES.get(city)
             if not city_info:
@@ -204,51 +262,35 @@ def main():
                 if not lock_event:
                     continue
 
-                logger.info("[LAG-STUDY] Lock detected: %s max=%.1fC bracket=%s price=%.2f",
+                logger.info("[LAG-STUDY] Lock detected: %s max=%.1fC bracket=%s price=%.2f (%d active threads)",
                             city, lock_event["running_max_c"],
                             lock_event["winning_bracket_token"],
-                            lock_event["price_at_lock"])
+                            lock_event["price_at_lock"],
+                            len(active_threads))
 
-                # Track price convergence with REAL time delays
-                token_id = lock_event["winning_bracket_token"]
-                entry_price = lock_event["price_at_lock"]
-
-                convergence = {}
-                for label, delay_s in PRICE_INTERVALS:
-                    # Real sleep between intervals — this is the actual lag measurement
-                    time.sleep(delay_s)
-                    q = fetch_orderbook_quote(token_id)
-                    convergence[label] = {"bid": q.get("bid"), "ask": q.get("ask")} if q else None
-                    bid = q.get("bid", 0) if q else 0
-                    logger.info("[LAG-STUDY] %s %s: bid=%.3f", city, label, bid)
-
-                # Compute time metrics
-                prices_list = [entry_price] + [
-                    (p.get("bid", 0) if p else 0) for p in convergence.values()
-                ]
-                time_to_050 = None
-                time_to_090 = None
-                for i, p in enumerate(prices_list):
-                    if p and p >= 0.50 and time_to_050 is None:
-                        time_to_050 = 0 if i == 0 else PRICE_INTERVALS[i-1][1]
-                    if p and p >= 0.90 and time_to_090 is None:
-                        time_to_090 = 0 if i == 0 else PRICE_INTERVALS[i-1][1]
-
-                result = {
-                    **lock_event,
-                    "prices_after_lock": convergence,
-                    "time_to_050": time_to_050,
-                    "time_to_090": time_to_090,
-                }
-
-                with open(LAG_STUDY_OUTPUT_FILE, "a") as f:
-                    f.write(json.dumps(result) + "\n")
+                # Mark as recorded so we don't re-trigger for this city+date
                 recorded.add(record_key)
+
+                # Spawn background thread for price convergence tracking
+                # This does NOT block the main loop — other cities continue polling
+                t = threading.Thread(
+                    target=_track_convergence_thread,
+                    args=(lock_event, recorded, LAG_STUDY_OUTPUT_FILE),
+                    daemon=True,
+                    name=f"convergence-{city}-{record_key[1]}",
+                )
+                t.start()
+                active_threads.append(t)
 
             except Exception as e:
                 logger.error("[LAG-STUDY] Error for %s: %s", city, e)
 
         time.sleep(LAG_STUDY_POLL_INTERVAL_SECONDS)
+
+    # Wait for all convergence threads to finish before exiting
+    logger.info("[LAG-STUDY] Duration complete, waiting for %d convergence threads...", len(active_threads))
+    for t in active_threads:
+        t.join(timeout=12000)  # Max 3.3h grace period for last thread
 
     logger.info("[LAG-STUDY] Completed after %d hours", duration_hours)
 
