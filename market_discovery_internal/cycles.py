@@ -245,6 +245,21 @@ def enrich_discovery_markets(
                 logger.debug("[ENSEMBLE] Enrichment fetch failed for %s/%s: %s", city, date, _ens_err)
         market["ensemble_data"] = ensemble_data
 
+        # [MARKET-IMPLIED PROB] Compute from sibling bracket prices — gives live
+        # market consensus priority over model in calculate_edge.
+        # Was dead code: imported but never called. Now wired here.
+        _token_id = market.get("token_id")
+        if _token_id:
+            try:
+                from market_discovery_internal.pricing import _compute_market_implied_prob
+                _mip = _compute_market_implied_prob(_token_id)
+                if _mip:
+                    market["market_implied_prob"] = _mip["market_implied_prob"]
+                    market["market_implied_expected_temp_c"] = _mip["market_implied_expected_temp_c"]
+                    market["market_implied_family_size"] = _mip["family_size"]
+            except Exception:
+                pass
+
         edge_result = calculate_edge_fn(market, forecast_temp, hours_until_resolve=market.get("hours_until_resolve"))
         if not edge_result:
             # [FIX-T3-3-HIGH] Log when edge calculation returns None — previously silent drop

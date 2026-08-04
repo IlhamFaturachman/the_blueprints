@@ -446,6 +446,32 @@ def passes_market_consensus_gate(opportunity: dict) -> tuple[bool, str]:
     if _gw is not None:
         return False, f"exact_outside_golden {_gw}"
 
+    # [METAR REALITY CHECK] Reject if current observation is too far from target bracket
+    # and there's not enough time for temperature to reach the bracket.
+    # Prevents entries like Chicago (obs 21°C, target 30°C, 2h left — impossible).
+    try:
+        _icao = opportunity.get("icao_code") or ""
+        _hours_left = _hrs
+        if _icao and _hours_left is not None and _hours_left > 0:
+            from market_discovery_internal.forecasting import fetch_noaa_metar
+            _obs = fetch_noaa_metar(_icao)
+            if _obs is not None:
+                _thr = opportunity.get("threshold")
+                _unit = str(opportunity.get("unit", "C")).upper()
+                if _thr is not None:
+                    _thr_c = float(_thr)
+                    if _unit == "F":
+                        _thr_c = (_thr_c - 32.0) * 5.0 / 9.0
+                    _obs_gap = abs(float(_obs) - _thr_c)
+                    # Reject if obs is >8°C from target AND <4h until resolve
+                    # (temp can't move 8°C in 4h for most cities)
+                    _metar_max_gap = float(os.environ.get("METAR_REALITY_MAX_GAP_C", "8.0"))
+                    _metar_min_hours = float(os.environ.get("METAR_REALITY_MIN_HOURS", "4.0"))
+                    if _obs_gap > _metar_max_gap and _hours_left < _metar_min_hours:
+                        return False, f"metar_reality_fail obs={float(_obs):.1f}C target={_thr_c:.1f}C gap={_obs_gap:.1f}C>{_metar_max_gap}C with {_hours_left:.1f}h left"
+    except Exception:
+        pass  # Don't block entry if METAR fetch fails
+
     return True, "ok"
 
 
