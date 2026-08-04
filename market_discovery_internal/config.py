@@ -257,8 +257,9 @@ GOLDEN_WINDOW_HOURS_MIN = float(os.getenv("GOLDEN_WINDOW_HOURS_MIN", "4.0"))
 # Above 20h: temps mostly locked, market converging.
 GOLDEN_WINDOW_WEATHER_DAY_MIN_HOURS = float(os.getenv("GOLDEN_WINDOW_WEATHER_DAY_MIN_HOURS", "2.0"))
 GOLDEN_WINDOW_WEATHER_DAY_MAX_HOURS = float(os.getenv("GOLDEN_WINDOW_WEATHER_DAY_MAX_HOURS", "20.0"))
-# Safety floor: don't enter if < 1h until resolve (market about to close).
-GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS = float(os.getenv("GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS", "1.0"))
+# Safety floor: don't enter if < 3h until resolve. Must be > HYBRID_LATE_WINDOW_HOURS (2.0h)
+# to prevent positions from being force-sold by late-window exit within minutes of entry.
+GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS = float(os.getenv("GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS", "3.0"))
 PAPER_BASE_WALLET = max(
     0.01,
     float(
