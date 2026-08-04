@@ -12,7 +12,7 @@ def test_weather_day_golden_window_config_defaults():
     )
     assert GOLDEN_WINDOW_WEATHER_DAY_MIN_HOURS == 2.0
     assert GOLDEN_WINDOW_WEATHER_DAY_MAX_HOURS == 20.0
-    assert GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS == 1.0
+    assert GOLDEN_WINDOW_RESOLVE_SAFETY_HOURS == 3.0
 
 
 def test_legacy_golden_window_still_exists():
@@ -110,45 +110,50 @@ def test_new_york_timezone_scenario():
 
 
 def test_hong_kong_same_day_scenario():
-    """Hong Kong Aug 4 market at 09:00 UTC: 17h into weather day, 2.9h until resolve -> PASS (safety floor is 1h)."""
+    """Hong Kong Aug 4 market at 09:00 UTC: 17h into weather day, 2.9h until resolve.
+    Safety floor is now 3.0h > 2.9h -> REJECT (too close to resolve).
+    """
     from market_discovery_internal.parsing import check_golden_window
     result = check_golden_window(
         hours_until_resolve=2.9,
         hours_into_weather_day=17.0,
     )
-    assert result is None  # 2.9 > 1.0 safety floor AND 17h in [2,20] -> pass
+    assert result is not None  # 2.9 < 3.0 safety floor -> reject
+    assert "too_close" in result
 
 
 def test_timezone_fallback_when_game_start_missing():
     """When hours_into_weather_day is None but city+date provided, compute from tz.
-    
-    Shanghai (UTC+8), market_date='2026-08-04', now ~09:00 UTC Aug 4.
-    Local midnight Aug 4 in Shanghai = Aug 3 16:00 UTC.
-    hours_into_weather_day = 17h -> should PASS (in [2,20]).
+    Uses Aug 5 date — Shanghai midnight Aug 5 = Aug 4 16:00 UTC.
+    Test runs ~13:40 UTC Aug 4, so weather day hasn't started yet (negative hwd).
+    With 27h until resolve and negative hwd → too_early_weather_day.
     """
     from market_discovery_internal.parsing import check_golden_window
     result = check_golden_window(
         hours_until_resolve=27.0,
         hours_into_weather_day=None,
         city="shanghai",
-        market_date="2026-08-04",
+        market_date="2026-08-05",
     )
-    assert result is None  # computed ~17h -> in [2,20] -> pass
+    # Weather day Aug 5 hasn't started yet → negative hwd → too_early
+    assert result is not None
+    assert "too_early" in result
 
 
 def test_timezone_fallback_new_york():
-    """New York (UTC-4), market_date='2026-08-04', now ~09:00 UTC.
-    Local midnight Aug 4 in NYC = Aug 4 04:00 UTC.
-    hours_into_weather_day = 5h -> should PASS.
+    """New York (UTC-4), market_date='2026-08-05', now ~13:40 UTC Aug 4.
+    NYC midnight Aug 5 = Aug 5 04:00 UTC. Weather day hasn't started → negative hwd.
+    With 27h until resolve → too_early_weather_day.
     """
     from market_discovery_internal.parsing import check_golden_window
     result = check_golden_window(
         hours_until_resolve=27.0,
         hours_into_weather_day=None,
         city="new york city",
-        market_date="2026-08-04",
+        market_date="2026-08-05",
     )
-    assert result is None  # computed ~5h -> in [2,20] -> pass
+    assert result is not None
+    assert "too_early" in result
 
 
 def test_timezone_fallback_unknown_city():
