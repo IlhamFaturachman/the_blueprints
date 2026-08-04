@@ -460,9 +460,9 @@ class BlueprintsExchange:
                 best_bid = None
                 best_ask = None
                 if book.bids:
-                    best_bid = float(book.bids[0].price)
+                    best_bid = float(book.bids[-1].price)  # ASCENDING: last = best (highest)
                 if book.asks:
-                    best_ask = float(book.asks[0].price)
+                    best_ask = float(book.asks[-1].price)  # DESCENDING: last = best (lowest)
                 if best_bid is None and best_ask is None:
                     return None
 
