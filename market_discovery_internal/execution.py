@@ -42,18 +42,34 @@ import time
 logger = logging.getLogger(__name__)
 
 try:
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import (
-        OrderArgs,
-        MarketOrderArgs,
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import (
+        OrderArgsV2 as OrderArgs,
+        MarketOrderArgsV2 as MarketOrderArgs,
         OrderType,
         PartialCreateOrderOptions,
     )
-    from py_clob_client.order_builder.constants import BUY, SELL
+    from py_clob_client_v2.order_builder.constants import BUY, SELL
 
     PY_CLOB_AVAILABLE = True
 except ImportError:
-    PY_CLOB_AVAILABLE = False
+    # Fallback to v1 if v2 not installed (paper mode)
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import (
+            OrderArgs,
+            MarketOrderArgs,
+            OrderType,
+            PartialCreateOrderOptions,
+        )
+        from py_clob_client.order_builder.constants import BUY, SELL
+        PY_CLOB_AVAILABLE = True
+        PY_CLOB_V2 = False
+    except ImportError:
+        PY_CLOB_AVAILABLE = False
+        PY_CLOB_V2 = False
+else:
+    PY_CLOB_V2 = True
 
 
 class BlueprintsExchange:
@@ -234,7 +250,7 @@ class BlueprintsExchange:
             with self._lock:
                 signed = self.client.create_order(order_args, options)
                 result = self.client.post_order(
-                    signed, orderType=OrderType.GTC, post_only=True
+                    signed, order_type=OrderType.GTC, post_only=True
                 )
             # result is a dict with order details
             if isinstance(result, dict):
@@ -284,7 +300,7 @@ class BlueprintsExchange:
             )
             with self._lock:
                 signed = self.client.create_market_order(order_args, options)
-                result = self.client.post_order(signed, orderType=OrderType.FOK)
+                result = self.client.post_order(signed, order_type=OrderType.FOK)
             if isinstance(result, dict):
                 order_id = result.get("orderID") or result.get("id") or ""
                 return {"success": True, "order_id": order_id, "status": result.get("status", "submitted")}
@@ -326,7 +342,7 @@ class BlueprintsExchange:
             with self._lock:
                 signed = self.client.create_order(order_args, options)
                 result = self.client.post_order(
-                    signed, orderType=OrderType.GTC, post_only=True
+                    signed, order_type=OrderType.GTC, post_only=True
                 )
             if isinstance(result, dict):
                 order_id = result.get("orderID") or result.get("id") or ""
@@ -373,7 +389,7 @@ class BlueprintsExchange:
             )
             with self._lock:
                 signed = self.client.create_market_order(order_args, options)
-                result = self.client.post_order(signed, orderType=OrderType.FOK)
+                result = self.client.post_order(signed, order_type=OrderType.FOK)
             if isinstance(result, dict):
                 order_id = result.get("orderID") or result.get("id") or ""
                 return {"success": True, "order_id": order_id, "status": result.get("status", "submitted")}
