@@ -40,38 +40,87 @@ ENSEMBLE_API = "https://ensemble-api.open-meteo.com/v1/ensemble"
 
 
 def collect_ecmwf_forecasts():
-    """Fetch ECMWF ensemble forecasts for all 31 cities for tomorrow.
+    """Fetch ensemble forecasts for all 31 cities for tomorrow.
 
-    Tries ECMWF opendata first (51 members, GRIB2). Falls back to Open-Meteo
-    GFS ensemble (31 members) if ECMWF packages unavailable.
+    ECMWF path: download ONE GRIB2 file, open dataset ONCE, then loop all
+    31 cities extracting interpolated values from the same in-memory grid.
+    This avoids 31× redundant ~150MB downloads that would OOM the 1GB VPS.
+
+    GFS fallback: Open-Meteo API (1 call per city, lightweight JSON).
     """
     tomorrow = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
     logger.info("[COLLECT] Fetching ensemble forecasts for %s", tomorrow)
 
-    # Try ECMWF direct first
+    # Try ECMWF direct: ONE download, ONE dataset, 31 extractions
     try:
         from market_discovery_internal.ecmwf_fetch import ECMWF_AVAILABLE, GRIB_AVAILABLE
         if ECMWF_AVAILABLE and GRIB_AVAILABLE:
-            from market_discovery_internal.ecmwf_fetch import fetch_ecmwf_ensemble_forecast
-            for city, info in TARGET_CITIES.items():
-                if not info.get("icao"):
-                    continue
-                result = fetch_ecmwf_ensemble_forecast(city, tomorrow, info["lat"], info["lon"])
-                if result:
-                    logger.info("[ECMWF] %s: %d members, mean=%.1fC",
-                                city, result["member_count"], result["mean"])
-                else:
-                    # Fallback to Open-Meteo GFS ensemble
-                    _collect_openmeteo_gfs(city, info, tomorrow)
+            _collect_ecmwf_single_download(tomorrow)
             return
     except Exception as e:
         logger.warning("[ECMWF] Direct fetch failed: %s — falling back to GFS", e)
 
-    # Fallback: Open-Meteo GFS ensemble (31 members)
+    # Fallback: Open-Meteo GFS ensemble (31 members, lightweight JSON per city)
     for city, info in TARGET_CITIES.items():
         if not info.get("icao"):
             continue
         _collect_openmeteo_gfs(city, info, tomorrow)
+
+
+def _collect_ecmwf_single_download(date_str):
+    """Download ONE ECMWF GRIB2 file and extract all 31 cities from it."""
+    import tempfile, os
+    from ecmwf.opendata import Client as ECMWFClient
+    import xarray as xr
+    from market_discovery_internal.ecmwf_fetch import bilinear_interp, compute_grid_indices
+    from market_discovery_internal.database_manager import db
+
+    client = ECMWFClient(source="ecmwf")
+    with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        logger.info("[ECMWF] Downloading single GRIB2 file (mx2t, step=24)...")
+        client.retrieve(stream="enfo", type="ef", param="mx2t", step=24, target=tmp_path)
+        logger.info("[ECMWF] Download complete, opening dataset...")
+        ds = xr.open_dataset(tmp_path, engine="cfgrib", backend_kwargs={
+            "filter_by_keys": {"shortName": "mx2t"}
+        })
+        lats = ds.latitude.values
+        lons = ds.longitude.values
+        grid_res = abs(lats[1] - lats[0]) if len(lats) > 1 else 0.25
+        _var_name = list(ds.data_vars)[0] if len(ds.data_vars) > 0 else "t2m"
+        logger.info("[ECMWF] Dataset ready: %d members, %dx%d grid",
+                     len(ds.number) if "number" in ds.dims else 0, len(lats), len(lons))
+
+        if "number" not in ds.dims:
+            logger.warning("[ECMWF] No ensemble dimension — skipping")
+            return
+
+        for city, info in TARGET_CITIES.items():
+            if not info.get("icao"):
+                continue
+            try:
+                lat_idx, lon_idx = compute_grid_indices(
+                    info["lat"], info["lon"], lats[0], lons[0], grid_res)
+                members = []
+                for idx in range(len(ds.number)):
+                    grid = ds.isel(number=idx).isel(step=0)[_var_name].values
+                    if grid.ndim == 2:
+                        val = bilinear_interp(grid.tolist(), lat_idx, lon_idx) - 273.15
+                        members.append({"member_id": idx, "temp_c": round(val, 2)})
+                if len(members) >= 5:
+                    db.save_ecmwf_ensemble(city, date_str, members)
+                    mean_t = sum(m["temp_c"] for m in members) / len(members)
+                    logger.info("[ECMWF] %s %s: %d members, mean=%.1fC", city, date_str, len(members), mean_t)
+                else:
+                    logger.warning("[ECMWF] %s: only %d valid members", city, len(members))
+            except Exception as e:
+                logger.warning("[ECMWF] %s: extraction failed: %s", city, e)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 def _collect_openmeteo_gfs(city, info, date_str):
