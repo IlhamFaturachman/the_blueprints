@@ -904,7 +904,9 @@ def run_paper_trading_cycle(
                     else:
                         logger.error("[LIVE-EXIT] Urgent taker sell FAILED for %s: %s",
                                      updated_position.get("city", "?"), sell_result.get("reason"))
-                        # Fall through to paper close (already done by update_paper_position)
+                        # Position stays as exit_pending — next cycle will retry.
+                        # _exit_in_progress flag prevents update_paper_position from double-closing.
+                        updated_position["_exit_retry_needed"] = True
             else:
                 # NORMAL: maker sell (fee savings > speed)
                 book = exchange.get_orderbook_info(_token) if _token else None
@@ -2292,12 +2294,29 @@ def update_paper_position(
         updated["stop_loss_price"] = decision["stop_loss_price"]
 
     if decision["action"] == "sell":
-        updated = close_paper_position(
-            position=updated,
-            exit_price=float(current_yes_price),
-            reason=decision["reason"],
-            now_utc=now_utc,
-        )
+        # [LIVE MODE] Don't close here if live execution is active —
+        # the execution bridge below will place real orders and close
+        # only after fill confirmation. Closing here would cause:
+        # (1) double PnL/trade_history on success
+        # (2) stranded on-chain shares on failure (position marked closed
+        #     but real shares still held, no monitor to sell them)
+        _live_active = False
+        try:
+            from market_discovery_internal.config import LIVE_TRADING_ENABLED as _LTE
+            _live_active = bool(_LTE)
+        except Exception:
+            pass
+        if not _live_active:
+            updated = close_paper_position(
+                position=updated,
+                exit_price=float(current_yes_price),
+                reason=decision["reason"],
+                now_utc=now_utc,
+            )
+        else:
+            # Live mode: mark for execution, don't close yet
+            updated["status"] = "exit_pending"
+            updated["_exit_in_progress"] = True
 
     return updated, decision
 
