@@ -152,12 +152,15 @@ def test_timezone_fallback_new_york():
 
 
 def test_timezone_fallback_unknown_city():
-    """Unknown city with no tz data -> fall back to legacy flat check."""
+    """Unknown city with no market_date -> can't compute weather day -> legacy flat check.
+    50h until resolve, no weather day data -> 50 > 18 -> legacy reject.
+    """
     from market_discovery_internal.parsing import check_golden_window
     result = check_golden_window(
-        hours_until_resolve=27.0,
+        hours_until_resolve=50.0,
         hours_into_weather_day=None,
         city="mars colony",
-        market_date="2026-08-04",
+        market_date=None,  # no date -> can't compute from tz -> legacy fallback
     )
-    assert result is not None  # 27 > 18 -> legacy reject
+    assert result is not None  # 50 > 18 -> legacy reject
+    assert "too_early" in result
