@@ -375,6 +375,24 @@ def parse_market(
         _log_unmatched(question, f"could not parse endDate: {end_date_raw}")
         return _with_reason(None)
 
+    # Compute hours_into_weather_day from gameStartTime (local midnight at station, in UTC)
+    # Used by dynamic golden window check for timezone-aware entry timing.
+    hours_into_weather_day = None
+    game_start_raw = raw.get("gameStartTime") or raw.get("game_start_time") or ""
+    if game_start_raw:
+        try:
+            _gs = str(game_start_raw).replace("Z", "+00:00")
+            if " " in _gs and "T" not in _gs:
+                _gs = _gs.replace(" ", "T", 1)
+            _gs_dt = datetime.fromisoformat(_gs)
+            if _gs_dt.tzinfo is None:
+                _gs_dt = _gs_dt.replace(tzinfo=timezone.utc)
+            else:
+                _gs_dt = _gs_dt.astimezone(timezone.utc)
+            hours_into_weather_day = (now - _gs_dt).total_seconds() / 3600.0
+        except (ValueError, AttributeError, TypeError):
+            pass
+
     if hours_until_resolve <= 0 or hours_until_resolve > 72:
         return _with_reason(None)
 
@@ -430,6 +448,8 @@ def parse_market(
         "gamma_accepting_orders": gamma_accepting_orders,
         "token_id": token_id,
         "hours_until_resolve": round(hours_until_resolve, 1),
+        "hours_into_weather_day": round(hours_into_weather_day, 3) if hours_into_weather_day is not None else None,
+        "game_start_time": game_start_raw if game_start_raw else None,
         "market_slug": market_slug,
     })
 
