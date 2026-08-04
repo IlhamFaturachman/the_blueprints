@@ -258,6 +258,9 @@ def enrich_discovery_markets(
             enriched_item["weather_evidence_valid"] = evidence_valid
             enriched_item["weather_evidence_quality_score"] = evidence.get("quality_score")
             enriched_item["weather_evidence_age_hours"] = evidence.get("age_hours")
+            # Copy forecast_temp_c to top level so position creation + dashboard can access it
+            if "forecast_temp_c" not in enriched_item and evidence.get("forecast_temp_c") is not None:
+                enriched_item["forecast_temp_c"] = evidence["forecast_temp_c"]
             # [PACK B] Compute market regime and attach gates
             try:
                 from market_discovery_internal.pricing import compute_regime_score
