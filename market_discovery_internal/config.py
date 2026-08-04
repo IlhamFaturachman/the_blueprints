@@ -628,3 +628,49 @@ SEASONAL_SIGMA_MULTIPLIERS = {
     11: 1.20,  # November — late fall
     12: 1.20,  # December — winter
 }
+# ---------------------------------------------------------------------------
+# ECMWF Open Data (CC BY 4.0) — 51-member ensemble, real-time since Oct 2025
+# ---------------------------------------------------------------------------
+
+ECMWF_OPEN_DATA_ENABLED = _env_bool("ECMWF_OPEN_DATA_ENABLED", False)
+ECMWF_ENSEMBLE_MEMBERS = int(os.getenv("ECMWF_ENSEMBLE_MEMBERS", "51"))
+ECMWF_FORECAST_VARIABLE = os.getenv("ECMWF_FORECAST_VARIABLE", "2t")
+ECMWF_MAX_TEMP_VARIABLE = os.getenv("ECMWF_MAX_TEMP_VARIABLE", "mx2t")
+ECMWF_FORECAST_STEPS = os.getenv("ECMWF_FORECAST_STEPS", "0,6,12,18,24,30,36,42,48")
+ECMWF_S3_BUCKET = "s3://ecmwf-forecasts"
+
+# ---------------------------------------------------------------------------
+# EMOS (Ensemble Model Output Statistics) — per-station bias correction
+# ---------------------------------------------------------------------------
+
+EMOS_TRAINING_WINDOW_DAYS = int(os.getenv("EMOS_TRAINING_WINDOW_DAYS", "60"))
+EMOS_MIN_TRAINING_SAMPLES = int(os.getenv("EMOS_MIN_TRAINING_SAMPLES", "30"))
+EMOS_REFRESH_INTERVAL_HOURS = float(os.getenv("EMOS_REFRESH_INTERVAL_HOURS", "6.0"))
+
+# ---------------------------------------------------------------------------
+# IEM (Iowa Environmental Mesonet) — settlement labels + training data
+# ---------------------------------------------------------------------------
+
+IEM_API_BASE = os.getenv("IEM_API_BASE", "https://mesonet.agron.iastate.edu/api/1")
+IEM_BACKFILL_DAYS = int(os.getenv("IEM_BACKFILL_DAYS", "730"))
+
+# ---------------------------------------------------------------------------
+# Running-Max Lag Study (Phase 1)
+# ---------------------------------------------------------------------------
+
+LAG_STUDY_POLL_INTERVAL_SECONDS = int(os.getenv("LAG_STUDY_POLL_INTERVAL_SECONDS", "60"))
+LAG_STUDY_OUTPUT_FILE = os.getenv("LAG_STUDY_OUTPUT_FILE", "logs/running_max_lag_study.jsonl")
+LAG_STUDY_LOCK_THRESHOLD = float(os.getenv("LAG_STUDY_LOCK_THRESHOLD", "0.85"))
+LAG_STUDY_LOCK_MIN_HOUR_LOCAL = int(os.getenv("LAG_STUDY_LOCK_MIN_HOUR_LOCAL", "16"))
+
+# ---------------------------------------------------------------------------
+# Shadow Trading (Phase 3)
+# ---------------------------------------------------------------------------
+
+SHADOW_TRADING_ENABLED = _env_bool("SHADOW_TRADING_ENABLED", False)
+SHADOW_OUTPUT_FILE = os.getenv("SHADOW_OUTPUT_FILE", "logs/shadow_trades.jsonl")
+SHADOW_TP_MULTIPLIER = float(os.getenv("SHADOW_TP_MULTIPLIER", "2.0"))
+SHADOW_SL_MULTIPLIER = float(os.getenv("SHADOW_SL_MULTIPLIER", "0.25"))
+SHADOW_ENTRY_MIN_PRICE = float(os.getenv("SHADOW_ENTRY_MIN_PRICE", "0.10"))
+SHADOW_ENTRY_MAX_PRICE = float(os.getenv("SHADOW_ENTRY_MAX_PRICE", "0.30"))
+SHADOW_MIN_LOCK_PROB = float(os.getenv("SHADOW_MIN_LOCK_PROB", "0.85"))
