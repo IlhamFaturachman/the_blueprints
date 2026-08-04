@@ -420,30 +420,34 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
             return None
         forecast = float(forecast_temp)
         # [EMOS INTEGRATION] Apply per-station bias correction.
-        # If ECMWF ensemble data is available, use ensemble stats + EMOS model.
-        # If EMOS model not yet trained, use simple station_bias offset from DB.
+        # Checks if ECMWF ensemble data exists in DB for this city+date.
+        # If yes, loads cached EMOS model and applies proper Gaussian correction:
+        #   mu = a + b * ensemble_mean, sigma = sqrt(c + d * ensemble_var)
+        # If no model cached yet (< 60 days data), passthrough — forecast unchanged.
         try:
-            _src = str(getattr(forecast_temp, 'source', ''))
+            from market_discovery_internal.database_manager import db
             _icao = market.get("icao_code", "")
-            if 'ecmwf' in _src.lower():
-                from market_discovery_internal.database_manager import db
-                from market_discovery_internal.emos import predict_emos, fit_emos
-                _stats = db.get_ecmwf_ensemble_stats(city, market_date or date_str) if _icao else None
-                if _stats and _stats.get("count", 0) >= 5:
-                    # Try to get cached EMOS model from DB (trained offline)
-                    # For now, use ensemble spread as sigma and apply station bias
-                    _ensemble_mean = _stats["mean"]
-                    _ensemble_std = _stats["std"] or 1.0
-                    # Simple bias correction: subtract known station bias
-                    # station_bias stores (mean_error, std) per station
-                    _bias_row = db.get_weather(_icao.lower() or city, "bias_correction")
-                    _bias_offset = 0.0
-                    if _bias_row and _bias_row.get("max_temp") is not None:
-                        _bias_offset = float(_bias_row["max_temp"])
+            _stats = db.get_ecmwf_ensemble_stats(city, market_date or date_str) if _icao else None
+            if _stats and _stats.get("count", 0) >= 5:
+                _ensemble_mean = float(_stats["mean"])
+                _ensemble_std = float(_stats["std"] or 1.0)
+                # Load cached EMOS model from DB (saved by train_emos.py)
+                from market_discovery_internal.emos import predict_emos
+                _model_row = db.get_weather(_icao.lower(), "emos_model")
+                _model = None
+                if _model_row and _model_row.get("max_temp") is not None:
+                    _a = float(_model_row["max_temp"])
+                    _b = float(_model_row["min_temp"])
+                    _c = float(_model_row["precip"])
+                    _d_row = db.get_weather(_icao.lower(), "emos_model_d")
+                    _d = float(_d_row["max_temp"]) if _d_row and _d_row.get("max_temp") is not None else 1.0
+                    _model = {"a": _a, "b": _b, "c": _c, "d": _d}
+                if _model is not None:
+                    _pred = predict_emos(_model, _ensemble_mean, _ensemble_std)
                     _original = forecast
-                    forecast = _ensemble_mean - _bias_offset
-                    logger.info("[EMOS] %s: bias-corrected %.1f→%.1fC (offset=%.2f, sigma=%.2f)",
-                                city, _original, forecast, _bias_offset, _ensemble_std)
+                    forecast = _pred["mu"]
+                    logger.info("[EMOS] %s: bias-corrected %.1f→%.1fC (sigma=%.2f)",
+                                city, _original, forecast, _pred["sigma"])
         except Exception as exc:
             logger.debug("[EMOS] correction skipped for %s: %s", city, exc)
 
