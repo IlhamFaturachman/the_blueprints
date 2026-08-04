@@ -53,15 +53,17 @@ def fetch_ecmwf_ensemble_forecast(city, date_str, lat, lon):
         with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            client.retrieve(stream="enfo", type="ef", param="2t", step=24, target=tmp_path)
-            ds = xr.open_dataset(tmp_path, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "2t"}})
+            client.retrieve(stream="enfo", type="ef", param="mx2t", step=24, target=tmp_path)
+            ds = xr.open_dataset(tmp_path, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "mx2t"}})
             lats, lons = ds.latitude.values, ds.longitude.values
             grid_res = abs(lats[1] - lats[0]) if len(lats) > 1 else 0.25
             lat_idx, lon_idx = compute_grid_indices(lat, lon, lats[0], lons[0], grid_res)
             members = []
             if "number" in ds.dims:
+                # Get the data variable name dynamically (mx2t, t2m, etc.)
+                _var_name = list(ds.data_vars)[0] if len(ds.data_vars) > 0 else "t2m"
                 for idx in range(len(ds.number)):
-                    grid = ds.isel(number=idx).isel(step=0)["t2m"].values
+                    grid = ds.isel(number=idx).isel(step=0)[_var_name].values
                     if grid.ndim == 2:
                         members.append(float(bilinear_interp(grid.tolist(), lat_idx, lon_idx)) - 273.15)
             if len(members) < 5:
