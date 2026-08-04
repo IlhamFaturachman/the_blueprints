@@ -64,14 +64,18 @@ def test_determine_winning_bracket_no_match():
 
 
 def test_lag_study_records_lock_event():
-    """Test that lock detection works — recording the lock event itself, not delayed price fetches."""
+    """Test that lock detection works — recording the lock event itself, not delayed price fetches.
+
+    Uses lock_min_hour_local=0 so the hour check always passes regardless of real time.
+    """
     from scripts.running_max_lag_study import detect_lock_event
     mock_metar = [{"temp": 35.2, "reportTime": "2026-08-05T22:00:00Z"}]
     mock_quote = {"bid": 0.14, "ask": 0.15}
     brackets = [{"threshold": 35, "threshold_high": 36, "token_id": "tok35"}]
     with patch("market_discovery_internal.running_max_tracker.fetch_metar_24h", return_value=mock_metar), \
          patch("scripts.running_max_lag_study.fetch_orderbook_quote", return_value=mock_quote):
-        result = detect_lock_event("dallas", "KDFW", "America/Chicago", brackets)
+        result = detect_lock_event("dallas", "KDFW", "America/Chicago", brackets,
+                                   lock_min_hour_local=0, lock_threshold=0.0)
     assert result is not None
     assert result["winning_bracket_token"] == "tok35"
     assert result["price_at_lock"] == 0.15

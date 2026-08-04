@@ -2142,6 +2142,10 @@ def evaluate_hybrid_exit(
             "stop_loss_price": round(stop_loss_price, 4),
         }
 
+    # [TP-100% STRATEGY] No more hold-to-resolve. If in late window, SELL.
+    # User's strategy: buy 0.10-0.30, TP at 2× entry, never hold to resolve.
+    # If we reach the late window without hitting TP, exit immediately —
+    # don't gamble on resolve outcome.
     if hours is not None and hours <= HYBRID_LATE_WINDOW_HOURS:
         if not forecast_still_valid:
             return {
@@ -2153,28 +2157,17 @@ def evaluate_hybrid_exit(
                 "partial_tp_taken": partial_tp_taken,
                 "stop_loss_price": round(stop_loss_price, 4),
             }
-
-        if confidence_score >= HYBRID_MIN_CONFIDENCE_TO_HOLD:
-            return {
-                "action": "hold_to_resolve",
-                "reason": "late_window_confidence_pass",
-                "target_price": target_price,
-                "confidence_score": confidence_score,
-                "peak_price": round(updated_peak, 4),
-                "partial_tp_taken": partial_tp_taken,
-                "stop_loss_price": round(stop_loss_price, 4),
-            }
-
+        # [TP-100% STRATEGY] Don't hold to resolve even if confidence is high.
+        # Sell at current price — better to exit with known PnL than gamble.
         return {
             "action": "sell",
-            "reason": "late_window_confidence_below_min",
+            "reason": "late_window_exit_tp_strategy",
             "target_price": target_price,
             "confidence_score": confidence_score,
             "peak_price": round(updated_peak, 4),
             "partial_tp_taken": partial_tp_taken,
             "stop_loss_price": round(stop_loss_price, 4),
         }
-
     return {
         "action": "hold",
         "reason": "await_target",

@@ -95,7 +95,8 @@ def test_stop_loss_exit():
     assert decision["reason"] == "stop_loss"
 
 
-def test_hybrid_holds_to_resolve_when_late_and_forecast_valid():
+def test_hybrid_sells_in_late_window_when_forecast_valid():
+    """[TP-100% STRATEGY] No more hold-to-resolve. Sell in late window even if confidence is high."""
     position = _build(yes_price=0.25)
     decision = evaluate_hybrid_exit(
         position=position,
@@ -104,8 +105,8 @@ def test_hybrid_holds_to_resolve_when_late_and_forecast_valid():
         hours_until_resolve=1,
         confidence_score=0.90,
     )
-    assert decision["action"] == "hold_to_resolve"
-    assert decision["reason"] == "late_window_confidence_pass"
+    assert decision["action"] == "sell"
+    assert decision["reason"] == "late_window_exit_tp_strategy"
 
 
 def test_hybrid_exits_when_late_and_forecast_invalid():
@@ -120,18 +121,18 @@ def test_hybrid_exits_when_late_and_forecast_invalid():
     assert decision["action"] == "sell"
     assert decision["reason"] == "late_window_forecast_invalid"
 
-
-def test_hybrid_exits_when_late_and_confidence_below_minimum():
+def test_hybrid_exits_when_late_and_forecast_valid_but_tp_strategy():
+    """[TP-100% STRATEGY] Even with low confidence, late window = sell (not hold_to_resolve)."""
     position = _build(yes_price=0.25)
     decision = evaluate_hybrid_exit(
         position=position,
         current_yes_price=0.48,
         forecast_still_valid=True,
         hours_until_resolve=1,
-        confidence_score=0.50,  # Below HYBRID_MIN_CONFIDENCE_TO_HOLD (0.55)
+        confidence_score=0.50,
     )
     assert decision["action"] == "sell"
-    assert decision["reason"] == "late_window_confidence_below_min"
+    assert decision["reason"] == "late_window_exit_tp_strategy"
 
 
 def test_hybrid_exits_on_thesis_decay():

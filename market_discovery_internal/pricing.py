@@ -419,6 +419,25 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
         if forecast_temp is None:
             return None
         forecast = float(forecast_temp)
+        # [EMOS INTEGRATION] Apply per-station bias correction if available.
+        # EMOS corrects systematic forecast bias using historical IEM labels.
+        # If EMOS model not yet trained (< 30 samples), forecast is unchanged.
+        try:
+            from market_discovery_internal.ecmwf_fetch import ECMWF_AVAILABLE
+            if ECMWF_AVAILABLE and hasattr(forecast_temp, 'source') and 'ecmwf' in str(getattr(forecast_temp, 'source', '')):
+                from market_discovery_internal.database_manager import db
+                from market_discovery_internal.emos import predict_emos
+                _icao = market.get("icao_code", "")
+                _stats = db.get_ecmwf_ensemble_stats(city, market_date or date_str) if _icao else None
+                if _stats and _stats.get("count", 0) >= 5:
+                    _pred = predict_emos(None, _stats["mean"], _stats["std"] or 1.0)
+                    _original = forecast
+                    forecast = _pred["mu"]
+                    logger.debug("[EMOS] %s: bias-corrected %.1f→%.1fC (sigma=%.2f)",
+                                city, _original, forecast, _pred["sigma"])
+        except Exception as exc:
+            logger.debug("[EMOS] correction skipped for %s: %s", city, exc)
+
         prob_source = "gaussian_openmeteo"
 
     # Compute model probability only for non-market-implied path

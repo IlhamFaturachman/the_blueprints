@@ -446,6 +446,17 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None,
 
     _wttr_field = "mintempC" if temp_type == "min" else "maxtempC"
 
+    def _fetch_ecmwf():
+        """Fetch ECMWF 51-member ensemble forecast. Falls back to None if not available."""
+        try:
+            from market_discovery_internal.ecmwf_fetch import fetch_ecmwf_ensemble_forecast
+            result = fetch_ecmwf_ensemble_forecast(city, date, coords["lat"], coords["lon"])
+            if result and result.get("mean") is not None:
+                return result["mean"]
+        except Exception as exc:
+            logger.debug("[ECMWF] fetch failed for %s/%s: %s", city, date, exc)
+        return None
+
     def _fetch_wttr():
         # Query by ICAO code so wttr.in returns data for the exact airport station,
         # matching the source Polymarket uses for market resolution.
@@ -479,11 +490,17 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None,
             logger.debug("NOAA fetch failed for %s/%s", city, date)
         return None
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        f_ecmwf = executor.submit(_fetch_ecmwf)
         f_om = executor.submit(_fetch_open_meteo)
         f_wt = executor.submit(_fetch_wttr)
         f_noaa = executor.submit(_fetch_noaa)
         
+        try:
+            t_ecmwf = f_ecmwf.result()
+        except Exception as exc:
+            logger.debug("ECMWF fetch failed for %s/%s: %s", city, date, exc)
+            t_ecmwf = None
         try:
             t_om = f_om.result()
         except Exception as exc:
@@ -503,26 +520,44 @@ def fetch_forecast(city: str, date: str, icao_override: Optional[str] = None,
     base_avg = None
     source = None
 
-    if t_om is not None and t_wt is not None:
+    # [ECMWF INTEGRATION] ECMWF is the most accurate source (same as market makers).
+    # If ECMWF is available, use it as primary. Open-Meteo as secondary for consensus.
+    if t_ecmwf is not None and t_om is not None:
+        # Consensus between ECMWF and Open-Meteo
+        if abs(t_ecmwf - t_om) > CONSENSUS_MAX_ERROR_C:
+            logger.warning(
+                "[CONSENSUS REJECT] %s/%s: ECMWF=%.1fC, Open-Meteo=%.1fC, delta=%.1fC > max %.1fC",
+                city, date, t_ecmwf, t_om, abs(t_ecmwf - t_om), CONSENSUS_MAX_ERROR_C
+            )
+            _log_anomaly(city, date, t_ecmwf, t_om, "ecmwf_om_consensus_disagreement")
+            return None
+        # Blend: ECMWF gets 70% weight, Open-Meteo 30%
+        base_avg = round(t_ecmwf * 0.70 + t_om * 0.30, 1)
+        source = "verified-ecmwf-dual-source"
+        if t_noaa is not None:
+            source = "verified-ecmwf-triple-source"
+            if icao_override:
+                source += " (METAR)"
+    elif t_om is not None and t_wt is not None:
         # [MODUL K] Anomaly Check (Strict Consensus Gate)
         if abs(t_om - t_wt) > CONSENSUS_MAX_ERROR_C:
             logger.warning(
-                "[CONSENSUS REJECT] %s/%s: Open-Meteo=%.1f°C, wttr.in=%.1f°C, delta=%.1f°C > max %.1f°C",
+                "[CONSENSUS REJECT] %s/%s: Open-Meteo=%.1fC, wttr.in=%.1fC, delta=%.1fC > max %.1fC",
                 city, date, t_om, t_wt, abs(t_om - t_wt), CONSENSUS_MAX_ERROR_C
             )
             _log_anomaly(city, date, t_om, t_wt, "consensus_disagreement")
-            return None # Major disagreement between weather sources, reject forecast to be safe.
-        
-        # Weighted blend: Open-Meteo gets more weight (more reliable API).
-        # POINT_FORECAST_WEIGHT=0.35, WTRIN_WEIGHT=0.20 → normalized 64/36.
+            return None
         _w_total = POINT_FORECAST_WEIGHT + WTRIN_WEIGHT
         if _w_total > 0:
             base_avg = round((POINT_FORECAST_WEIGHT * t_om + WTRIN_WEIGHT * t_wt) / _w_total, 1)
         else:
-            base_avg = round((t_om + t_wt) / 2.0, 1)  # Fallback to 50/50
+            base_avg = round((t_om + t_wt) / 2.0, 1)
         source = "verified-triple-source" if t_noaa is not None else "verified-dual-source"
         if t_noaa is not None and icao_override:
             source += " (METAR)"
+    elif t_ecmwf is not None:
+        base_avg = t_ecmwf
+        source = "ecmwf-opendata"
     elif t_om is not None:
         base_avg = t_om
         source = "open-meteo"

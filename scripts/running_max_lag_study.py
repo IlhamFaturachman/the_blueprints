@@ -54,10 +54,14 @@ def fetch_city_brackets(city, now_utc=None):
         "closed": "false",
         "limit": 200,
         "order": "volume24hr",
-        "ascending": "false",
     }
     data = fetch_with_retry(GAMMA_EVENTS_API, params=params, timeout=15)
-    if not data or not isinstance(data, list):
+    if not data:
+        return []
+    # Gamma /events/pagination returns {"data": [...], "pagination": {...}}
+    if isinstance(data, dict):
+        data = data.get("data", [])
+    if not isinstance(data, list):
         return []
     brackets = []
     for event in data:
