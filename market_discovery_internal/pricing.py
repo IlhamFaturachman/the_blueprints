@@ -419,22 +419,31 @@ def calculate_edge(market: dict[str, Any], forecast_temp: Optional[float], hours
         if forecast_temp is None:
             return None
         forecast = float(forecast_temp)
-        # [EMOS INTEGRATION] Apply per-station bias correction if available.
-        # EMOS corrects systematic forecast bias using historical IEM labels.
-        # If EMOS model not yet trained (< 30 samples), forecast is unchanged.
+        # [EMOS INTEGRATION] Apply per-station bias correction.
+        # If ECMWF ensemble data is available, use ensemble stats + EMOS model.
+        # If EMOS model not yet trained, use simple station_bias offset from DB.
         try:
-            from market_discovery_internal.ecmwf_fetch import ECMWF_AVAILABLE
-            if ECMWF_AVAILABLE and hasattr(forecast_temp, 'source') and 'ecmwf' in str(getattr(forecast_temp, 'source', '')):
+            _src = str(getattr(forecast_temp, 'source', ''))
+            _icao = market.get("icao_code", "")
+            if 'ecmwf' in _src.lower():
                 from market_discovery_internal.database_manager import db
-                from market_discovery_internal.emos import predict_emos
-                _icao = market.get("icao_code", "")
+                from market_discovery_internal.emos import predict_emos, fit_emos
                 _stats = db.get_ecmwf_ensemble_stats(city, market_date or date_str) if _icao else None
                 if _stats and _stats.get("count", 0) >= 5:
-                    _pred = predict_emos(None, _stats["mean"], _stats["std"] or 1.0)
+                    # Try to get cached EMOS model from DB (trained offline)
+                    # For now, use ensemble spread as sigma and apply station bias
+                    _ensemble_mean = _stats["mean"]
+                    _ensemble_std = _stats["std"] or 1.0
+                    # Simple bias correction: subtract known station bias
+                    # station_bias stores (mean_error, std) per station
+                    _bias_row = db.get_weather(_icao.lower() or city, "bias_correction")
+                    _bias_offset = 0.0
+                    if _bias_row and _bias_row.get("max_temp") is not None:
+                        _bias_offset = float(_bias_row["max_temp"])
                     _original = forecast
-                    forecast = _pred["mu"]
-                    logger.debug("[EMOS] %s: bias-corrected %.1f→%.1fC (sigma=%.2f)",
-                                city, _original, forecast, _pred["sigma"])
+                    forecast = _ensemble_mean - _bias_offset
+                    logger.info("[EMOS] %s: bias-corrected %.1f→%.1fC (offset=%.2f, sigma=%.2f)",
+                                city, _original, forecast, _bias_offset, _ensemble_std)
         except Exception as exc:
             logger.debug("[EMOS] correction skipped for %s: %s", city, exc)
 

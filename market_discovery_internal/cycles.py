@@ -2115,7 +2115,7 @@ def evaluate_hybrid_exit(
             "stop_loss_price": round(stop_loss_price, 4),
         }
 
-    if price >= target_price and strategy == "swing":
+    if price >= target_price:
         return {
             "action": "sell",
             "reason": "take_profit_100pct",
