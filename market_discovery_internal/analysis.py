@@ -21,6 +21,7 @@ from market_discovery_internal.config import (
     HAIKU_SENSING_ENABLED, HAIKU_SENSING_MODEL, HAIKU_SENSING_MAX_TOKENS,
     STATION_KNOWLEDGE_FILE, STATION_KNOWLEDGE_TTL_DAYS,
     ENTRY_BUCKET_HOLD_MIN_PROB, ENTRY_BUCKET_HOLD_MIN_EDGE,
+    ENTRY_BUCKET_HOLD_MIN_CONFIDENCE,
     ENTRY_BUCKET_WATCH_MAX_PRICE,
     ANTHROPIC_API_KEY, AI_AGENT_ENABLED, AI_AGENT_TIMEOUT_SECONDS,
     PAPER_ENTRY_MIN_PRICE, PAPER_ENTRY_MAX_PRICE
@@ -642,16 +643,30 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
     _min = float(min_entry_price)
     _max = float(max_entry_price)
 
-    # HOLD: highest-conviction signal — hold through to resolution
-    if prob >= ENTRY_BUCKET_HOLD_MIN_PROB and edge >= ENTRY_BUCKET_HOLD_MIN_EDGE:
+    # HOLD: high-conviction signal — hold through to resolution.
+    # Measured collection: also accept hold_confidence path so hold bucket is not dead.
+    try:
+        _hold_conf = float(opportunity.get("hold_confidence") or opportunity.get("hold_conf") or 0.0)
+    except (TypeError, ValueError):
+        _hold_conf = 0.0
+    _hold_ok = (
+        (prob >= ENTRY_BUCKET_HOLD_MIN_PROB and edge >= ENTRY_BUCKET_HOLD_MIN_EDGE)
+        or (
+            _hold_conf >= ENTRY_BUCKET_HOLD_MIN_CONFIDENCE
+            and edge >= max(0.12, ENTRY_BUCKET_HOLD_MIN_EDGE * 0.5)
+            and prob >= max(0.35, ENTRY_BUCKET_HOLD_MIN_PROB * 0.6)
+        )
+    )
+    if _hold_ok and PAPER_ENTRY_MIN_PRICE <= price <= _max:
         return {
             "bucket": "enter_hold_candidate",
             "strategy": "hold_until_resolve",
             "reason": (
-                f"Prob {prob_pct} & Edge {edge_pct} meet HOLD criteria "
-                f"(Min {ENTRY_BUCKET_HOLD_MIN_PROB*100:.0f}%/{ENTRY_BUCKET_HOLD_MIN_EDGE*100:.0f}%)."
+                f"HOLD path: Prob {prob_pct}, Edge {edge_pct}, hold_conf={_hold_conf:.2f} "
+                f"(min prob/edge {ENTRY_BUCKET_HOLD_MIN_PROB*100:.0f}%/{ENTRY_BUCKET_HOLD_MIN_EDGE*100:.0f}% "
+                f"or hold_conf>={ENTRY_BUCKET_HOLD_MIN_CONFIDENCE:.2f})."
             ),
-            "confidence": round(prob, 4),
+            "confidence": round(max(prob, _hold_conf), 4),
         }
 
     # SWING: price in the mid-range above the watchlist ceiling — enter now
@@ -670,40 +685,91 @@ def decide_entry_bucket(opportunity, min_entry_price, max_entry_price):
 
     # EXACT BRACKET: cheap, high-probability, high-edge entries only
     # Exact brackets must pass strict quality gates: min prob 25%, min edge 10%, max price $0.15.
-    # Plus proximity filter: forecast must be within 2σ of the bracket threshold.
+    # Plus proximity filter: forecast must be within EXACT_PROXIMITY_SIGMA × σ of threshold.
+    # Plus market-forecast gap gate (skip if market mode far from model).
     from market_discovery_internal.config import (
         STRATEGY_EXACT_MIN_MODEL_PROB, STRATEGY_EXACT_MIN_EDGE, STRATEGY_EXACT_MAX_ENTRY_PRICE,
+        EXACT_PROXIMITY_SIGMA,
     )
     direction = opportunity.get("direction", "")
     _exact_max = min(_max, STRATEGY_EXACT_MAX_ENTRY_PRICE)
     if direction == "exact":
+        # Attach research fields if missing
+        try:
+            from market_discovery_internal.research_features import (
+                attach_research_fields, passes_market_gap_gate, forecast_bracket_distance_c,
+            )
+            if "forecast_bracket_distance_c" not in opportunity:
+                attach_research_fields(opportunity)
+            gap_ok, gap_reason = passes_market_gap_gate(opportunity)
+            if not gap_ok:
+                return {
+                    "bucket": "reject",
+                    "strategy": "swing",
+                    "reason": f"Exact rejected: {gap_reason}",
+                    "confidence": round(prob, 4),
+                }
+        except Exception:
+            gap_ok, gap_reason = True, "gap_check_skipped"
+
         # [PROXIMITY FILTER] Only enter exact brackets where forecast is close to threshold.
-        # Uses 2× city sigma as max distance. Prevents entering "dead" brackets
-        # where the forecast is far from the threshold (e.g., forecast 28°C, bracket 24°C).
         _proximity_ok = True
+        _distance = opportunity.get("forecast_bracket_distance_c")
         _threshold_c = opportunity.get("threshold")
         _evidence = opportunity.get("weather_evidence") or {}
-        _forecast_c = _evidence.get("forecast_temp_c")
+        _forecast_c = _evidence.get("forecast_temp_c") or opportunity.get("forecast_temp_c")
+        _sigma = None
         if _threshold_c is not None and _forecast_c is not None:
             from market_discovery_internal.pricing import _get_city_sigma
             _city = opportunity.get("city", "")
             _date = opportunity.get("date", "")
             _sigma = _get_city_sigma(_city, _date)
-            _max_distance = 2.0 * _sigma  # 2σ proximity gate
-            _distance = abs(float(_forecast_c) - float(_threshold_c))
-            if _distance > _max_distance:
+            _max_distance = float(EXACT_PROXIMITY_SIGMA) * float(_sigma)
+            if _distance is None:
+                # Convert threshold to C if needed
+                _thr = float(_threshold_c)
+                if str(opportunity.get("unit", "C")).upper() == "F":
+                    _thr = (_thr - 32.0) * 5.0 / 9.0
+                _distance = abs(float(_forecast_c) - _thr)
+            if float(_distance) > _max_distance:
                 _proximity_ok = False
+
+        if not _proximity_ok:
+            return {
+                "bucket": "reject",
+                "strategy": "swing",
+                "reason": (
+                    f"Exact rejected: proximity dist={_distance} "
+                    f"> {EXACT_PROXIMITY_SIGMA}σ (σ={_sigma})."
+                ),
+                "confidence": round(prob, 4),
+            }
 
         if (_proximity_ok
                 and _min <= price <= _exact_max
                 and edge >= STRATEGY_EXACT_MIN_EDGE
                 and prob >= STRATEGY_EXACT_MIN_MODEL_PROB):
+            # [CRITICAL FIX] Run full consensus gate before entering exact brackets.
+            # This enforces max_prob, forecast gap, dead market, and golden window checks
+            # that were previously bypassed in the live entry path (only called in shadow logging).
+            try:
+                from market_discovery_internal.research_features import passes_market_consensus_gate
+                _gate_ok, _gate_reason = passes_market_consensus_gate(opportunity)
+                if not _gate_ok:
+                    return {
+                        "bucket": "reject",
+                        "strategy": "swing",
+                        "reason": f"Exact rejected by consensus gate: {_gate_reason}",
+                        "confidence": round(prob, 4),
+                    }
+            except Exception as _gate_exc:
+                logger.warning("[BUCKET] Consensus gate check failed for %s: %s", opportunity.get("city", "?"), _gate_exc)
             return {
                 "bucket": "enter_swing",
                 "strategy": "swing",
                 "reason": (
                     f"Exact bracket USD {price:.2f} with Prob {prob_pct}, Edge {edge_pct}. "
-                    f"High-ROI bracket entry (max ${_exact_max:.2f})."
+                    f"dist={_distance}C max=${_exact_max:.2f}."
                 ),
                 "confidence": round(prob, 4),
             }
