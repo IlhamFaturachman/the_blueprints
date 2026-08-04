@@ -8,3 +8,7 @@ websockets>=12.0
 anthropic>=0.50.0
 py-clob-client==1.0.1
 certifi>=2023.7.22
+ecmwf-opendata>=1.0.0
+eccodes>=2.30.0
+xarray>=2024.0.0
+cfgrib>=0.9.10.0
