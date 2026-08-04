@@ -93,11 +93,12 @@ def match_with_observations(conn, city, forecasts):
 def fit_emos_gaussian(pairs):
     """Fit EMOS Gaussian model: mu = a + b*ensemble_mean, sigma = sqrt(c + d*var).
     
-    Uses simple linear regression for (a, b) and method-of-moments for (c, d).
-    This is a simplified version of CRPS minimization — good enough for pilot.
+    For small samples (n < 20), uses simple bias correction:
+      a = mean_obs - mean_fc (constant offset)
+      b = 1.0 (trust forecast slope, just shift)
+    For larger samples (n >= 20), uses linear regression for (a, b).
     
-    With <30 samples per station, full CRPS optimization is unstable.
-    Linear regression + moment matching is more robust for small samples.
+    Sigma is always calibrated from residual variance.
     """
     if len(pairs) < 5:
         return None
@@ -106,40 +107,38 @@ def fit_emos_gaussian(pairs):
     fc_temps = [p[1] for p in pairs]
     obs_temps = [p[2] for p in pairs]
     
-    # Linear regression: obs = a + b * forecast
     mean_fc = sum(fc_temps) / n
     mean_obs = sum(obs_temps) / n
-    var_fc = sum((f - mean_fc) ** 2 for f in fc_temps) / n
+    mean_bias = mean_fc - mean_obs
     
-    if var_fc < 0.01:
-        # Near-constant forecast — can't fit slope reliably
-        b = 1.0
-        a = mean_obs - mean_fc
+    if n >= 20:
+        # Full linear regression: obs = a + b * forecast
+        var_fc = sum((f - mean_fc) ** 2 for f in fc_temps) / n
+        if var_fc < 0.01:
+            b = 1.0
+            a = mean_obs - mean_fc
+        else:
+            cov = sum((fc_temps[i] - mean_fc) * (obs_temps[i] - mean_obs) for i in range(n)) / n
+            b = cov / var_fc
+            a = mean_obs - b * mean_fc
+        # Clamp to reasonable ranges
+        a = max(-5.0, min(5.0, a))
+        b = max(0.7, min(1.3, b))
     else:
-        cov = sum((fc_temps[i] - mean_fc) * (obs_temps[i] - mean_obs) for i in range(n)) / n
-        b = cov / var_fc
-        a = mean_obs - b * mean_fc
+        # Small sample: simple bias correction only
+        a = mean_obs - mean_fc  # = -mean_bias
+        b = 1.0
     
     # Residual variance for sigma calibration
     residuals = [obs_temps[i] - (a + b * fc_temps[i]) for i in range(n)]
     resid_var = sum(r ** 2 for r in residuals) / max(1, n - 2)
     
-    # EMOS sigma: sqrt(c + d * ensemble_var)
-    # With single-member forecast (no spread), use residual std as sigma
-    # c = resid_var (base uncertainty), d = 0 (no spread info from historical API)
     c = max(0.1, resid_var)
     d = 0.0  # Historical API gives deterministic forecast, not ensemble spread
     
-    # Clamp coefficients to reasonable ranges
-    a = max(-10.0, min(10.0, a))
-    b = max(0.5, min(1.5, b))
-    c = max(0.1, min(25.0, c))
-    
     model = {"a": round(a, 4), "b": round(b, 4), "c": round(c, 4), "d": round(d, 4)}
     
-    # Compute Brier score improvement
-    # Raw: use forecast directly as probability proxy
-    # EMOS: use a + b*forecast
+    # Compute MSE improvement AFTER applying model (not before clamping)
     raw_mse = sum((fc_temps[i] - obs_temps[i]) ** 2 for i in range(n)) / n
     emos_mse = sum(((a + b * fc_temps[i]) - obs_temps[i]) ** 2 for i in range(n)) / n
     improvement = (raw_mse - emos_mse) / raw_mse * 100 if raw_mse > 0 else 0
@@ -149,7 +148,7 @@ def fit_emos_gaussian(pairs):
         "raw_mse": round(raw_mse, 3),
         "emos_mse": round(emos_mse, 3),
         "improvement_pct": round(improvement, 1),
-        "mean_bias": round(mean_fc - mean_obs, 2),
+        "mean_bias": round(mean_bias, 2),
     }
 
 
