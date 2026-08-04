@@ -52,3 +52,26 @@ def test_ecmwf_ensemble_table_crud(tmp_path):
     stats = test_db.get_ecmwf_ensemble_stats("dallas", "2026-08-05")
     assert stats["count"] == 3
     assert abs(stats["mean"] - 35.367) < 0.01
+
+def test_bilinear_interp():
+    from market_discovery_internal.ecmwf_fetch import bilinear_interp
+    grid = [[10, 20], [30, 40]]
+    assert abs(bilinear_interp(grid, 0.5, 0.5) - 25.0) < 0.01
+
+def test_bilinear_corner():
+    from market_discovery_internal.ecmwf_fetch import bilinear_interp
+    grid = [[10, 20], [30, 40]]
+    assert abs(bilinear_interp(grid, 0.0, 0.0) - 10.0) < 0.01
+
+def test_grid_indices():
+    from market_discovery_internal.ecmwf_fetch import compute_grid_indices
+    lat_idx, lon_idx = compute_grid_indices(32.90, -97.04, 30.0, -100.0, 0.25)
+    assert abs(lat_idx - 11.6) < 0.1
+    assert abs(lon_idx - 11.84) < 0.1
+
+def test_ecmwf_returns_none_when_unavailable():
+    from market_discovery_internal.ecmwf_fetch import fetch_ecmwf_ensemble_forecast
+    from unittest.mock import patch
+    with patch("market_discovery_internal.ecmwf_fetch.ECMWF_AVAILABLE", False):
+        result = fetch_ecmwf_ensemble_forecast("dallas", "2026-08-05", 32.90, -97.04)
+    assert result is None
