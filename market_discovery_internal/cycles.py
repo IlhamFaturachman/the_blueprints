@@ -357,6 +357,13 @@ def run_discovery_cycle(
     opportunities = filter_opportunities_fn(enriched)
     filter_ms = elapsed_ms_fn(filter_started)
     logger.info("[FILTER] %d enriched → %d opportunities", len(enriched), len(opportunities))
+    try:
+        from market_discovery_internal.discovery import FILTER_REJECT_COUNTS
+        if FILTER_REJECT_COUNTS:
+            breakdown = ", ".join(f"{k}={v}" for k, v in sorted(FILTER_REJECT_COUNTS.items(), key=lambda x: -x[1]))
+            logger.info("[FILTER] dropped: %s", breakdown)
+    except Exception:
+        pass
 
     performance = {
         "total_ms": elapsed_ms_fn(cycle_started),
